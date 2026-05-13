@@ -47,7 +47,14 @@ src/RemSound.Sender    capture → mix → encode → UDP send
 src/RemSound.Receiver  UDP receive → ring buffer → drift-corrected playout → render
 src/RemSound.Harness   console test program (1 sender → 1 receiver, no UI)
 src/RemSound.App       WinForms UI (sender + receiver + heartbeat + discovery + updater)
+server/                optional Raspberry Pi / systemd-Linux relay bundle (see below)
 ```
+
+## Optional: running your own relay server
+
+Two RemSound peers normally reach each other directly over your LAN, or via Tailscale across the internet. If neither of those work for your situation — for example one peer is behind a router that won't forward inbound UDP and you'd prefer not to use Tailscale — you can run a small Python relay on a publicly-reachable host (a Raspberry Pi at home with one UDP port forwarded works fine) and have both peers dial that.
+
+The `server/` folder in this repo is a self-contained bundle: relay script, systemd unit, install / uninstall / smoke-test scripts, and a step-by-step README. See [`server/README.md`](server/README.md) for the setup walkthrough.
 
 ## Issues and feedback
 

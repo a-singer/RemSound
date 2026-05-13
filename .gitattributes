@@ -1,0 +1,14 @@
+# Default: let git auto-detect line endings.
+* text=auto
+
+# Linux-bound bundle in server/ must keep LF line endings even when checked out on
+# Windows. Bash and systemd both fail noisily on CRLF (bash sees the trailing \r as
+# part of a command name; systemd's parser rejects the unit file). Anyone who clones
+# the repo on Windows still gets LF for these files, and `scp` to a Pi delivers
+# usable scripts straight away.
+server/*.sh text eol=lf
+server/*.py text eol=lf
+server/*.service text eol=lf
+
+# .ps1 stays as-is — PowerShell handles either, but Windows tooling prefers CRLF.
+*.ps1 text eol=crlf

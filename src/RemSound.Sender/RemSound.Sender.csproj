@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>RemSound.Sender</RootNamespace>
+    <AssemblyName>RemSound.Sender</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemSound.Core\RemSound.Core.csproj" />
+    <PackageReference Include="NAudio" Version="2.3.0" />
+    <PackageReference Include="Concentus" Version="2.2.2" />
+  </ItemGroup>
+</Project>

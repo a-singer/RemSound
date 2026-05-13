@@ -1,0 +1,523 @@
+using System.Windows.Forms;
+
+namespace RemSound.Core;
+
+/// <summary>
+/// In-memory cache of UI/runtime preferences. As of 2026-05-02 this no longer persists to
+/// disk — RemSound's persistence layer is the profile system (<see cref="Profile"/> /
+/// <see cref="ProfileStore"/>), and this class is just an intra-process holding area that
+/// the active profile populates on app startup and reads back from when the user saves a
+/// profile. Old <c>configs/</c> folders from prior builds are ignored. Constructor still
+/// takes an <c>appName</c> for backwards compatibility but it's unused.
+/// </summary>
+public sealed class RemSoundSettingsStore
+{
+    public RemSoundSettingsStore(string appName) { }
+
+    public HotkeyInfo LoadReceiveMuteHotkey() =>
+        Try(() => Load()?.ReceiveMuteHotkey?.ToHotkeyInfo()) ?? new HotkeyInfo(Keys.R, true, true, true);
+
+    public void SaveReceiveMuteHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.ReceiveMuteHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
+    public HotkeyInfo LoadSendMuteHotkey() =>
+        Try(() => Load()?.SendMuteHotkey?.ToHotkeyInfo()) ?? new HotkeyInfo(Keys.S, true, true, true);
+
+    public void SaveSendMuteHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.SendMuteHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
+    public HotkeyInfo LoadTrayHotkey() =>
+        Try(() => Load()?.TrayHotkey?.ToHotkeyInfo()) ?? new HotkeyInfo(Keys.F10, true, true, false);
+
+    public void SaveTrayHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.TrayHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
+    public HotkeyInfo LoadVolumeUpHotkey() =>
+        Try(() => Load()?.VolumeUpHotkey?.ToHotkeyInfo()) ?? HotkeyInfo.Unset;
+
+    public void SaveVolumeUpHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.VolumeUpHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
+    public HotkeyInfo LoadVolumeDownHotkey() =>
+        Try(() => Load()?.VolumeDownHotkey?.ToHotkeyInfo()) ?? HotkeyInfo.Unset;
+
+    public void SaveVolumeDownHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.VolumeDownHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
+    public HotkeyInfo LoadRemoteVolumeUpHotkey() =>
+        Try(() => Load()?.RemoteVolumeUpHotkey?.ToHotkeyInfo()) ?? HotkeyInfo.Unset;
+
+    public void SaveRemoteVolumeUpHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.RemoteVolumeUpHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
+    public HotkeyInfo LoadRemoteVolumeDownHotkey() =>
+        Try(() => Load()?.RemoteVolumeDownHotkey?.ToHotkeyInfo()) ?? HotkeyInfo.Unset;
+
+    public void SaveRemoteVolumeDownHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.RemoteVolumeDownHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
+    public HotkeyInfo LoadRemoteMuteToggleHotkey() =>
+        Try(() => Load()?.RemoteMuteToggleHotkey?.ToHotkeyInfo()) ?? HotkeyInfo.Unset;
+
+    public void SaveRemoteMuteToggleHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.RemoteMuteToggleHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
+    public HotkeyInfo LoadSystemVolumeUpHotkey() =>
+        Try(() => Load()?.SystemVolumeUpHotkey?.ToHotkeyInfo()) ?? HotkeyInfo.Unset;
+
+    public void SaveSystemVolumeUpHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.SystemVolumeUpHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
+    public HotkeyInfo LoadSystemVolumeDownHotkey() =>
+        Try(() => Load()?.SystemVolumeDownHotkey?.ToHotkeyInfo()) ?? HotkeyInfo.Unset;
+
+    public void SaveSystemVolumeDownHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.SystemVolumeDownHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
+    public HotkeyInfo LoadSystemMuteToggleHotkey() =>
+        Try(() => Load()?.SystemMuteToggleHotkey?.ToHotkeyInfo()) ?? HotkeyInfo.Unset;
+
+    public void SaveSystemMuteToggleHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.SystemMuteToggleHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
+    public bool LoadAcceptRemoteVolumeCommands(bool defaultValue = false) =>
+        Try(() => Load()?.AcceptRemoteVolumeCommands) ?? defaultValue;
+
+    public void SaveAcceptRemoteVolumeCommands(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.AcceptRemoteVolumeCommands = value;
+        Save(s);
+    }
+
+    public int LoadMaxLatencyMs(int defaultValue = 80) =>
+        Try(() => Load()?.MaxLatencyMs is int v ? Math.Clamp(v, 5, 500) : (int?)null) ?? defaultValue;
+
+    public void SaveMaxLatencyMs(int value)
+    {
+        var s = Load() ?? new Settings();
+        s.MaxLatencyMs = Math.Clamp(value, 1, 500);
+        Save(s);
+    }
+
+    /// <summary>
+    /// Per-route latency settings used only in BothIndependent audio mode. The existing
+    /// <see cref="LoadMaxLatencyMs"/> / <see cref="SaveMaxLatencyMs"/> govern the WASAPI lane
+    /// (which is what the existing slider has always controlled — every classic mode reads
+    /// it the same way pre-Stage-4.5). The ASIO companion below stores the ASIO lane's
+    /// target. Default 10 ms because the whole point of the new mode is to let ASIO run at
+    /// its native low latency; if the user has picked BothIndependent they almost certainly
+    /// want ASIO closer to 10 than to 80.
+    /// </summary>
+    public int LoadMaxLatencyMsAsio(int defaultValue = 10) =>
+        Try(() => Load()?.MaxLatencyMsAsio is int v ? Math.Clamp(v, 5, 500) : (int?)null) ?? defaultValue;
+
+    public void SaveMaxLatencyMsAsio(int value)
+    {
+        var s = Load() ?? new Settings();
+        s.MaxLatencyMsAsio = Math.Clamp(value, 1, 500);
+        Save(s);
+    }
+
+    /// <summary>Continuous auto-tune enabled for the ASIO lane. Defaults false to match the
+    /// WASAPI-lane default — having one lane auto-adjusting and the other fixed produces
+    /// confusingly asymmetric latency where the auto-tuning lane sits noticeably higher
+    /// because it's reacting to network jitter the fixed lane just rides through. User can
+    /// enable per lane explicitly; in BothIndependent both lanes' enable checkboxes are
+    /// visible side-by-side.</summary>
+    public bool LoadContinuousAutoTuneAsioEnabled(bool defaultValue = false) =>
+        Try(() => Load()?.ContinuousAutoTuneAsioEnabled) ?? defaultValue;
+
+    public void SaveContinuousAutoTuneAsioEnabled(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.ContinuousAutoTuneAsioEnabled = value;
+        Save(s);
+    }
+
+    public AudioTransportCodec LoadCodec(AudioTransportCodec defaultValue = AudioTransportCodec.Pcm) =>
+        Try(() => Load()?.Codec) ?? defaultValue;
+
+    public void SaveCodec(AudioTransportCodec value)
+    {
+        var s = Load() ?? new Settings();
+        s.Codec = value;
+        Save(s);
+    }
+
+    public int LoadOpusFrameMilliseconds(int defaultValue = 10) =>
+        Try(() => Load()?.OpusFrameMilliseconds is int v && (v == 10 || v == 20) ? v : (int?)null) ?? defaultValue;
+
+    public void SaveOpusFrameMilliseconds(int value)
+    {
+        var s = Load() ?? new Settings();
+        s.OpusFrameMilliseconds = value == 20 ? 20 : 10;
+        Save(s);
+    }
+
+    public bool LoadContinuousAutoTuneEnabled(bool defaultValue = false) =>
+        Try(() => Load()?.ContinuousAutoTuneEnabled) ?? defaultValue;
+
+    public void SaveContinuousAutoTuneEnabled(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.ContinuousAutoTuneEnabled = value;
+        Save(s);
+    }
+
+    public int LoadContinuousAutoTuneIntervalSec(int defaultValue = 5) =>
+        Try(() => Load()?.ContinuousAutoTuneIntervalSec is int v && v >= 5 && v <= 60 ? v : (int?)null) ?? defaultValue;
+
+    public void SaveContinuousAutoTuneIntervalSec(int value)
+    {
+        var s = Load() ?? new Settings();
+        s.ContinuousAutoTuneIntervalSec = Math.Clamp(value, 5, 60);
+        Save(s);
+    }
+
+    public IReadOnlyList<string> LoadRememberedPeers() =>
+        Try(() => Load()?.RememberedPeers?
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList())
+        ?? [];
+
+    public void SaveRememberedPeers(IEnumerable<string> peers)
+    {
+        var s = Load() ?? new Settings();
+        s.RememberedPeers = peers
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        Save(s);
+    }
+
+    // LoggingEnabled lives in AppConfig now — it's a machine-local debug knob, not a
+    // per-profile setting. LoadLoggingEnabled / SaveLoggingEnabled were retired here;
+    // callers go to AppConfig.LoggingEnabled directly.
+
+    /// <summary>
+    /// Audio mode is derived from whether an ASIO driver is selected. Pre-2026-05-11 this was
+    /// a user-facing setting with its own listbox; now the UI is simpler — the user just picks
+    /// an ASIO driver (or "(none)" to disable ASIO) and the mode follows. A real driver chosen
+    /// means BothIndependent (WASAPI + ASIO running side by side, each at its own latency);
+    /// no driver means WasapiOnly. The AudioMode field still exists on the persisted Settings
+    /// JSON purely for backward compat with old profiles — its value is ignored on load. The
+    /// matching SaveAudioMode setter was deleted with the listbox in the 2026-05-11 cleanup;
+    /// callers that used to invoke it have been removed.
+    /// </summary>
+    public AudioMode LoadAudioMode(AudioMode defaultValue = AudioMode.WasapiOnly) =>
+        string.IsNullOrWhiteSpace(LoadAsioDriverName()) ? AudioMode.WasapiOnly : AudioMode.BothIndependent;
+
+    // BothModeWarningSuppressed used to live here. Moved to AppConfig (remsound.config.json,
+    // machine-local) on 2026-05-07 — a "do not show me this again" decision shouldn't be
+    // tied to which profile is active. The accessors were removed; callers go to AppConfig
+    // directly. Profile.BothModeWarningSuppressed is left in place to deserialise old JSONs
+    // (one-shot migrated to AppConfig in MainForm's constructor).
+
+    public SendRate LoadSendRate(SendRate defaultValue = SendRate.Standard) =>
+        Try(() => Load()?.SendRate is SendRate v ? v : (SendRate?)null) ?? defaultValue;
+
+    public void SaveSendRate(SendRate value)
+    {
+        var s = Load() ?? new Settings();
+        s.SendRate = value;
+        Save(s);
+    }
+
+    /// <summary>Tight-latency mode toggle. Sender-side only as of 2026-05-06 (the receiver no
+    /// longer has a resampler to bypass). In WasapiOnly + single source mode the sender swaps
+    /// from the timer-driven MixingEngine to the audio-clock-locked PushModeWasapiBackend; in
+    /// AsioOnly + PCM mode the sender emits one packet per ASIO callback instead of accumulating
+    /// to the chosen frame size. Saves a few ms of send-side latency at the cost of brief
+    /// clicks if the link can't keep up. Off by default.</summary>
+    public bool LoadTightLatencyMode(bool defaultValue = false) =>
+        Try(() => Load()?.TightLatencyMode) ?? defaultValue;
+
+    public void SaveTightLatencyMode(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.TightLatencyMode = value;
+        Save(s);
+    }
+
+    /// <summary>Suppresses the connect/disconnect sound cues that play when a peer's health
+    /// transitions to/from Healthy. Off by default — cues are on. Saved per-profile so users
+    /// who don't want them in a given setup don't have to remember to mute every session.
+    /// 2026-05-06.</summary>
+    public bool LoadMuteConnectionCues(bool defaultValue = false) =>
+        Try(() => Load()?.MuteConnectionCues) ?? defaultValue;
+
+    public void SaveMuteConnectionCues(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.MuteConnectionCues = value;
+        Save(s);
+    }
+
+    /// <summary>How aggressively the receiver pulls the playout queue back to the user's
+    /// target latency under network jitter. 1 = stupid aggressive (~10 % playback rate change,
+    /// audible pitch shift on drift, sub-second recovery). 10 = perfectly smooth (gentle
+    /// controller, no audible artefacts, slow recovery — buffer can creep up over a long
+    /// session). Lower is faster-but-less-stable, like the latency slider. Default is 3 —
+    /// quite aggressive but not the extreme; user dials down for tighter, up for smoother.</summary>
+    public int LoadSmoothness(int defaultValue = 3) =>
+        Try(() => Load()?.Smoothness is int v ? Math.Clamp(v, 1, 10) : (int?)null) ?? defaultValue;
+
+    public void SaveSmoothness(int value)
+    {
+        var s = Load() ?? new Settings();
+        s.Smoothness = Math.Clamp(value, 1, 10);
+        Save(s);
+    }
+
+    /// <summary>Receiver-side concealment artifact pick. See <see cref="ConcealmentArtifact"/>
+    /// for what each value sounds like. Default is <see cref="ConcealmentArtifact.NoiseBurst"/>
+    /// — the cosine-tone defaults were removed in Phase 3 cleanup (they sounded harsh on
+    /// orchestral content). Old profiles holding a CosineTone* enum value still load fine;
+    /// the dialog dropdown coerces them to NoiseBurst on display.</summary>
+    public ConcealmentArtifact LoadConcealmentArtifact(ConcealmentArtifact defaultValue = ConcealmentArtifact.NoiseBurst) =>
+        Try(() => Load()?.ConcealmentArtifact is ConcealmentArtifact v ? v : (ConcealmentArtifact?)null) ?? defaultValue;
+
+    public void SaveConcealmentArtifact(ConcealmentArtifact value)
+    {
+        var s = Load() ?? new Settings();
+        s.ConcealmentArtifact = value;
+        Save(s);
+    }
+
+    // ResamplerBypassWhenTight (load/save + Settings field) removed 2026-05-06 in Phase 3
+    // cleanup. The receiver no longer has a resampler in the steady-state path, so the
+    // bypass switch had nothing left to toggle. Existing profile JSON with the old key
+    // is silently ignored by the deserialiser.
+
+    public string? LoadAsioDriverName() => Try(() => Load()?.AsioDriverName);
+
+    public void SaveAsioDriverName(string? value)
+    {
+        var s = Load() ?? new Settings();
+        s.AsioDriverName = string.IsNullOrWhiteSpace(value) ? null : value;
+        Save(s);
+    }
+
+    private static T? Try<T>(Func<T?> action) where T : class
+    {
+        try { return action(); } catch { return null; }
+    }
+
+    private static T? Try<T>(Func<T?> action, T? unused = null) where T : struct
+    {
+        try { return action(); } catch { return null; }
+    }
+
+    // 2026-05-02: persistence moved out of this class. RemSound now manages settings via the
+    // profile system (RemSound.Core.Profile / ProfileStore), and the settings store has become
+    // a per-process in-memory cache that the active profile populates on load and reads back
+    // from on save. Disk IO from this class is intentionally a no-op now: the old configs/
+    // folder is no longer written to. If a configs/ folder exists from a previous build, it's
+    // ignored — users are expected to re-create their setup as a Profile via the new dialog.
+    private Settings cache = new();
+
+    private Settings? Load() => cache;
+
+    private void Save(Settings settings) => cache = settings;
+
+    /// <summary>Replace the in-memory settings cache from a loaded <see cref="Profile"/>.
+    /// Called once at app startup after the user picks a profile (or never, if they pick
+    /// the blank template — in which case defaults remain).</summary>
+    public void ApplyProfile(Profile profile)
+    {
+        if (profile is null) throw new ArgumentNullException(nameof(profile));
+        cache = new Settings
+        {
+            ReceiveMuteHotkey = profile.ReceiveMuteHotkey is null ? null : HotkeySettingFromRecord(profile.ReceiveMuteHotkey),
+            SendMuteHotkey = profile.SendMuteHotkey is null ? null : HotkeySettingFromRecord(profile.SendMuteHotkey),
+            TrayHotkey = profile.TrayHotkey is null ? null : HotkeySettingFromRecord(profile.TrayHotkey),
+            VolumeUpHotkey = profile.VolumeUpHotkey is null ? null : HotkeySettingFromRecord(profile.VolumeUpHotkey),
+            VolumeDownHotkey = profile.VolumeDownHotkey is null ? null : HotkeySettingFromRecord(profile.VolumeDownHotkey),
+            RemoteVolumeUpHotkey = profile.RemoteVolumeUpHotkey is null ? null : HotkeySettingFromRecord(profile.RemoteVolumeUpHotkey),
+            RemoteVolumeDownHotkey = profile.RemoteVolumeDownHotkey is null ? null : HotkeySettingFromRecord(profile.RemoteVolumeDownHotkey),
+            RemoteMuteToggleHotkey = profile.RemoteMuteToggleHotkey is null ? null : HotkeySettingFromRecord(profile.RemoteMuteToggleHotkey),
+            SystemVolumeUpHotkey = profile.SystemVolumeUpHotkey is null ? null : HotkeySettingFromRecord(profile.SystemVolumeUpHotkey),
+            SystemVolumeDownHotkey = profile.SystemVolumeDownHotkey is null ? null : HotkeySettingFromRecord(profile.SystemVolumeDownHotkey),
+            SystemMuteToggleHotkey = profile.SystemMuteToggleHotkey is null ? null : HotkeySettingFromRecord(profile.SystemMuteToggleHotkey),
+            AcceptRemoteVolumeCommands = profile.AcceptRemoteVolumeCommands,
+            MaxLatencyMs = profile.MaxLatencyMs,
+            Codec = profile.Codec,
+            OpusFrameMilliseconds = profile.OpusFrameMilliseconds,
+            ContinuousAutoTuneEnabled = profile.ContinuousAutoTuneEnabled,
+            ContinuousAutoTuneIntervalSec = profile.ContinuousAutoTuneIntervalSec,
+            MaxLatencyMsAsio = profile.MaxLatencyMsAsio,
+            ContinuousAutoTuneAsioEnabled = profile.ContinuousAutoTuneAsioEnabled,
+            RememberedPeers = profile.RememberedPeers is null ? null : new List<string>(profile.RememberedPeers),
+            AsioDriverName = profile.AsioDriverName,
+            // Profile.AudioModeRaw and Profile.BothModeWarningSuppressed are no longer carried
+            // through the settings cache. Both fields are retired (2026-05-07 / 2026-05-11);
+            // mode is derived from AsioDriverName and the Both-mode warning popup is gone.
+            SendRate = profile.SendRate,
+            TightLatencyMode = profile.TightLatencyMode,
+            Smoothness = profile.Smoothness,
+            ConcealmentArtifact = (ConcealmentArtifact)profile.ConcealmentArtifactRaw,
+            MuteConnectionCues = profile.MuteConnectionCues,
+        };
+    }
+
+    /// <summary>Copies the current in-memory settings cache into a Profile. Note: this only
+    /// covers the fields the settings store has historically known about — the device-tick
+    /// state, send/receive checkbox state, audio port, volume slider, and selected-peer
+    /// state live on the form itself and are gathered by the form when saving a profile.</summary>
+    public void CopyTo(Profile profile)
+    {
+        if (profile is null) throw new ArgumentNullException(nameof(profile));
+        var s = cache;
+        profile.ReceiveMuteHotkey = s.ReceiveMuteHotkey is null ? null : HotkeyRecordFromSetting(s.ReceiveMuteHotkey);
+        profile.SendMuteHotkey = s.SendMuteHotkey is null ? null : HotkeyRecordFromSetting(s.SendMuteHotkey);
+        profile.TrayHotkey = s.TrayHotkey is null ? null : HotkeyRecordFromSetting(s.TrayHotkey);
+        profile.VolumeUpHotkey = s.VolumeUpHotkey is null ? null : HotkeyRecordFromSetting(s.VolumeUpHotkey);
+        profile.VolumeDownHotkey = s.VolumeDownHotkey is null ? null : HotkeyRecordFromSetting(s.VolumeDownHotkey);
+        profile.RemoteVolumeUpHotkey = s.RemoteVolumeUpHotkey is null ? null : HotkeyRecordFromSetting(s.RemoteVolumeUpHotkey);
+        profile.RemoteVolumeDownHotkey = s.RemoteVolumeDownHotkey is null ? null : HotkeyRecordFromSetting(s.RemoteVolumeDownHotkey);
+        profile.RemoteMuteToggleHotkey = s.RemoteMuteToggleHotkey is null ? null : HotkeyRecordFromSetting(s.RemoteMuteToggleHotkey);
+        profile.SystemVolumeUpHotkey = s.SystemVolumeUpHotkey is null ? null : HotkeyRecordFromSetting(s.SystemVolumeUpHotkey);
+        profile.SystemVolumeDownHotkey = s.SystemVolumeDownHotkey is null ? null : HotkeyRecordFromSetting(s.SystemVolumeDownHotkey);
+        profile.SystemMuteToggleHotkey = s.SystemMuteToggleHotkey is null ? null : HotkeyRecordFromSetting(s.SystemMuteToggleHotkey);
+        if (s.AcceptRemoteVolumeCommands is bool arvc) profile.AcceptRemoteVolumeCommands = arvc;
+        if (s.MaxLatencyMs is int ml) profile.MaxLatencyMs = ml;
+        if (s.Codec is AudioTransportCodec c) profile.Codec = c;
+        if (s.OpusFrameMilliseconds is int op) profile.OpusFrameMilliseconds = op;
+        if (s.ContinuousAutoTuneEnabled is bool cae) profile.ContinuousAutoTuneEnabled = cae;
+        if (s.ContinuousAutoTuneIntervalSec is int cai) profile.ContinuousAutoTuneIntervalSec = cai;
+        if (s.MaxLatencyMsAsio is int mla) profile.MaxLatencyMsAsio = mla;
+        if (s.ContinuousAutoTuneAsioEnabled is bool cata) profile.ContinuousAutoTuneAsioEnabled = cata;
+        if (s.RememberedPeers is { } rp) profile.RememberedPeers = new List<string>(rp);
+        profile.AsioDriverName = s.AsioDriverName;
+        // AudioMode and BothModeWarningSuppressed are not copied — both Profile fields were
+        // retired in the 2026-05-11 cleanup. Mode is derived from AsioDriverName and the
+        // popup that owned the suppression flag is gone.
+        if (s.SendRate is SendRate sr) profile.SendRate = sr;
+        if (s.TightLatencyMode is bool tl) profile.TightLatencyMode = tl;
+        if (s.Smoothness is int sm) profile.Smoothness = sm;
+        if (s.ConcealmentArtifact is ConcealmentArtifact ca) profile.ConcealmentArtifactRaw = (int)ca;
+        if (s.MuteConnectionCues is bool mc) profile.MuteConnectionCues = mc;
+    }
+
+    private static HotkeySetting HotkeySettingFromRecord(HotkeyRecord r) => new()
+    {
+        Key = r.Key,
+        Control = r.Control,
+        Shift = r.Shift,
+        Alt = r.Alt,
+    };
+
+    private static HotkeyRecord HotkeyRecordFromSetting(HotkeySetting s) => new()
+    {
+        Key = s.Key,
+        Control = s.Control,
+        Shift = s.Shift,
+        Alt = s.Alt,
+    };
+
+    private sealed class Settings
+    {
+        public HotkeySetting? ReceiveMuteHotkey { get; set; }
+        public HotkeySetting? SendMuteHotkey { get; set; }
+        public HotkeySetting? TrayHotkey { get; set; }
+        public HotkeySetting? VolumeUpHotkey { get; set; }
+        public HotkeySetting? VolumeDownHotkey { get; set; }
+        public HotkeySetting? RemoteVolumeUpHotkey { get; set; }
+        public HotkeySetting? RemoteVolumeDownHotkey { get; set; }
+        public HotkeySetting? RemoteMuteToggleHotkey { get; set; }
+        public HotkeySetting? SystemVolumeUpHotkey { get; set; }
+        public HotkeySetting? SystemVolumeDownHotkey { get; set; }
+        public HotkeySetting? SystemMuteToggleHotkey { get; set; }
+        public bool? AcceptRemoteVolumeCommands { get; set; }
+        public int? MaxLatencyMs { get; set; }
+        public AudioTransportCodec? Codec { get; set; }
+        public int? OpusFrameMilliseconds { get; set; }
+        public bool? ContinuousAutoTuneEnabled { get; set; }
+        public int? ContinuousAutoTuneIntervalSec { get; set; }
+        // Per-route latency settings used in AudioMode.BothIndependent only. MaxLatencyMs
+        // above continues to govern the WASAPI lane (= the only lane in classic modes), so
+        // existing profiles keep their current slider value untouched on upgrade. Asio
+        // companion below holds the ASIO lane's slider; the auto-tune enable companion lets
+        // the user opt either lane in or out independently.
+        public int? MaxLatencyMsAsio { get; set; }
+        public bool? ContinuousAutoTuneAsioEnabled { get; set; }
+        public List<string>? RememberedPeers { get; set; }
+        public string? AsioDriverName { get; set; }
+        // AudioMode and BothModeWarningSuppressed both retired from this cache. Mode is
+        // derived from AsioDriverName via LoadAudioMode; the Both-mode warning popup is gone.
+        public SendRate? SendRate { get; set; }
+        public bool? TightLatencyMode { get; set; }
+        public int? Smoothness { get; set; }
+        public ConcealmentArtifact? ConcealmentArtifact { get; set; }
+        public bool? MuteConnectionCues { get; set; }
+    }
+
+    private sealed class HotkeySetting
+    {
+        public string Key { get; set; } = "M";
+        public bool Control { get; set; }
+        public bool Shift { get; set; }
+        public bool Alt { get; set; }
+
+        public static HotkeySetting From(HotkeyInfo hotkey) => new()
+        {
+            Key = hotkey.Key.ToString(),
+            Control = hotkey.Control,
+            Shift = hotkey.Shift,
+            Alt = hotkey.Alt,
+        };
+
+        public HotkeyInfo ToHotkeyInfo()
+        {
+            if (!Enum.TryParse<Keys>(Key, out var parsedKey)) return HotkeyInfo.Default;
+            var hotkey = new HotkeyInfo(parsedKey, Control, Shift, Alt);
+            if (hotkey.IsUnset) return HotkeyInfo.Unset;
+            return hotkey.IsValid ? hotkey : HotkeyInfo.Default;
+        }
+    }
+}

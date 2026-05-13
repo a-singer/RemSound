@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>RemSound.App</RootNamespace>
+    <AssemblyName>RemSound</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
+    <!-- Release version. The self-updater (RemSoundUpdater) compares this against the
+         tag_name on the latest GitHub release; bump it on every public release. The
+         AssemblyVersion / FileVersion default to this value, and Assembly.GetName().Version
+         is what the About dialog and the updater both read. -->
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RemSound.Core\RemSound.Core.csproj" />
+    <ProjectReference Include="..\RemSound.Sender\RemSound.Sender.csproj" />
+    <ProjectReference Include="..\RemSound.Receiver\RemSound.Receiver.csproj" />
+    <PackageReference Include="NAudio" Version="2.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Peer-state notification sounds. Copied next to RemSound.exe so SoundPlayer can find
+         them via AppContext.BaseDirectory. -->
+    <Content Include="..\..\connect.wav">
+      <Link>connect.wav</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\disconnect.wav">
+      <Link>disconnect.wav</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- User manual. F1 anywhere in the app opens this via the user's default browser
+         (HelpLauncher.OpenManual). The PreserveNewest mode means a fresh publish overwrites
+         the published copy whenever the source is newer; manually-edited copies inside
+         publish/ get clobbered, which is correct (publish is build output, not config). -->
+    <Content Include="..\..\readme.html">
+      <Link>readme.html</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

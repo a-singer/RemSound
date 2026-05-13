@@ -1,0 +1,595 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using RemSound.Core;
+
+namespace RemSound.Sender;
+
+// PcmPack is in RemSound.Core (used by both Sender and Receiver).
+
+/// <summary>
+/// Captures from one or more Windows audio devices via WASAPI (loopback for output devices,
+/// direct capture for input devices), mixes them into a single 48 kHz stereo float stream
+/// through <see cref="MixingEngine"/>, encodes (PCM 24-bit or Opus), and sends to a configurable
+/// set of UDP receivers.
+///
+/// The mixing engine owns the capture lifecycle and the per-source silence keepalive (needed on
+/// USB audio interfaces whose loopback callbacks otherwise stall when no app is rendering — see
+/// naudio/NAudio#1110). AudioSender just wires the mixer's mixed-sample callback into the
+/// existing PCM/Opus encode + UDP path.
+///
+/// Threading model: the mixer's tick task delivers 10 ms frames here on its own thread; this
+/// class accumulates into PCM 5 ms or Opus 10/20 ms frames and dispatches over UDP. No
+/// cross-thread synchronization other than reading a few volatile flags (codec, mute,
+/// receiver list).
+/// </summary>
+public sealed class AudioSender : IDisposable
+{
+    // PCM frame size is configurable via SendRate. Standard = 5 ms (240 samples = 1440 bytes,
+    // single UDP packet under MaxAudioPayloadBytes=1454). Tight = 2.5 ms (120 samples = 720
+    // bytes, also single packet). Tight mode adds nothing structurally — same packet shape,
+    // just half-size — so the receive-side multipart assembler stays a no-op.
+    private const int MixChannels = 2;
+    private const int OpusBitrateLan = 192_000;
+    private const int PcmStandardSamplesPerChannel = 240;  // 5 ms
+    private const int PcmTightSamplesPerChannel = 120;     // 2.5 ms
+
+    // Mutable PCM frame parameters — updated by SetSendRate. Keep them volatile because the
+    // hot-path read happens on the audio thread while writes come from the UI thread.
+    private volatile int pcmFrameSamplesPerChannel = PcmStandardSamplesPerChannel;
+    internal int PcmFrameStereoSamples => pcmFrameSamplesPerChannel * MixChannels;
+    internal int PcmFrameSamplesPerChannel => pcmFrameSamplesPerChannel;
+
+    private readonly object configGate = new();
+    private ICaptureBackend engine;
+    private IReadOnlyList<CaptureSourceSpec> pendingSources = [];
+    private readonly UdpClient udp;
+    // Two lanes. defaultLane carries every output in the three classic modes (Mixed route).
+    // In BothIndependent mode defaultLane carries WASAPI-only audio (route WasapiLane) and
+    // asioLane carries ASIO-only audio (route AsioLane), each producing its own UDP stream
+    // tagged with the matching Lane byte so the receiver routes them to per-lane
+    // IWaveProvider surfaces. We always construct both lanes — the asio lane sits idle
+    // (no capture child wired to it) in classic modes and the memory cost is trivial.
+    private readonly SenderLane defaultLane;
+    private readonly SenderLane asioLane;
+    // Persistent AsioCaptureBackend that survives audio-mode changes. The composite borrows
+    // a reference to it; mode rebuilds rewire its callback (via SetCallback) rather than
+    // tearing it down and reopening the driver. This avoids Audient (and similar single-
+    // client drivers) hanging the audio thread for ~5 s on rapid close+reopen — which had
+    // been crashing the laptop on every "switch between Both and AsioOnly" attempt.
+    // Lazily created when first needed, disposed when transitioning to WasapiOnly OR when
+    // the user picks a different ASIO driver entirely. The Action<...> stub is a deliberate
+    // placeholder that gets immediately swapped via SetCallback in EnsurePersistentAsio.
+    private AsioCaptureBackend? persistentAsio;
+    private string? persistentAsioDriverName;
+
+    /// <summary>Optional diagnostic sink. Set by callers (typically the App) before Start to receive
+    /// human-readable status strings ("capture started…", "capture stopped with error…", etc.).</summary>
+    public Action<string>? Diagnostic
+    {
+        get => diagnostic;
+        set => diagnostic = value;
+    }
+    private Action<string>? diagnostic;
+
+    // Per-stream state (streamId, audioSequence, frame accumulator, Opus encoder, PCM frame id,
+    // format-resend timer) now lives on each SenderLane. This file kept its monolithic shape
+    // through Phase 1/2 — the BothIndependent refactor required splitting "stuff that belongs
+    // to one outbound stream" from "shared infrastructure". The accumulator/outbound scratch/
+    // streamId/sequence counters are all per-lane; the UDP socket, codec config, mute flag,
+    // engine and stats stay here. See <see cref="SenderLane"/> for the per-stream hot path.
+
+    private readonly Stopwatch uptime = new();
+    private volatile AudioTransportCodec codec = AudioTransportCodec.Pcm;
+    private volatile int opusFrameMs = 10; // only meaningful when codec == Opus
+    private volatile bool muted;
+    private IPEndPoint[] receivers = [];
+    private long packetsSent;
+    private long bytesSent;
+
+    // Internal accessor so SenderLane can read tight-latency without exposing the field
+    // publicly. Codec, OpusFrameMilliseconds and IsMuted are already exposed publicly below
+    // and re-used directly by the lane.
+    internal bool IsTightLatencyEnabled => tightLatencyEnabled;
+
+    // Hot-path timing instrumentation. Both lanes update these on every emit; the SNAP
+    // timer reads + resets them once per second. Used to split observed inter-packet jitter
+    // between "our code is slow" vs "the kernel is slow" vs "the network is slow".
+    //   maxEmitTicks    = Stopwatch ticks for the WIDEST observation of SenderLane's
+    //                     OnMixedSamples (encode + scratch + SendToAll). If this is in
+    //                     the multi-ms range, our encode pipeline is the bottleneck.
+    //   maxSendCallTicks = Stopwatch ticks for the WIDEST single udp.Client.SendTo call.
+    //                     If this is in the multi-ms range, the kernel TX buffer / NIC
+    //                     driver / send-socket contention is the bottleneck.
+    // Both are reset on each Take() so the SNAP gets per-second peaks.
+    private long maxEmitTicks;
+    private long maxSendCallTicks;
+    internal void RecordEmitTicks(long ticks)
+    {
+        long current;
+        do { current = Volatile.Read(ref maxEmitTicks); }
+        while (ticks > current && Interlocked.CompareExchange(ref maxEmitTicks, ticks, current) != current);
+    }
+    internal void RecordSendCallTicks(long ticks)
+    {
+        long current;
+        do { current = Volatile.Read(ref maxSendCallTicks); }
+        while (ticks > current && Interlocked.CompareExchange(ref maxSendCallTicks, ticks, current) != current);
+    }
+    public int TakeMaxEmitMs() => (int)(Interlocked.Exchange(ref maxEmitTicks, 0) * 1000 / Stopwatch.Frequency);
+    public int TakeMaxSendCallMs() => (int)(Interlocked.Exchange(ref maxSendCallTicks, 0) * 1000 / Stopwatch.Frequency);
+
+    // === inbound dispatch (relay-mode) ===
+    // The send socket is normally write-only, but in relay-mode the same socket is what
+    // catches return packets — the relay forwards traffic into our NAT pinhole, which lives on
+    // this socket's ephemeral port. An optional inbound-packet callback lets the App route
+    // those packets into the receiver pipeline (audio) or the heartbeat service.
+    // Existing LAN peer-to-peer behaviour is unchanged: nothing inbound arrives at this socket
+    // from a LAN peer because LAN peers send to the receiver's well-known port directly.
+    private CancellationTokenSource? inboundCts;
+    private Thread? inboundThread;
+    private long inboundPackets;
+
+    /// <summary>
+    /// Optional callback invoked for each UDP datagram that arrives at this sender's socket.
+    /// Buffer is owned by the receive thread — copy what you keep. Length is the byte count
+    /// (the buffer may be larger). Remote is the sender of the packet (typically a relay).
+    /// Set this before <see cref="StartReceiving"/> is called.
+    /// </summary>
+    public Action<byte[], int, IPEndPoint>? OnInboundPacket { get; set; }
+
+    public AudioSender()
+    {
+        udp = new UdpClient(AddressFamily.InterNetwork);
+        udp.Client.SendBufferSize = 256 * 1024;
+        udp.Client.ReceiveBufferSize = 256 * 1024;
+        // Explicit bind to port 0 (OS picks an ephemeral). Two reasons:
+        //   1. ReceiveFrom on an unbound UDP socket throws SocketException (WSAEINVAL) on
+        //      Windows — the receive thread we start below would then CPU-spin in its
+        //      catch/continue loop. Binding up front makes ReceiveFrom block normally for
+        //      data instead.
+        //   2. Same NAT pinhole is shared between send and receive — relay mode requires
+        //      this; LAN peer-to-peer is unaffected (we still send from this port, peer just
+        //      sends to its own well-known port as before).
+        udp.Client.Bind(new IPEndPoint(IPAddress.Any, 0));
+        defaultLane = new SenderLane(this, opusFrameMs, OpusBitrateLan);
+        asioLane = new SenderLane(this, opusFrameMs, OpusBitrateLan);
+        // WasapiOnly at startup — no ASIO needed yet, so persistentAsio stays null.
+        currentAudioMode = AudioMode.WasapiOnly;
+        currentAsioDriverName = null;
+        engine = new CompositeCaptureBackend(currentAudioMode, currentAsioDriverName, defaultLane.OnMixedSamples, asioLane.OnMixedSamples, persistentAsio, msg => diagnostic?.Invoke(msg), useTightLatencyWasapi: false);
+    }
+
+    // Held so SetTightLatency can rebuild the composite with the same mode/driver.
+    private AudioMode currentAudioMode;
+    private string? currentAsioDriverName;
+
+    /// <summary>
+    /// Sets the audio backend mode and (when ASIO is involved) the driver name. The composite is
+    /// rebuilt to match. Two reachable pipeline shapes today:
+    ///   * WasapiOnly: MixingEngine direct, no ASIO code in the path. Lowest latency for users
+    ///     without ASIO.
+    ///   * BothIndependent: WASAPI MixingEngine + persistent AsioCaptureBackend running side by
+    ///     side, each on its own SenderLane (own streamId, own UDP stream). No mix loop, no tee.
+    ///     Each lane keeps its native latency.
+    /// Legacy <c>AudioMode.AsioOnly</c> and <c>AudioMode.Both</c> are tolerated (the composite
+    /// coerces them) but no UI path produces them any more. If running, previously-pending
+    /// sources are re-applied automatically.
+    /// </summary>
+    public void SetAudioMode(AudioMode mode, string? asioDriverName)
+    {
+        lock (configGate)
+        {
+            currentAudioMode = mode;
+            currentAsioDriverName = asioDriverName;
+            // Lane route assignment. WasapiOnly: only defaultLane is active, carrying Mixed.
+            // BothIndependent: defaultLane carries the WASAPI lane, asioLane carries the ASIO
+            // lane. SetRoute rotates each lane's streamId so the receiver opens a fresh
+            // session under the new Lane tag — old session drains naturally on its 4-second
+            // prune. Legacy AsioOnly / Both can't be produced by the UI any more; if they
+            // arrive (in-flight callers, future call sites) we treat them as BothIndependent
+            // for routing purposes so the streams still carry distinct Lane tags.
+            if (mode != AudioMode.WasapiOnly)
+            {
+                defaultLane.SetRoute(RenderRoute.WasapiLane);
+                asioLane.SetRoute(RenderRoute.AsioLane);
+            }
+            else
+            {
+                defaultLane.SetRoute(RenderRoute.Mixed);
+                asioLane.SetRoute(RenderRoute.Mixed); // idle; no callbacks will fire on it
+            }
+            EnsurePersistentAsioLocked();
+            RebuildEngineLocked();
+        }
+    }
+
+    /// <summary>
+    /// Make sure <see cref="persistentAsio"/> matches the current mode + driver. Created
+    /// fresh when first transitioning into an ASIO-using mode; reused across subsequent
+    /// mode changes that keep the same driver; disposed when transitioning to WasapiOnly
+    /// (no ASIO) or when the user picks a different driver. The persistent instance is
+    /// loaned to the composite via the constructor; the composite borrows but doesn't
+    /// dispose, so the underlying ASIO driver handle stays open across engine rebuilds.
+    /// Caller must hold <see cref="configGate"/>. The callback is also rewired here based
+    /// on which lane should receive ASIO audio in the new mode.
+    /// </summary>
+    private void EnsurePersistentAsioLocked()
+    {
+        var willUseAsio = currentAudioMode != AudioMode.WasapiOnly
+            && !string.IsNullOrEmpty(currentAsioDriverName);
+
+        if (!willUseAsio)
+        {
+            // Mode no longer uses ASIO. Dispose the persistent instance so the driver
+            // releases (other apps may want it).
+            if (persistentAsio is not null)
+            {
+                try { persistentAsio.Dispose(); } catch { /* ignore */ }
+                persistentAsio = null;
+                persistentAsioDriverName = null;
+            }
+            return;
+        }
+
+        // Need ASIO. Reuse if the driver matches; rebuild otherwise (rare — only when the
+        // user picks a different driver in the dropdown).
+        if (persistentAsio is null || persistentAsioDriverName != currentAsioDriverName)
+        {
+            if (persistentAsio is not null)
+            {
+                try { persistentAsio.Dispose(); } catch { /* ignore */ }
+            }
+            persistentAsio = new AsioCaptureBackend(
+                currentAsioDriverName!,
+                _ => { /* placeholder, replaced by SetCallback below */ },
+                msg => diagnostic?.Invoke($"asio: {msg}"));
+            persistentAsioDriverName = currentAsioDriverName;
+        }
+
+        // Wire the callback to the right lane for the current mode. WasapiOnly never reaches
+        // here (willUseAsio is false above). BothIndependent is the only ASIO-using mode the
+        // UI can produce, and it routes ASIO into the dedicated AsioLane. Legacy AsioOnly is
+        // tolerated by sending into defaultLane (which carries RenderRoute.Mixed in non-
+        // BothIndependent setups).
+        persistentAsio.SetCallback(
+            currentAudioMode == AudioMode.BothIndependent
+                ? asioLane.OnMixedSamples
+                : defaultLane.OnMixedSamples);
+    }
+
+    /// <summary>
+    /// (Re)create the composite backend with the current audio-mode + asio-driver-name +
+    /// tight-latency-WASAPI flag. Caller must hold <c>configGate</c>. Preserves the running
+    /// state — if the engine was running before, restart it with the same source list.
+    /// The persistent ASIO instance is passed in by reference so the composite borrows
+    /// rather than creates+disposes it; that's what keeps the driver open across rebuilds.
+    /// </summary>
+    private void RebuildEngineLocked()
+    {
+        var wasRunning = engine.IsRunning;
+        try { engine.Stop(); } catch { /* ignore */ }
+        try { engine.Dispose(); } catch { /* ignore */ }
+        engine = new CompositeCaptureBackend(
+            currentAudioMode,
+            currentAsioDriverName,
+            defaultLane.OnMixedSamples,
+            asioLane.OnMixedSamples,
+            persistentAsio,
+            msg => diagnostic?.Invoke(msg),
+            useTightLatencyWasapi: tightLatencyEnabled);
+        if (wasRunning && pendingSources.Count > 0)
+        {
+            engine.Start(pendingSources);
+        }
+    }
+
+    public bool IsAsioBackend => engine is CompositeCaptureBackend;
+
+    /// <summary>Updates the PCM frame size based on the user's "Send rate" choice. For Opus,
+    /// frame size is set via <see cref="ConfigureCodec"/>'s opusFrameMs parameter (the App
+    /// halves it when SendRate is Tight). On a frame-size change, resets the accumulator and
+    /// stream id so the receiver opens a fresh session at the new format.</summary>
+    public void SetSendRate(SendRate rate)
+    {
+        lock (configGate)
+        {
+            var newSamples = rate == SendRate.Tight ? PcmTightSamplesPerChannel : PcmStandardSamplesPerChannel;
+            if (newSamples == pcmFrameSamplesPerChannel) return;
+            pcmFrameSamplesPerChannel = newSamples;
+            // Both lanes need to rotate streamId + reset accumulator on a frame-size change.
+            // The asio lane is idle in classic modes (no producer feeding it) so the reset is
+            // harmless there; in BothIndependent both lanes are active and both must roll.
+            defaultLane.OnPcmFrameSizeChanged();
+            asioLane.OnPcmFrameSizeChanged();
+        }
+    }
+
+    /// <summary>Tight-latency mode toggle. Affects two things:
+    ///   * ASIO-only PCM: every incoming ASIO buffer is emitted directly as a single packet
+    ///     instead of being accumulated to the PCM frame size — saves ~frame_size_ms/2 of
+    ///     average send-side latency. ProcessPcm reads <c>tightLatencyEnabled</c> directly.
+    ///   * WasapiOnly with single source: rebuilds the capture backend as
+    ///     <see cref="PushModeWasapiBackend"/> instead of <see cref="MixingEngine"/>. The WASAPI
+    ///     capture event drives the encode/UDP-send pipeline directly, eliminating the ~6 ms
+    ///     of Stopwatch+WaitHandle scheduler jitter that <see cref="MixingEngine"/>'s mix tick
+    ///     adds. Especially important at high device sample rates (96 kHz EVO8 etc.) where the
+    ///     in-tick resampler stage compounds the jitter. <see cref="CompositeCaptureBackend"/>
+    ///     decides whether push-mode actually applies based on source count and mode.
+    /// No effect on Opus accumulation (Opus needs fixed frame sizes) or AsioOnly's WASAPI
+    /// (there's no WASAPI source). Sender-side only as of Phase 3 (2026-05-06): the
+    /// receiver no longer has a resampler to bypass.</summary>
+    public void SetTightLatency(bool enabled)
+    {
+        lock (configGate)
+        {
+            if (tightLatencyEnabled == enabled) return;
+            tightLatencyEnabled = enabled;
+            RebuildEngineLocked();
+        }
+    }
+    private volatile bool tightLatencyEnabled;
+
+    public bool IsRunning => engine.IsRunning;
+    public long CaptureCallbacks => engine.TotalCaptureCallbacks;
+    public long CaptureBytes => engine.TotalCaptureBytes;
+    /// <summary>Largest gap between capture callbacks since the last call. Resets on read.
+    /// Use this in periodic diagnostics — if it spikes well above the audio-buffer period
+    /// (e.g. 19 ms when the period should be ≤ 5 ms), the audio capture thread is being
+    /// stalled by GC, USB, or scheduler issues, which produces audible discontinuities the
+    /// receiver can't detect (because no packets are lost — they just contain audio with
+    /// holes in it).</summary>
+    public int TakeMaxCaptureCallbackGapMs() => engine.TakeMaxCallbackGapMs();
+    public string? CaptureFormatDescription => engine.FirstCaptureFormatDescription;
+    public string? LastCaptureError => engine.FirstCaptureLastError;
+    public long ClippedSampleCount => engine.ClippedSampleCount;
+    public AudioTransportCodec Codec => codec;
+    public int OpusFrameMilliseconds => opusFrameMs;
+
+    /// <summary>
+    /// Atomically set the codec and (for Opus) the frame size. Resets stream identity and the
+    /// frame accumulator so the receiver sees the new format from the next packet onward. Both
+    /// parameters are taken together because changing only one would briefly send malformed
+    /// frames at the encoder boundary.
+    /// </summary>
+    public void ConfigureCodec(AudioTransportCodec newCodec, int newOpusFrameMs = 10)
+    {
+        var clampedFrameMs = Math.Clamp(newOpusFrameMs, 5, 60);
+        if (codec == newCodec && (newCodec != AudioTransportCodec.Opus || opusFrameMs == clampedFrameMs))
+        {
+            return;
+        }
+        lock (configGate)
+        {
+            codec = newCodec;
+            opusFrameMs = clampedFrameMs;
+            // Rebuild both lanes' encoders + rotate their streamIds. Same idle-lane rationale
+            // as SetSendRate — harmless when the asio lane has no producer; necessary when it
+            // does (BothIndependent).
+            defaultLane.OnCodecChanged(newCodec, clampedFrameMs);
+            asioLane.OnCodecChanged(newCodec, clampedFrameMs);
+        }
+    }
+
+    public bool IsMuted { get => muted; set => muted = value; }
+    public long PacketsSent => Interlocked.Read(ref packetsSent);
+    public long BytesSent => Interlocked.Read(ref bytesSent);
+    public TimeSpan Uptime => uptime.Elapsed;
+
+    /// <summary>
+    /// Friendly summary of currently-active sources for diagnostic columns. Returns
+    /// "(none)" when nothing is configured, "(N sources)" when there are 4+ — the snapshot log
+    /// column is fixed-width-ish and a long join becomes unreadable past 3 sources.
+    /// </summary>
+    public string CaptureDeviceName
+    {
+        get
+        {
+            var names = engine.ActiveSourceNames;
+            if (names.Count == 0) return "(none)";
+            if (names.Count <= 3) return string.Join(", ", names);
+            return $"({names.Count} sources)";
+        }
+    }
+
+    /// <summary>Set the destinations to which packets are sent. Live-updateable.</summary>
+    public void SetReceivers(IEnumerable<IPEndPoint> endpoints)
+    {
+        var list = endpoints.ToArray();
+        Volatile.Write(ref receivers, list);
+    }
+
+    /// <summary>
+    /// Sets the list of capture sources to mix. Each spec identifies a WASAPI device + whether
+    /// it's a loopback (output device, system audio) or direct input (mic, line-in). Order does
+    /// not matter — sources are summed equally.
+    /// </summary>
+    public void Configure(IReadOnlyList<CaptureSourceSpec> sources)
+    {
+        pendingSources = sources;
+        if (engine.IsRunning)
+        {
+            // Live add/remove via NAudio's MixingSampleProvider — mix loop never pauses,
+            // streamId stays the same, receiver doesn't see a new stream session, no underrun.
+            engine.UpdateSources(sources);
+        }
+    }
+
+    public void Start()
+    {
+        if (engine.IsRunning) return;
+        StartEngineWithCurrentSources();
+    }
+
+    private void StartEngineWithCurrentSources()
+    {
+        if (pendingSources.Count == 0)
+        {
+            diagnostic?.Invoke("sender: start requested but no sources configured");
+            return;
+        }
+
+        defaultLane.ResetForStart();
+        asioLane.ResetForStart();
+        Interlocked.Exchange(ref packetsSent, 0);
+        Interlocked.Exchange(ref bytesSent, 0);
+        uptime.Restart();
+        engine.Start(pendingSources);
+    }
+
+    public void Stop()
+    {
+        engine.Stop();
+        uptime.Stop();
+    }
+
+    /// <summary>
+    /// Start a background thread reading inbound packets from this sender's socket and
+    /// dispatching them to <see cref="OnInboundPacket"/>. Idempotent — safe to call repeatedly.
+    /// Used in relay mode so heartbeat replies and audio coming back through the relay
+    /// (which arrive at the sender's NAT pinhole, not the receiver's well-known port) get
+    /// routed into the right pipelines. No-op for pure LAN peer-to-peer setups.
+    /// </summary>
+    public void StartReceiving()
+    {
+        lock (configGate)
+        {
+            if (inboundThread is { IsAlive: true }) return;
+            inboundCts = new CancellationTokenSource();
+            var token = inboundCts.Token;
+            inboundThread = new Thread(() => InboundReceiveLoop(token))
+            {
+                IsBackground = true,
+                Name = "RemSound.SenderReceive",
+            };
+            inboundThread.Start();
+        }
+    }
+
+    private void InboundReceiveLoop(CancellationToken token)
+    {
+        var buffer = new byte[2048];
+        EndPoint anyEndpoint = new IPEndPoint(IPAddress.Any, 0);
+        while (!token.IsCancellationRequested)
+        {
+            int received;
+            try
+            {
+                received = udp.Client.ReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref anyEndpoint);
+            }
+            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.Interrupted) { break; }
+            catch (ObjectDisposedException) { break; }
+            catch (SocketException) { continue; }
+            catch (OperationCanceledException) { break; }
+
+            if (received <= 0) continue;
+            if (anyEndpoint is not IPEndPoint remote) continue;
+            Interlocked.Increment(ref inboundPackets);
+
+            try
+            {
+                OnInboundPacket?.Invoke(buffer, received, remote);
+            }
+            catch (Exception ex)
+            {
+                diagnostic?.Invoke($"sender inbound dispatch threw: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Send an arbitrary datagram on this sender's UDP socket. Used by the heartbeat service
+    /// in relay mode so its packets share the same NAT pinhole as audio. Returns false if the
+    /// send failed.
+    /// </summary>
+    public bool SendVia(byte[] data, int length, IPEndPoint destination)
+    {
+        try
+        {
+            udp.Send(data, length, destination);
+            return true;
+        }
+        catch (SocketException) { return false; }
+        catch (ObjectDisposedException) { return false; }
+    }
+
+    /// <summary>Cumulative inbound packets received on this sender's socket. Mostly zero
+    /// outside relay mode.</summary>
+    public long InboundPackets => Interlocked.Read(ref inboundPackets);
+
+    public void Dispose()
+    {
+        Stop();
+        try { inboundCts?.Cancel(); } catch { /* ignore */ }
+        try { inboundThread?.Join(500); } catch { /* ignore */ }
+        engine.Dispose();
+        // Dispose the persistent ASIO LAST, after the engine that was borrowing it. The
+        // composite's Dispose doesn't touch the persistent instance (it borrowed it); we
+        // own it here and close the driver as part of app shutdown.
+        try { persistentAsio?.Dispose(); } catch { /* ignore */ }
+        persistentAsio = null;
+        udp.Dispose();
+    }
+
+    // === wire path (shared across all lanes) ===
+
+    /// <summary>
+    /// Emit a fully-constructed packet to every configured receiver. Per-lane code in
+    /// <see cref="SenderLane"/> builds the header + payload (in its stack/pre-allocated
+    /// outboundScratch) and calls this; we forward the span straight into the socket's
+    /// span-aware Send overload so the audio thread never allocates anything in the hot
+    /// path. The pre-2026-05-11 implementation did packet.ToArray() per send, which on
+    /// ASIO tight-latency throughput (~750 packets/sec per lane × two lanes in
+    /// BothIndependent) was a steady ~2 MB/sec of small-byte-array Gen 0 allocations and
+    /// drove visible packet-emission jitter via GC pauses. The span overload eliminates
+    /// that entire allocation stream.
+    ///
+    /// Single point of outbound socket use means both lanes share the same NAT pinhole
+    /// and stats. The send-buffer-full or kernel-mutex contention between two threads
+    /// sending on the same UDP socket is microseconds in practice and not the source of
+    /// the ms-scale jitter we observe; the per-packet allocation was.
+    ///
+    /// UDP failures per-receiver are swallowed by design — UDP is unreliable and one
+    /// peer dropping shouldn't disturb the others.
+    /// </summary>
+    internal void SendToAll(ReadOnlySpan<byte> packet)
+    {
+        var targets = Volatile.Read(ref receivers);
+        if (targets.Length == 0) return;
+
+        // Use Socket.SendTo with the span overload — UdpClient's span-Send signature is
+        // .NET 6+. Going via Client (the underlying Socket) avoids one wrapper layer too.
+        var packetLen = packet.Length;
+        // Measure the kernel-side time of just the SendTo call when diagnostics are enabled.
+        // If this number spikes, the bottleneck is the TX path (kernel buffer pressure, NIC,
+        // single-socket cross-thread contention) rather than our encode pipeline. Hoisted
+        // out of the per-target loop so a multi-peer broadcast pays one branch instead of N.
+        var diag = RemSound.Core.DiagnosticsGate.Enabled;
+        foreach (var target in targets)
+        {
+            try
+            {
+                if (diag)
+                {
+                    var sendStart = Stopwatch.GetTimestamp();
+                    udp.Client.SendTo(packet, target);
+                    RecordSendCallTicks(Stopwatch.GetTimestamp() - sendStart);
+                }
+                else
+                {
+                    udp.Client.SendTo(packet, target);
+                }
+                Interlocked.Increment(ref packetsSent);
+                Interlocked.Add(ref bytesSent, packetLen);
+            }
+            catch (SocketException)
+            {
+                // Single-packet failures are a non-event; UDP is unreliable by design.
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+        }
+    }
+}

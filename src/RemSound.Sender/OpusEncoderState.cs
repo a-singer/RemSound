@@ -1,0 +1,70 @@
+using Concentus;
+using Concentus.Enums;
+
+namespace RemSound.Sender;
+
+/// <summary>
+/// Wraps a Concentus Opus encoder configured for real-time low-latency 48 kHz stereo audio.
+/// Frame size is selectable at construction (10 ms or 20 ms). Receiver auto-handles whatever
+/// frame size the sender announces in the format packet — no coordination required.
+/// </summary>
+internal sealed class OpusEncoderState : IDisposable
+{
+    public const int Channels = 2;
+    private const int PacketBufferBytes = 4000;
+
+    private readonly IOpusEncoder encoder;
+    private readonly short[] pcm16Scratch;
+    private readonly byte[] packetScratch = new byte[PacketBufferBytes];
+
+    public int FrameMilliseconds { get; }
+    public int FrameSizePerChannel { get; }
+
+    public OpusEncoderState(int frameMilliseconds, int bitrate)
+    {
+        // RESTRICTED_LOWDELAY supports 2.5/5/10/20 ms frames. 10 ms = lowest practical latency,
+        // 20 ms = same bitrate but more robust to packet loss (each lost packet is half the audio
+        // share). We expose 10 and 20 as the user-selectable choices.
+        FrameMilliseconds = Math.Clamp(frameMilliseconds, 5, 60);
+        FrameSizePerChannel = 48000 * FrameMilliseconds / 1000;
+        pcm16Scratch = new short[FrameSizePerChannel * Channels];
+
+        encoder = OpusCodecFactory.CreateEncoder(48000, Channels, OpusApplication.OPUS_APPLICATION_RESTRICTED_LOWDELAY, TextWriter.Null);
+        encoder.Bitrate = bitrate;
+        encoder.Complexity = 10;
+        encoder.UseVBR = true;
+        // Inband forward error correction. Each encoded packet carries a low-bitrate
+        // copy of the PREVIOUS packet's audio. The receiver only uses it when it
+        // detects a single-packet gap, so on a clean line FEC costs almost nothing
+        // (the encoder gets a few extra bytes of headroom from VBR). On a lossy
+        // link it lets the receiver fill a single missing packet without waiting
+        // — recovery without buffering.
+        encoder.UseInbandFEC = true;
+        // Tells the encoder how aggressively to bias FEC redundancy. 10% is a
+        // sensible value for an internet link via Tailscale: enough redundancy to
+        // recover most one-packet drops, not so much that we sacrifice quality on
+        // a clean network. Concentus accepts 0..100.
+        encoder.PacketLossPercent = 10;
+    }
+
+    /// <summary>Encode one frame at the configured frame size. Returns bytes written.</summary>
+    public int Encode(ReadOnlySpan<float> stereoFloats)
+    {
+        if (stereoFloats.Length != FrameSizePerChannel * Channels)
+        {
+            throw new ArgumentException($"Expected {FrameSizePerChannel * Channels} samples, got {stereoFloats.Length}", nameof(stereoFloats));
+        }
+
+        for (var i = 0; i < stereoFloats.Length; i++)
+        {
+            var clamped = Math.Clamp(stereoFloats[i], -1f, 1f);
+            pcm16Scratch[i] = (short)(clamped * 32767f);
+        }
+
+        return encoder.Encode(pcm16Scratch, FrameSizePerChannel, packetScratch.AsSpan(), packetScratch.Length);
+    }
+
+    public ReadOnlySpan<byte> LastEncoded(int length) => packetScratch.AsSpan(0, length);
+
+    public void Dispose() { /* IOpusEncoder is finalized by GC, no Dispose */ }
+}

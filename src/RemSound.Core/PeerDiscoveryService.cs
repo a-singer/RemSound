@@ -1,0 +1,257 @@
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
+
+namespace RemSound.Core;
+
+/// <summary>
+/// UDP peer discovery. Each running instance announces itself on
+/// <see cref="DefaultDiscoveryPort"/> every 1.5 s. Peers expire after 8 s of silence.
+///
+/// Announcements go out two ways:
+///   • Broadcast on every connected LAN subnet (for same-network discovery — instant on
+///     home/office wifi).
+///   • Unicast to a configurable list of "known" IPs (for VPN/Tailscale/WAN discovery —
+///     broadcast doesn't traverse VPN tunnels, so we explicitly send announcements to
+///     remembered/manual peer addresses). The App keeps this list in sync via
+///     <see cref="SetUnicastPeerAddresses"/>.
+/// </summary>
+public sealed class PeerDiscoveryService : IDisposable
+{
+    public const int DefaultDiscoveryPort = 47821;
+
+    private readonly Guid instanceId = Guid.NewGuid();
+    private readonly object gate = new();
+    private readonly Dictionary<Guid, PeerAnnouncement> peers = [];
+    private CancellationTokenSource? cts;
+    private UdpClient? listener;
+    private UdpClient? announcer;
+    private Task? listenTask;
+    private Task? announceTask;
+    private int audioPort = RemPacket.DefaultPort;
+    private bool canSend;
+    private bool canReceive;
+    private bool announceEnabled = true;
+    // Snapshot of "send announcements directly to these IPs each tick" — typically the user's
+    // remembered + manually-typed peer IPs. Replaced atomically; the announce loop reads the
+    // reference once per tick. Volatile-write semantics via the assignment under the gate are
+    // sufficient because we only ever swap the reference, never mutate in place.
+    private IReadOnlyList<IPAddress> unicastTargets = [];
+
+    public event Action? PeersChanged;
+
+    public IReadOnlyList<PeerAnnouncement> Peers
+    {
+        get
+        {
+            lock (gate)
+            {
+                PruneExpiredPeers();
+                return peers.Values.OrderBy(p => p.Name).ThenBy(p => p.Address.ToString()).ToList();
+            }
+        }
+    }
+
+    public void Start(int selectedAudioPort, bool sendEnabled, bool receiveEnabled)
+    {
+        Stop();
+        audioPort = selectedAudioPort;
+        canSend = sendEnabled;
+        canReceive = receiveEnabled;
+        announceEnabled = true;
+        cts = new CancellationTokenSource();
+
+        listener = new UdpClient(AddressFamily.InterNetwork);
+        listener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+        listener.EnableBroadcast = true;
+        listener.Client.Bind(new IPEndPoint(IPAddress.Any, DefaultDiscoveryPort));
+
+        announcer = new UdpClient(AddressFamily.InterNetwork) { EnableBroadcast = true };
+
+        listenTask = Task.Run(() => ListenLoop(cts.Token));
+        announceTask = Task.Run(() => AnnounceLoop(cts.Token));
+    }
+
+    public void UpdateCapabilities(int selectedAudioPort, bool sendEnabled, bool receiveEnabled)
+    {
+        audioPort = selectedAudioPort;
+        canSend = sendEnabled;
+        canReceive = receiveEnabled;
+        SendAnnouncement();
+    }
+
+    public void SetAnnounceEnabled(bool enabled)
+    {
+        announceEnabled = enabled;
+        if (enabled) SendAnnouncement();
+    }
+
+    /// <summary>
+    /// Updates the list of IP addresses that announcements should be unicast to in addition to
+    /// LAN broadcast. The App calls this whenever its remembered+manual-peers set changes; the
+    /// loop reads the latest snapshot on each tick.
+    ///
+    /// Why unicast at all: broadcast doesn't traverse VPNs (Tailscale, WireGuard, ZeroTier).
+    /// To be discoverable over a VPN we have to explicitly announce to each known IP. Sending
+    /// to a remembered peer that happens to be offline is harmless — UDP is fire-and-forget.
+    /// </summary>
+    public void SetUnicastPeerAddresses(IEnumerable<IPAddress> addresses)
+    {
+        unicastTargets = addresses.Distinct().ToList();
+        SendAnnouncement();
+    }
+
+    public void Stop()
+    {
+        cts?.Cancel();
+        listener?.Dispose();
+        announcer?.Dispose();
+        listener = null;
+        announcer = null;
+        cts?.Dispose();
+        cts = null;
+    }
+
+    public void Dispose() => Stop();
+
+    private async Task ListenLoop(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                var result = await listener!.ReceiveAsync(token).ConfigureAwait(false);
+                var json = Encoding.UTF8.GetString(result.Buffer);
+                var message = JsonSerializer.Deserialize<DiscoveryMessage>(json);
+                if (message is null || message.InstanceId == instanceId) continue;
+
+                var peer = new PeerAnnouncement(
+                    message.InstanceId,
+                    string.IsNullOrWhiteSpace(message.Name) ? result.RemoteEndPoint.Address.ToString() : message.Name.Trim(),
+                    message.AudioPort,
+                    message.CanSend,
+                    message.CanReceive,
+                    DateTime.UtcNow,
+                    result.RemoteEndPoint.Address);
+
+                // Auto-add the source IP to our unicast targets so subsequent announcements go
+                // back the way they came. This is what makes discovery bidirectional over a
+                // VPN: A unicasts to B (because A had B remembered/manually-added) → B receives
+                // it → B adds A to its own unicast list → B's announcements now reach A too,
+                // even though A was never in B's remembered list. Without this, only the side
+                // that had typed the other's IP would see the other.
+                AddUnicastTarget(result.RemoteEndPoint.Address);
+
+                bool changed;
+                lock (gate)
+                {
+                    changed = !peers.TryGetValue(peer.InstanceId, out var existing)
+                        || existing.Name != peer.Name
+                        || existing.AudioPort != peer.AudioPort
+                        || existing.CanSend != peer.CanSend
+                        || existing.CanReceive != peer.CanReceive
+                        || !Equals(existing.Address, peer.Address);
+                    peers[peer.InstanceId] = peer;
+                    PruneExpiredPeers();
+                }
+                if (changed) PeersChanged?.Invoke();
+            }
+            catch (OperationCanceledException) { break; }
+            catch (ObjectDisposedException) { break; }
+            catch
+            {
+                try { await Task.Delay(500, token).ConfigureAwait(false); } catch { break; }
+            }
+        }
+    }
+
+    private void AddUnicastTarget(IPAddress address)
+    {
+        // Idempotent — only swap the snapshot if this IP isn't already there. Avoids churning
+        // the list on every received announcement (which is every 1.5 s per peer).
+        var current = unicastTargets;
+        if (current.Any(a => a.Equals(address))) return;
+        var updated = current.ToList();
+        updated.Add(address);
+        unicastTargets = updated;
+    }
+
+    private async Task AnnounceLoop(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            SendAnnouncement();
+            try { await Task.Delay(1500, token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
+
+    private void SendAnnouncement()
+    {
+        var currentAnnouncer = announcer;
+        if (currentAnnouncer is null || !announceEnabled) return;
+
+        var message = new DiscoveryMessage(instanceId, Environment.MachineName, audioPort, canSend, canReceive);
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message));
+
+        // Broadcast to LAN — instant discovery on the same physical/wifi network. Each connected
+        // NIC gets its own subnet broadcast (e.g. 192.168.1.255).
+        foreach (var broadcastAddress in GetBroadcastAddresses())
+        {
+            try
+            {
+                currentAnnouncer.Send(bytes, bytes.Length, new IPEndPoint(broadcastAddress, DefaultDiscoveryPort));
+            }
+            catch
+            {
+                // Discovery is convenience. Audio still works without it.
+            }
+        }
+
+        // Unicast to known peer IPs — covers Tailscale / VPN / WAN where broadcast doesn't
+        // traverse the tunnel. Sending to an offline peer is silent fire-and-forget.
+        foreach (var unicast in unicastTargets)
+        {
+            try
+            {
+                currentAnnouncer.Send(bytes, bytes.Length, new IPEndPoint(unicast, DefaultDiscoveryPort));
+            }
+            catch
+            {
+                // Same — discovery is best-effort.
+            }
+        }
+    }
+
+    private static IEnumerable<IPAddress> GetBroadcastAddresses()
+    {
+        var addresses = new HashSet<IPAddress> { IPAddress.Broadcast };
+        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+            foreach (var unicast in ni.GetIPProperties().UnicastAddresses)
+            {
+                if (unicast.Address.AddressFamily != AddressFamily.InterNetwork || unicast.IPv4Mask is null) continue;
+                var addr = unicast.Address.GetAddressBytes();
+                var mask = unicast.IPv4Mask.GetAddressBytes();
+                var bcast = new byte[4];
+                for (var i = 0; i < 4; i++) bcast[i] = (byte)(addr[i] | ~mask[i]);
+                addresses.Add(new IPAddress(bcast));
+            }
+        }
+        return addresses;
+    }
+
+    private void PruneExpiredPeers()
+    {
+        var cutoff = DateTime.UtcNow.AddSeconds(-8);
+        foreach (var peer in peers.Values.Where(p => p.LastSeenUtc < cutoff).ToList())
+        {
+            peers.Remove(peer.InstanceId);
+        }
+    }
+
+    private sealed record DiscoveryMessage(Guid InstanceId, string Name, int AudioPort, bool CanSend, bool CanReceive);
+}

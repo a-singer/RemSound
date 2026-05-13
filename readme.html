@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RemSound user manual</title>
+<style>
+body { font-family: Segoe UI, Tahoma, sans-serif; max-width: 880px; margin: 1em auto; padding: 0 1em; line-height: 1.5; }
+h1 { border-bottom: 2px solid #444; padding-bottom: 0.3em; }
+h2 { border-bottom: 1px solid #888; padding-bottom: 0.2em; margin-top: 2em; }
+h3 { margin-top: 1.5em; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #888; padding: 0.4em 0.7em; text-align: left; vertical-align: top; }
+th { background: #eee; }
+code { background: #f3f3f3; padding: 0.1em 0.3em; border-radius: 2px; }
+.note { background: #fffbe6; border-left: 4px solid #d4b400; padding: 0.6em 1em; margin: 1em 0; }
+.warn { background: #fff0f0; border-left: 4px solid #c44; padding: 0.6em 1em; margin: 1em 0; }
+ul, ol { padding-left: 1.4em; }
+</style>
+</head>
+<body>
+
+<h1>RemSound &mdash; user manual</h1>
+
+<p>RemSound is a Windows program for sending live audio between two or more computers with very low delay. You can think of it as a private, peer-to-peer audio link: each machine picks what it wants to capture and what it wants to play out, and audio flows directly between them over UDP.</p>
+
+<p>It was built for music collaboration over the internet (a guitarist on one machine, a vocalist on another, listening to each other in real time), but works just as well for low-latency monitoring across rooms in a house, podcast co-hosting, or any other &ldquo;send audio from this PC to that PC, fast&rdquo; use case.</p>
+
+<h2>Table of contents</h2>
+<ol>
+<li><a href="#what-it-does">What RemSound does</a></li>
+<li><a href="#quick-start">Quick start</a></li>
+<li><a href="#profiles">Profiles</a></li>
+<li><a href="#main-window">The main window: menu bar + three tabs</a></li>
+<li><a href="#menu-bar">Menus (File and Help)</a></li>
+<li><a href="#tab-connectivity">Connectivity tab</a></li>
+<li><a href="#tab-io">Audio inputs and outputs tab</a></li>
+<li><a href="#tab-profile">Audio profile tab</a></li>
+<li><a href="#asio-vs-wasapi">ASIO and WASAPI</a></li>
+<li><a href="#peers">Peers &mdash; finding and connecting</a></li>
+<li><a href="#network">How the network works (LAN, WAN, Tailscale)</a></li>
+<li><a href="#latency">Latency and audio quality</a></li>
+<li><a href="#shortcuts">Keyboard shortcuts</a></li>
+<li><a href="#hotkeys">Global hotkeys (mute, volume, tray)</a></li>
+<li><a href="#remote-control">Remote control: adjusting a peer's listening volume from your end</a></li>
+<li><a href="#startup">Startup behaviour</a></li>
+<li><a href="#updates">Updating RemSound</a></li>
+<li><a href="#logs">Logs and diagnostics</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#glossary">Glossary</a></li>
+</ol>
+
+<h2 id="what-it-does">1. What RemSound does</h2>
+
+<p>RemSound moves audio from one PC&rsquo;s microphone or sound card to another PC&rsquo;s speakers or audio interface, in close-to-real-time, over your network. It&rsquo;s symmetric: each side runs the same program and chooses independently whether to send, receive, or both.</p>
+
+<h3>The basic flow</h3>
+<table>
+<tr><th>Step</th><th>What happens</th></tr>
+<tr><td>1</td><td>You tick &ldquo;Send my audio&rdquo; on the Audio inputs and outputs tab and pick which microphone or audio output you want captured.</td></tr>
+<tr><td>2</td><td>Your friend ticks &ldquo;Receive audio&rdquo; on the same tab and picks which speakers or headphones to play received audio through.</td></tr>
+<tr><td>3</td><td>One of you ticks the other in the Discovered peers list on the Connectivity tab (or types their IP address manually).</td></tr>
+<tr><td>4</td><td>Audio starts flowing. The other direction works exactly the same way, independently &mdash; both can speak at once.</td></tr>
+</table>
+
+<p>There is no central server, no account, nothing in the cloud. Packets go straight from one machine to the other.</p>
+
+<h2 id="quick-start">2. Quick start</h2>
+
+<p>Assume you and a friend both have RemSound running and a way to reach each other on the network (same Wi-Fi, same Tailscale account, etc.).</p>
+
+<ol>
+<li>Launch RemSound. The first thing you&rsquo;ll see is the <strong>profile picker</strong>. On a fresh install your only option is <strong>(Blank template)</strong> &mdash; select it and press Enter or click OK. Once you&rsquo;ve saved a profile or two later on, this dialog is how you pick which one to load. See <a href="#profiles">Profiles</a> for the full story.</li>
+<li>Once the main window opens, use Ctrl+Tab to move to the <strong>Audio inputs and outputs</strong> tab. Tick <strong>Receive audio (Alt+R)</strong>, then tick the device you want incoming audio played through in <strong>WASAPI outputs for received sound (Alt+3)</strong>.</li>
+<li>On the same tab, tick <strong>Send my audio (Alt+S)</strong> and tick your microphone in <strong>WASAPI inputs to send (Alt+5)</strong>.</li>
+<li>Move to the <strong>Connectivity</strong> tab (Ctrl+Shift+Tab to go back left, or Ctrl+Tab from elsewhere). Find your friend in the <strong>Discovered peers (Alt+D)</strong> list and tick them. Or, if they aren&rsquo;t appearing, click <strong>Add peer by IP (Alt+A)</strong> and type their address.</li>
+<li>Have your friend do the same with you on their machine.</li>
+<li>Within a second or two, both sides will hear each other.</li>
+<li>Open the <strong>File menu</strong> (Alt+F) and choose <strong>Save as</strong> to give your setup a name. Next time you launch, picking that profile from the startup dialog restores all your settings, device ticks, peers, and connections in one go.</li>
+</ol>
+
+<div class="note">
+<strong>If you have a pro audio interface (Audient, Komplete Audio, RME, Focusrite, etc.):</strong> on the <strong>Audio inputs and outputs</strong> tab pick your driver in the <strong>ASIO driver (Alt+D)</strong> list to unlock its low-latency channels. Selecting a real driver makes the ASIO device lists appear; selecting <em>(none)</em> hides them again and the app runs WASAPI-only. See <a href="#asio-vs-wasapi">ASIO and WASAPI</a> below.
+</div>
+
+<h2 id="profiles">3. Profiles</h2>
+
+<p>RemSound saves your entire setup &mdash; device ticks, send / receive states, codec, packet size, smoothness, latency targets, hotkeys, ASIO driver choice, remembered peers, currently-connected peers &mdash; into one JSON file per <em>profile</em>. You pick which profile to load every time you launch the program. Tick a different combination of devices for &ldquo;morning podcast&rdquo; vs &ldquo;evening jam session&rdquo; and switch between them in two clicks.</p>
+
+<h3>The startup picker</h3>
+
+<p>When RemSound launches, the first thing you see is the profile selection dialog. It&rsquo;s a listbox of profile names plus a synthetic <strong>(Blank template)</strong> entry at the top. The keys are deliberate:</p>
+
+<table>
+<tr><th>Key</th><th>Action</th></tr>
+<tr><td>Up / Down</td><td>Move between profiles in the list.</td></tr>
+<tr><td>Enter</td><td>Load the highlighted profile (or blank template) and open the main window.</td></tr>
+<tr><td>OK button</td><td>Same as Enter.</td></tr>
+<tr><td>Del</td><td>Delete the highlighted profile, with a yes / no confirmation.</td></tr>
+<tr><td>Browse&hellip; button</td><td>Pick a different folder to read profiles from. Useful if you keep your profiles in Dropbox or another sync folder so they roam between machines. The choice is remembered next time RemSound launches.</td></tr>
+<tr><td>Esc</td><td>Deliberately ignored. Picking a profile is required to launch.</td></tr>
+<tr><td>Alt+F4</td><td>Closes the dialog and exits RemSound &mdash; equivalent to &ldquo;I don&rsquo;t want to start the program right now.&rdquo;</td></tr>
+</table>
+
+<p>The first profile in the list is highlighted by default, so a fresh install where you only have <strong>(Blank template)</strong> is just Enter to proceed.</p>
+
+<h3>What &ldquo;Blank template&rdquo; means</h3>
+
+<p>Blank template is a one-shot session with all defaults: nothing ticked in any device list, neither Receive nor Send checked, default codec, no ASIO driver selected, no remembered peers, default hotkeys. You&rsquo;d pick it for a one-off session you don&rsquo;t intend to save, or as the starting point for a new profile. The Save and Update button is intentionally hidden when on Blank template &mdash; there&rsquo;s nothing to update, only to save-as-new.</p>
+
+<h3>Saving and updating</h3>
+
+<p>The File menu has two save items:</p>
+
+<table>
+<tr><th>Item</th><th>What it does</th></tr>
+<tr><td><strong>File &rarr; Save (Ctrl+S)</strong></td><td>Overwrites the active profile with the current state. If you&rsquo;re on Blank template, this falls through to Save as (because there&rsquo;s no existing profile to overwrite).</td></tr>
+<tr><td><strong>File &rarr; Save as&hellip; (Alt+F, A)</strong></td><td>Always available. Prompts for a profile name. From Blank template this is how you create the first profile. From an existing profile this forks a copy under a new name and switches to the copy as the active profile.</td></tr>
+</table>
+
+<p>The window title bar shows which profile is currently active: <code>RemSound &mdash; Active profile: My session name</code>. NVDA reads this on Alt+Tab.</p>
+
+<h3>Switching, renaming, and deleting</h3>
+
+<table>
+<tr><th>Action</th><th>How</th></tr>
+<tr><td><strong>Switch to a different profile</strong></td><td>File &rarr; Open profile (Alt+F, O). Pick a JSON in the file picker. RemSound reloads under that profile.</td></tr>
+<tr><td><strong>Rename the active profile</strong></td><td>File &rarr; Rename current profile (Alt+F, R). Prompts for the new name and renames the JSON on disk; window title updates immediately.</td></tr>
+<tr><td><strong>Delete a profile</strong></td><td>File &rarr; Open profile, then right-click the entry in the Windows file picker and choose Delete. Hands the action off to Windows Explorer rather than reimplementing it inside RemSound.</td></tr>
+</table>
+
+<h3>Where profiles live on disk</h3>
+
+<p>One JSON file per profile. By default, stored at:</p>
+
+<pre>&lt;RemSound folder&gt;\profiles\&lt;your machine name&gt;\&lt;profile name&gt;.json</pre>
+
+<p>The per-machine subfolder keeps each computer&rsquo;s profiles separate. If you used the <strong>Browse&hellip;</strong> button on the startup dialog to pick a different folder (e.g. inside Dropbox), profiles are stored directly under that folder &mdash; no per-machine subfolder, so two machines pointing at the same shared folder see exactly the same list.</p>
+
+<p>You can also <strong>copy a profile JSON between machines</strong>: drop it into the other machine&rsquo;s profile folder and it appears in their startup dialog. If the new machine doesn&rsquo;t have the same hardware (different sound cards, different ASIO drivers), those device ticks are silently skipped at load time &mdash; RemSound won&rsquo;t error or warn, the relevant lists just won&rsquo;t have those entries ticked.</p>
+
+<div class="note">
+<strong>Tip:</strong> profile JSON files are plain text and human-readable. If you ever need to manually edit one (e.g. to change a hotkey without launching the app), open it in any text editor.
+</div>
+
+<h3>What&rsquo;s NOT in profiles</h3>
+
+<p>A short list of things that intentionally aren&rsquo;t profile-saved:</p>
+<ul>
+<li><strong>The folder profiles are read from.</strong> Picked via the Browse&hellip; button on the startup dialog and saved in a small machine-local <code>remsound.config.json</code> next to the executable.</li>
+<li><strong>Connection health / heartbeat RTTs</strong> &mdash; runtime telemetry, not setup.</li>
+<li><strong>Auto-tune learning state</strong> &mdash; recomputed from scratch each session.</li>
+<li><strong>Window position and size</strong> &mdash; Windows handles these via standard window-manager memory.</li>
+</ul>
+
+<h2 id="main-window">4. The main window: menu bar + three tabs</h2>
+
+<p>The main window has three things stacked vertically:</p>
+
+<ol>
+<li>A <strong>menu bar</strong> at the top with two menus &mdash; <em>File</em> (profile management, preferences, keyboard shortcuts, minimise to tray, exit) and <em>Help</em> (open the user manual, check for updates, About). See <a href="#menu-bar">Menus</a>.</li>
+<li>A <strong>tab strip</strong> with three tabs &mdash; Connectivity, Audio inputs and outputs, Audio profile. Use <strong>Ctrl+Tab</strong> and <strong>Ctrl+Shift+Tab</strong> to move between them, or arrow left/right when focus is on the tab strip. Each tab has its own Alt+letter shortcuts that fire only when that tab is the visible one &mdash; the same letter can mean different things on different tabs without conflict.</li>
+<li>A <strong>status footer</strong> updating once a second with connect uptime, peer count, send/receive activity, and heartbeat health.</li>
+</ol>
+
+<table>
+<tr><th>Tab</th><th>What it&rsquo;s for</th></tr>
+<tr><td><strong>Connectivity</strong></td><td>Connected, discovered, and remembered peers. Add a peer by IP. Connection status read-out.</td></tr>
+<tr><td><strong>Audio inputs and outputs</strong></td><td>ASIO driver picker (when an ASIO driver is installed), the Receive audio and Send my audio checkboxes, and all the device-tick lists. Selecting a real driver in the picker brings up the ASIO device lists alongside the WASAPI ones; <em>(none)</em> hides them.</td></tr>
+<tr><td><strong>Audio profile</strong></td><td>Codec, packet size, lock-to-audio-clock, latency, continuous auto-tune, buffer smoothness, artefact sound. Split into <em>Audio send parameters</em> and <em>Audio receive parameters</em> sections so NVDA announces which group you&rsquo;ve entered as you tab through.</td></tr>
+</table>
+
+<h2 id="menu-bar">5. Menus (File and Help)</h2>
+
+<h3>File menu</h3>
+
+<p>Press <strong>Alt+F</strong> to open the menu, then the underlined letter for the item you want, or use the single-press shortcut from the table below.</p>
+
+<table>
+<tr><th>Item</th><th>Shortcut</th><th>What it does</th></tr>
+<tr><td><strong>Open profile&hellip;</strong></td><td>Alt+F, O</td><td>Opens a Windows file picker rooted at the profiles folder. Pick a JSON, RemSound reloads under that profile (window closes and reopens with all its device ticks, peers, and settings restored). To delete a profile from disk, right-click an entry inside the file picker and choose Delete &mdash; that hands the action off to Windows Explorer.</td></tr>
+<tr><td><strong>Save</strong></td><td>Ctrl+S</td><td>Overwrites the active profile with the current state. If there&rsquo;s no active profile (you&rsquo;re on Blank template), this falls through to Save as automatically.</td></tr>
+<tr><td><strong>Save as&hellip;</strong></td><td>Alt+F, A</td><td>Prompts for a profile name and saves a copy. Use this to fork the current state under a new name, or to save the first time from Blank template.</td></tr>
+<tr><td><strong>Rename current profile&hellip;</strong></td><td>Alt+F, R</td><td>Renames the JSON file on disk and updates the window title. No-op on Blank template (no profile to rename).</td></tr>
+<tr><td><strong>Minimise to tray</strong></td><td>Alt+F, M</td><td>Hides the window to the system tray. Reachable via the File menu chain (Alt+F to open the menu, then M for Minimise). To bring the window back, click the tray icon or use the configurable "Show or hide window" global hotkey (Keyboard shortcuts dialog, default Ctrl+Shift+F10).</td></tr>
+<tr><td><strong>Keyboard shortcuts&hellip;</strong></td><td>Ctrl+K</td><td>Opens the global hotkey configuration dialog (mute, volume, tray show/hide, remote-control sends).</td></tr>
+<tr><td><strong>Preferences&hellip;</strong></td><td>Ctrl+P</td><td>Opens the Preferences dialog. Sticky machine-local choices live here: profile folder, mute connect/disconnect sounds, accept remote volume commands, startup behaviour, update-check frequency, manual check-for-updates button, silently install updates, enable logs, write logs now. Esc or the Close button dismisses.</td></tr>
+<tr><td><strong>Exit</strong></td><td>Alt+F, X (or Alt+F4)</td><td>Closes RemSound. If there are unsaved profile changes you&rsquo;ll be prompted first.</td></tr>
+</table>
+
+<h3>Help menu</h3>
+
+<p>Press <strong>Alt+H</strong> to open the menu, then the underlined letter for the item you want.</p>
+
+<table>
+<tr><th>Item</th><th>Shortcut</th><th>What it does</th></tr>
+<tr><td><strong>Help</strong></td><td>F1 (anywhere), or Alt+H, H</td><td>Opens this user manual in your default browser. F1 also works from inside every dialog (Preferences, Keyboard shortcuts, About, Startup behaviour) and from the startup profile picker before the main window has loaded.</td></tr>
+<tr><td><strong>Check for updates</strong></td><td>Alt+H, C</td><td>Asks the RemSound GitHub Releases page whether a newer build is available. If yes, you get a confirmation dialog with the release notes and a Yes / No to install. If you&rsquo;re already on the latest version, an &ldquo;you are running the latest version&rdquo; popup confirms it. (For automatic background checks instead of pressing this button by hand, see <a href="#updates">Updating RemSound</a>.)</td></tr>
+<tr><td><strong>About RemSound</strong></td><td>Alt+H, A</td><td>Small modal dialog showing the current version and the latest release notes in a scrollable read-only box. Tab into the box and arrow up/down to read it under NVDA. Close (or Esc) dismisses.</td></tr>
+</table>
+
+<h2 id="tab-connectivity">6. Connectivity tab</h2>
+
+<p>This is where peers and logging live. Tab order on this tab:</p>
+
+<table>
+<tr><th>Control</th><th>Shortcut</th><th>What it does</th></tr>
+<tr><td><strong>Connected peers</strong></td><td>Alt+C</td><td>Peers you currently have audio flowing with. Unticking a row disconnects that peer.</td></tr>
+<tr><td><strong>Discovered peers</strong></td><td>Alt+D</td><td>Peers RemSound has heard from in the last few seconds &mdash; either via LAN broadcast or via direct unicast announcement (which works over Tailscale and any other VPN). Tick to connect.</td></tr>
+<tr><td><strong>Remembered peers</strong></td><td>Alt+R</td><td>Peers you&rsquo;ve previously connected to or manually added. Persists across sessions. Tick to reconnect.</td></tr>
+<tr><td><strong>Add peer by IP</strong></td><td>Alt+A</td><td>Opens a small prompt for an IP address or hostname. Adds it to remembered and connects.</td></tr>
+<tr><td><strong>Connection status</strong></td><td>Alt+S</td><td>A read-only multi-line text box that summarises everything currently happening &mdash; connect uptime, peer count, send/receive packet rates, heartbeat health for each peer. Tab into it and arrow up/down to read it line by line under NVDA.</td></tr>
+</table>
+
+<h2 id="tab-io">7. Audio inputs and outputs tab</h2>
+
+<p>This tab controls everything to do with which audio devices are involved. The ASIO driver picker at the top decides whether ASIO is in the pipeline at all; the Receive and Send sides each have their own master checkbox and device lists.</p>
+
+<table>
+<tr><th>Control</th><th>Shortcut</th><th>What it does</th></tr>
+<tr><td><strong>ASIO driver</strong></td><td>Alt+D</td><td>Listbox starting with <em>(none)</em>. Pick <em>(none)</em> and the app runs in WASAPI-only mode; pick a real driver and the ASIO device lists below appear and the Audio profile tab gains a second ASIO-latency row. Arrowing between drivers swaps which interface RemSound talks to. On a machine with no ASIO drivers installed this control is hidden entirely.</td></tr>
+<tr><td><strong>Receive audio</strong></td><td>Alt+R</td><td>Master toggle for receiving. When off, no audio plays out regardless of which output devices are ticked.</td></tr>
+<tr><td><strong>WASAPI outputs for received sound</strong></td><td>Alt+3</td><td>Tick which Windows audio outputs (speakers, headsets) should play received audio. Multiple ticks means received audio plays out of all of them simultaneously.</td></tr>
+<tr><td><strong>ASIO outputs for received sound</strong></td><td>Alt+1</td><td>(Visible when an ASIO driver is selected.) Tick ASIO channel pairs to play received audio out of.</td></tr>
+<tr><td><strong>Set volume for all received audio</strong></td><td>Alt+V</td><td>Slider: master volume for everything coming in. There is no per-device or per-source volume.</td></tr>
+<tr><td><strong>Send my audio</strong></td><td>Alt+S</td><td>Master toggle for sending.</td></tr>
+<tr><td><strong>WASAPI outputs to send</strong></td><td>Alt+4</td><td>Tick which Windows output devices to capture from (system audio loopback &mdash; what&rsquo;s currently playing on those speakers gets sent).</td></tr>
+<tr><td><strong>WASAPI inputs to send</strong></td><td>Alt+5</td><td>Tick which Windows input devices to capture (microphones, line-ins).</td></tr>
+<tr><td><strong>ASIO inputs to send</strong></td><td>Alt+2</td><td>(Visible when an ASIO driver is selected.) Tick ASIO channel pairs to capture and send.</td></tr>
+</table>
+
+<p>All device lists are checkable list boxes &mdash; arrow up and down to browse, spacebar to toggle a tick. Profiles save device ticks; Blank template starts with everything unticked.</p>
+
+<h3>Receiving</h3>
+
+<p>Receiving has two requirements: <strong>Receive audio</strong> ticked, and at least one output device ticked. Without an output device, even if packets arrive there&rsquo;s nowhere for them to go.</p>
+
+<p>Tick as many outputs as you like across both the WASAPI and ASIO output lists &mdash; the same received audio plays out of all of them. Common combinations:</p>
+<ul>
+<li>One output: just your monitors / headphones.</li>
+<li>Studio monitors via ASIO + a wireless headset via WASAPI for moving around the house.</li>
+<li>Two physical outputs for left/right room monitoring.</li>
+</ul>
+
+<h3>Sending</h3>
+
+<p>Sending requires <strong>Send my audio</strong> ticked, plus at least one capture source ticked across the three send lists.</p>
+
+<table>
+<tr><th>List</th><th>What it captures</th><th>Typical use</th></tr>
+<tr><td>WASAPI outputs to send</td><td><strong>System audio loopback</strong> &mdash; whatever Windows is currently sending out through that output. So picking your &ldquo;Speakers&rdquo; device captures whatever you&rsquo;re hearing.</td><td>Sharing music playback, sharing a video call&rsquo;s audio, anything coming out of your own speakers.</td></tr>
+<tr><td>WASAPI inputs to send</td><td><strong>Direct capture</strong> from a microphone or line input.</td><td>Your USB microphone, a headset mic, a line-in.</td></tr>
+<tr><td>ASIO inputs to send</td><td>An ASIO channel pair &mdash; typically a hardware input on a pro audio interface.</td><td>Instrument input on an Audient EVO, microphone preamp on a Focusrite, etc.</td></tr>
+</table>
+
+<p>Tick any combination across the three lists. RemSound mixes them into a single stream and sends that to all selected peers. So you can send a mic plus a guitar plus your system audio at once, mixed together, and your friends hear all three.</p>
+
+<div class="note">
+<strong>System audio loopback can cause feedback loops.</strong> If you tick the same device for both &ldquo;WASAPI outputs to send&rdquo; (loopback) <em>and</em> as your &ldquo;WASAPI outputs for received sound&rdquo;, the received audio plays out of that device, gets captured by the loopback, and gets sent back. The other side hears their own voice on a delay. Don&rsquo;t tick a device on both sides at once.
+</div>
+
+<h2 id="tab-profile">8. Audio profile tab</h2>
+
+<p>Everything that shapes the audio quality / latency trade-off lives here. The tab is split into two NVDA-announced groups: <strong>Audio send parameters</strong> at the top, <strong>Audio receive parameters</strong> below. As you tab through, NVDA announces which group you&rsquo;ve entered.</p>
+
+<h3>Audio send parameters</h3>
+
+<table>
+<tr><th>Control</th><th>Shortcut</th><th>What it does</th></tr>
+<tr><td><strong>Audio codec</strong></td><td>Alt+C</td><td>PCM 48k 24-bit, Opus high quality (20 ms), or Opus lower quality (10 ms). See <a href="#latency">codec choice</a>.</td></tr>
+<tr><td><strong>Packet size</strong></td><td>Alt+P</td><td><em>Standard</em> (default) or <em>Small</em> (LAN only). Smaller packets save a couple of milliseconds of send-side accumulator latency at the cost of doubling the packet rate.</td></tr>
+<tr><td><strong>Lock to audio clock</strong></td><td>Alt+K</td><td>Sender-side timing tightener. Locks packet emission to the audio device&rsquo;s hardware clock instead of a Stopwatch loop. Saves a few milliseconds of jitter; brief clicks possible if the link can&rsquo;t keep up. The label changes depending on whether ASIO is in the pipeline so it tells you what it actually does in your current setup.</td></tr>
+</table>
+
+<h3>Audio receive parameters</h3>
+
+<p>The shape of this section depends on whether an ASIO driver is selected on the Audio inputs and outputs tab. With no ASIO driver, you see one latency row (the WASAPI one, labelled simply &ldquo;Audio latency&rdquo;). With an ASIO driver selected, you see two latency rows &mdash; one per lane &mdash; each with its own auto-tune toggle. The two lanes are independent: a WASAPI underrun doesn&rsquo;t pull the ASIO target up, and vice versa.</p>
+
+<table>
+<tr><th>Control</th><th>Shortcut</th><th>What it does</th></tr>
+<tr><td><strong>ASIO latency in milliseconds</strong></td><td>Alt+L</td><td>(Only when an ASIO driver is selected.) Spinner. Target receive buffer for the ASIO lane. Default 10 ms. ASIO&rsquo;s native pipeline can sustain very low targets, but values below the platform&rsquo;s real-world jitter floor (typically 15&ndash;25 ms) cause constant micro-corrections that you can hear &mdash; pick 25 ms as a safe floor unless you&rsquo;re on localhost or wired LAN.</td></tr>
+<tr><td><strong>Continuous auto-tune ASIO latency</strong></td><td>Alt+T</td><td>(Only when an ASIO driver is selected.) Checkbox. Nudges the ASIO latency target as ASIO-lane jitter changes. Independent of the WASAPI toggle.</td></tr>
+<tr><td><strong>WASAPI latency in milliseconds</strong> (called just &ldquo;Audio latency&rdquo; with no ASIO driver)</td><td>Alt+W (Alt+L when no ASIO driver)</td><td>Spinner. Target receive buffer for the WASAPI lane (or the only lane in WASAPI-only setups). Smaller = less delay, more clicks. Most people want 20&ndash;80 ms.</td></tr>
+<tr><td><strong>Continuous auto-tune WASAPI latency</strong> (called &ldquo;Continuous auto-tune latency&rdquo; with no ASIO driver)</td><td>Alt+Y (Alt+T when no ASIO driver)</td><td>Checkbox. When on, RemSound nudges the WASAPI lane latency value automatically as the network changes. The accompanying <strong>Auto-tune latency interval (Alt+I)</strong> combo sets how often it re-evaluates: 3, 5, 10, 15, or 30 seconds. The interval is shared between the WASAPI and ASIO lanes &mdash; one tick rate, one combo.</td></tr>
+<tr><td><strong>Buffer smoothness</strong></td><td>Alt+B</td><td>Listbox, 1 to 10. Controls how patient the receiver is with late-arriving audio on either lane. Higher = more click protection, longer steady-state delay. Default 3.</td></tr>
+<tr><td><strong>Artefact sound type</strong></td><td>Alt+A</td><td>Listbox. <em>Noise burst</em> (default) replaces an empty-buffer moment with a brief broadband shhh, which blends into music. <em>Click</em> uses raw zero-fill (no concealment) for diagnostic purposes &mdash; you hear an obvious click on every buffer underrun.</td></tr>
+</table>
+
+<p>Most people only need to pick a codec and a smoothness level and let the rest sit on defaults.</p>
+
+<h2 id="asio-vs-wasapi">9. ASIO and WASAPI</h2>
+
+<p>RemSound speaks two audio backends. Which one is in play depends on the <strong>ASIO driver (Alt+D)</strong> listbox at the top of the Audio inputs and outputs tab.</p>
+
+<h3>WASAPI (the default)</h3>
+<p>Windows&rsquo; standard audio engine. Every device in your <strong>Windows Sound</strong> control panel is reachable via WASAPI. Latency from a WASAPI capture or playback is typically 10&ndash;30 milliseconds. Anyone running RemSound has WASAPI; no special hardware needed.</p>
+
+<h3>ASIO (needs a driver)</h3>
+<p>A separate audio path used by professional audio interfaces. ASIO drivers bypass the Windows audio engine and talk directly to the hardware, giving sub-5-millisecond hardware latency.</p>
+
+<p>The ASIO driver picker is omitted entirely on a machine with no ASIO drivers installed. Common drivers that <em>do</em> appear:</p>
+<ul>
+<li><strong>Audient USB Audio ASIO Driver</strong> &mdash; for EVO 4 / 8 / 16, iD-series interfaces.</li>
+<li><strong>Komplete Audio ASIO Driver</strong> &mdash; for Native Instruments interfaces.</li>
+<li><strong>Focusrite USB ASIO</strong> &mdash; for Scarlett, Clarett, Red.</li>
+<li><strong>RME ASIO</strong> &mdash; for Babyface, Fireface, UCX.</li>
+<li><strong>Realtek ASIO</strong> &mdash; bundled with some Realtek drivers. <em>Avoid this one</em> &mdash; it&rsquo;s a generic wrapper that can grab whatever Windows default device it finds, often clashing with screen reader audio.</li>
+</ul>
+
+<h3>How the driver picker chooses the pipeline</h3>
+
+<p>One control, two outcomes:</p>
+
+<table>
+<tr><th>ASIO driver selection</th><th>Pipeline</th><th>Latency</th></tr>
+<tr><td><em>(none)</em></td><td>WASAPI captures and plays out directly. No ASIO code in the pipeline at all.</td><td>~10&ndash;30 ms WASAPI buffer + WasapiOut. Lowest possible for users without an ASIO driver.</td></tr>
+<tr><td>Any real driver name</td><td>WASAPI and ASIO run as two independent UDP streams alongside each other. Each lane keeps its own native latency &mdash; ASIO stays sub-5 ms even when WASAPI is also active.</td><td>WASAPI at its WASAPI rate, ASIO at its ASIO rate. No cross-lane tee, no intermediate buffer; each lane has its own latency knob on the Audio profile tab (see <a href="#latency">Latency</a>).</td></tr>
+</table>
+
+<p>Default on a fresh install is <em>(none)</em>. If you have an ASIO driver and want to use it, arrow down to it in the picker. To go back to WASAPI-only, arrow back up to <em>(none)</em>.</p>
+
+<h3>ASIO channel pairs</h3>
+<p>ASIO doesn&rsquo;t expose &ldquo;devices&rdquo; the way Windows does. Instead it gives you a list of channels (typically 2, 4, 6, 8, or more depending on the interface), grouped into stereo pairs. RemSound labels each pair with the driver name, the pair number, and the channel names the driver itself reports. For an Audient EVO 8 you&rsquo;d see entries like:</p>
+
+<pre>
+Audient USB Audio ASIO Driver &mdash; Pair 1 (channels 1/2): Mic | Line | Instrument 1 / Mic | Line 2
+Audient USB Audio ASIO Driver &mdash; Pair 2 (channels 3/4): Mic | Line 3 / Mic | Line 4
+Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / Loop-back 2 (R)
+</pre>
+
+<h3>Buffer size for ASIO</h3>
+<p>RemSound doesn&rsquo;t expose a buffer-size control of its own. To change ASIO buffer size, open the audio interface&rsquo;s own control panel application (NI&rsquo;s Komplete Audio Control Panel, Audient EVO Control software, etc.) and set it there. The driver remembers its buffer size between sessions; RemSound just uses whatever the driver is configured to do.</p>
+
+<div class="warn">
+<strong>About Realtek ASIO:</strong> if you see &ldquo;Realtek ASIO&rdquo; in the driver list, treat it with caution. Despite the name, it&rsquo;s not bound to Realtek hardware specifically &mdash; it&rsquo;s a generic wrapper that opens whatever Windows considers the default audio device. On a machine with a real audio interface (Audient, Komplete, etc.) selecting Realtek ASIO will often grab <em>that</em> interface via Windows&rsquo; WDM path, fighting both your real ASIO driver and your screen reader for the same hardware. Usually safe to ignore Realtek ASIO entirely.
+</div>
+
+<h3>Same driver, sender and receiver, on one machine</h3>
+<p>RemSound supports this &mdash; you can capture from your audio interface and play received audio out of the same interface simultaneously, on the same machine. Most modern pro audio drivers handle this fine.</p>
+
+<h2 id="peers">10. Peers &mdash; finding and connecting</h2>
+
+<p>&ldquo;Peer&rdquo; means another machine running RemSound that you want to talk to. Peers are managed on the <strong>Connectivity</strong> tab. The tab has three lists, all of them checkable:</p>
+
+<table>
+<tr><th>List</th><th>Contents</th><th>What ticking does</th></tr>
+<tr><td><strong>Connected peers</strong></td><td>Peers you currently have audio flowing with.</td><td>Unticking disconnects.</td></tr>
+<tr><td><strong>Discovered peers</strong></td><td>Peers RemSound has heard from in the last few seconds &mdash; either via LAN broadcast, or via direct unicast announcement (which works over Tailscale and any other VPN).</td><td>Connects you to that peer. Audio starts flowing both ways.</td></tr>
+<tr><td><strong>Remembered peers</strong></td><td>Peers you&rsquo;ve connected to before, plus any IPs you&rsquo;ve manually typed in. Persists across sessions.</td><td>Connects to that remembered peer if they&rsquo;re online (and adds them as a manual connection if discovery hasn&rsquo;t found them yet).</td></tr>
+</table>
+
+<p>Plus the <strong>Add peer by IP (Alt+A)</strong> button which opens a small prompt for a hostname or IP. Useful for first-time connection over a VPN where discovery hasn&rsquo;t reached them yet.</p>
+
+<h3>Audio only plays from peers you&rsquo;ve ticked</h3>
+<p>Even if a peer is sending audio in your direction, you won&rsquo;t hear it until you&rsquo;ve ticked their checkbox. This is deliberate &mdash; connecting is a consent step. A peer&rsquo;s name shows up in Discovered the moment they come online, but they can&rsquo;t make sound on your speakers until you say yes.</p>
+
+<h3>Heartbeat indicator</h3>
+<p>For each connected peer, the status read-out at the bottom of the window shows a small status: their latest round-trip time in milliseconds, or <strong>pending</strong>, <strong>stale</strong>, or <strong>unreachable</strong> if heartbeat replies have stopped. RemSound plays a connect cue (a short sound) when a peer transitions to healthy and a disconnect cue when one becomes unreachable. Both cues can be silenced via <strong>Mute connect/disconnect sounds</strong> in the Preferences dialog (File &rarr; Preferences, or Ctrl+P).</p>
+
+<h2 id="network">11. How the network works (LAN, WAN, Tailscale)</h2>
+
+<p>RemSound uses two UDP ports:</p>
+
+<table>
+<tr><th>Port</th><th>Purpose</th><th>Default</th></tr>
+<tr><td>Audio</td><td>The actual sound, sent peer-to-peer. Heartbeat packets share this port too &mdash; one socket, one firewall rule, one router pinhole.</td><td>47830</td></tr>
+<tr><td>Discovery</td><td>&ldquo;I&rsquo;m here&rdquo; announcements every 1.5 seconds, so peers can find each other.</td><td>47831</td></tr>
+</table>
+
+<p>One canonical audio port number is used for everything &mdash; Tailscale, LAN peer-to-peer, and any relay server. You never need to type a port after a hostname or IP; the default is implied. Both sides of a connection need to use the same audio port number.</p>
+
+<p>Heartbeat packets ride on the same UDP port as audio, so if your audio reaches the peer, your heartbeat does too &mdash; one firewall rule covers both.</p>
+
+<h3>LAN &mdash; same Wi-Fi or Ethernet</h3>
+<p>On a normal home network, discovery and heartbeat both work without configuration. Launch RemSound on two machines and they&rsquo;ll see each other within a second or two via the discovery broadcast. No firewall changes are usually needed because UDP broadcast is allowed by default.</p>
+
+<h3>WAN &mdash; different physical locations</h3>
+<p>Direct internet peer-to-peer connections require either:</p>
+<ul>
+<li>A VPN that puts both machines on the same virtual network &mdash; <strong>Tailscale</strong> is the recommended option. Each machine gets a Tailscale IP (in the <code>100.x.y.z</code> range) and they can reach each other directly.</li>
+<li>Port forwarding on each end&rsquo;s router (more involved; not covered here).</li>
+</ul>
+
+<h3>Discovery on Tailscale and other VPNs</h3>
+<p>UDP broadcast doesn&rsquo;t traverse a VPN &mdash; Tailscale&rsquo;s virtual interface ignores broadcast packets entirely. RemSound works around this by also sending discovery announcements directly (unicast) to every IP in your Remembered peers list. So:</p>
+<ol>
+<li>One time only: each side adds the other&rsquo;s Tailscale IP to its Remembered peers list (via the &ldquo;Add peer by IP&rdquo; button).</li>
+<li>From then on, RemSound auto-unicasts announcements at those IPs every 1.5 seconds.</li>
+<li>The receiving side&rsquo;s discovery hears the announcement, adds the sender to its own unicast list, and announces back.</li>
+<li>Within seconds, both sides see each other in Discovered peers without further typing.</li>
+</ol>
+
+<p>So the rule is: <strong>only one side has to type the other&rsquo;s IP once.</strong> After that, discovery is bidirectional automatically.</p>
+
+<h3>Round-trip time and what it means</h3>
+<table>
+<tr><th>RTT</th><th>What you&rsquo;ll experience</th></tr>
+<tr><td>0&ndash;2 ms</td><td>Localhost (same machine talking to itself).</td></tr>
+<tr><td>2&ndash;10 ms</td><td>Same LAN. Effectively instant.</td></tr>
+<tr><td>15&ndash;40 ms</td><td>Typical Tailscale or modern broadband-to-broadband. Comfortable for conversation.</td></tr>
+<tr><td>50&ndash;100 ms</td><td>Tailscale via a relay, or one end on Wi-Fi from a long way off. Still usable but you start to feel it for music.</td></tr>
+<tr><td>100 ms+</td><td>Something is wrong, or you&rsquo;re across the world. Music collaboration is challenging.</td></tr>
+</table>
+
+<h2 id="latency">12. Latency and audio quality</h2>
+
+<p>Five controls together shape the latency / audio-quality trade-off, all on the Audio profile tab:</p>
+
+<ul>
+<li><strong>Audio latency in milliseconds (Alt+L)</strong> &mdash; the headline target buffer size at the receiver.</li>
+<li><strong>Buffer smoothness (Alt+B)</strong> &mdash; how aggressively the receiver protects against jitter spikes.</li>
+<li><strong>Packet size (Alt+P)</strong> &mdash; Standard or Small. Smaller packets shave a couple of milliseconds off send-side delay at the cost of doubling packet rate.</li>
+<li><strong>Lock to audio clock (Alt+K)</strong> &mdash; ties packet emission to the audio device&rsquo;s hardware clock end-to-end, eliminating Windows scheduler jitter.</li>
+<li><strong>Continuous auto-tune</strong> &mdash; lets the receiver choose the latency target for you, every few seconds.</li>
+</ul>
+
+<p>Plus the codec choice (PCM / Opus 20 ms / Opus 10 ms), also on the Audio profile tab. Most people only need to pick a codec and a smoothness level and let the rest sit on defaults.</p>
+
+<h3>Audio latency slider</h3>
+
+<p>The <strong>Audio latency</strong> spinner tells the receiver how much audio to keep buffered as a cushion against network jitter. Bigger buffer = more delay, fewer clicks. Smaller buffer = less delay, more clicks when the network wobbles.</p>
+
+<table>
+<tr><th>Setting</th><th>Best for</th><th>Trade-off</th></tr>
+<tr><td>5&ndash;10 ms</td><td>LAN, localhost.</td><td>Crackles on any WAN with even modest jitter.</td></tr>
+<tr><td>20&ndash;40 ms</td><td>Stable Tailscale or wired internet.</td><td>Good balance &mdash; usually inaudible delay added.</td></tr>
+<tr><td>50&ndash;80 ms</td><td>WAN with some Wi-Fi or jitter.</td><td>Noticeable delay; very robust to drops.</td></tr>
+<tr><td>100 ms+</td><td>Bad networks; voice-only.</td><td>Definitely feels delayed.</td></tr>
+</table>
+
+<p>Smaller is better when the network can handle it. If you don&rsquo;t want to think about this number, switch on continuous auto-tune (below) and leave it.</p>
+
+<h3>Buffer smoothness</h3>
+
+<p>The <strong>Buffer smoothness</strong> listbox sets a 1-to-10 scale that controls how patient the receiver is when network jitter spikes. The default is 3.</p>
+
+<table>
+<tr><th>Smoothness</th><th>Behaviour</th><th>Pick when</th></tr>
+<tr><td>10 &mdash; smoothest</td><td>Receiver tolerates the largest jitter spikes without dropping audio. Longest steady-state delay.</td><td>Bad Wi-Fi, busy ISP, music collaboration where every click is unacceptable.</td></tr>
+<tr><td>4&ndash;7</td><td>Middle ground. Smooths most everyday internet jitter without much added delay.</td><td>Most WAN sessions over Tailscale or direct internet.</td></tr>
+<tr><td>3 &mdash; default</td><td>Moderate protection; brief clicks possible on jitter spikes.</td><td>Stable internet or quiet LAN.</td></tr>
+<tr><td>1 &mdash; tightest delay</td><td>Receiver gives up immediately when audio is late. Frequent clicks; lowest delay.</td><td>LAN testing, latency-critical experiments.</td></tr>
+</table>
+
+<p>Smoothness and the Audio latency spinner work together &mdash; smoothness controls <em>how the receiver responds</em> when audio runs late; the latency value controls <em>how big a head-start it builds</em>. Real-world tip: if you can hear clicks, try raising smoothness by one or two before reaching for a bigger latency target.</p>
+
+<h3>Packet size &mdash; Standard or Small</h3>
+
+<p>Two options: <strong>Standard</strong> (default) and <strong>Small</strong>. Controls the frame size each network packet carries:</p>
+
+<table>
+<tr><th>Packet size</th><th>What changes</th><th>Pick when</th></tr>
+<tr><td>Standard (5 ms PCM, 10/20 ms Opus)</td><td>One audio packet every 5 ms (PCM) or 10/20 ms (Opus, depending on codec choice).</td><td>WAN, Tailscale, internet &mdash; any time you don&rsquo;t have a guaranteed-clean LAN.</td></tr>
+<tr><td>Small (2.5 ms PCM, 5/10 ms Opus, LAN only)</td><td>Halves the effective frame size. Saves up to 2.5 ms of accumulator latency at the sender.</td><td>Same-house LAN over wired Ethernet, where the network simply isn&rsquo;t going to drop or jitter.</td></tr>
+</table>
+
+<p>The latency win is small &mdash; at most a few milliseconds end-to-end. Small packets are useful when you and your collaborator are on the same LAN and want to chase every last millisecond; for any internet path it&rsquo;s a false economy because doubling the packet rate also doubles your odds of running into jitter at exactly the wrong moment, which translates into clicks.</p>
+
+<h3>Lock to audio clock</h3>
+
+<p>The <strong>Lock to audio clock</strong> checkbox locks RemSound&rsquo;s send timing path to the audio device&rsquo;s own hardware clock instead of letting Windows&rsquo; general thread scheduler set the pace. Off by default. The label tells you what it does in your current setup:</p>
+
+<table>
+<tr><th>Current setup</th><th>What &ldquo;Lock to audio clock&rdquo; does</th></tr>
+<tr><td>No ASIO driver selected (WASAPI only)</td><td>Sender uses the WASAPI capture event for timing instead of a Stopwatch tick. Tightens send-side delay.</td></tr>
+<tr><td>ASIO driver selected (WASAPI + ASIO running as independent lanes)</td><td>Both lanes tighten independently. WASAPI lane uses push-mode (when there is exactly one WASAPI capture source); ASIO lane emits one packet per ASIO callback with no accumulation. Brief clicks possible on either lane if the link can&rsquo;t keep up.</td></tr>
+</table>
+
+<div class="note">
+<strong>Why you&rsquo;d use it:</strong> Windows&rsquo; thread scheduler can wake the audio loop with up to ~6 ms of jitter even at top priority. At target latencies under ~15 ms, that jitter shows up as clicks. Locking to the audio clock removes the Stopwatch loop from the timing path entirely &mdash; the audio device interrupts directly drive the encoder.
+</div>
+
+<h3>Continuous auto-tune</h3>
+
+<p>The <strong>Continuous auto-tune latency</strong> checkbox hands the latency value over to RemSound itself. When on, RemSound observes incoming-packet jitter every few seconds and nudges the latency target up if it&rsquo;s seeing late packets, or down if the network has been calm. The companion <strong>Auto-tune latency interval (Alt+I)</strong> combo sets how often it re-evaluates &mdash; <strong>3, 5, 10, 15, or 30 seconds</strong>. Faster values respond quickly to a network change but can also feel &ldquo;twitchy&rdquo;. Treat continuous auto-tune as a hands-off way to keep the cushion right-sized as your network mood changes.</p>
+
+<p>If you turn auto-tune off, the latency value stays wherever it last was.</p>
+
+<h3>Artefact sound type</h3>
+
+<p>When the playback buffer comes up empty for a moment (an underrun), RemSound has to fill the gap. The <strong>Artefact sound type</strong> listbox decides what that gap sounds like:</p>
+
+<ul>
+<li><strong>Noise burst (default)</strong> &mdash; a brief broadband shhh that blends into music. Easy on the ear; tells you something happened without being jarring.</li>
+<li><strong>Click</strong> &mdash; raw zero-fill, no concealment. Produces an obvious click on every underrun. Use this when you want to <em>hear</em> every problem (e.g. when tuning latency lower).</li>
+</ul>
+
+<h3>Opus packet-loss recovery (built in, no setting)</h3>
+
+<p>Both Opus modes ship with built-in <strong>forward error correction</strong>: each packet carries a small redundant copy of the previous packet&rsquo;s audio, and the receiver uses it to reconstruct any single packet that goes missing in transit. The result is that single-packet losses become inaudible &mdash; no click, no glitch &mdash; instead of the small pop you&rsquo;d otherwise hear. Two-packet-in-a-row losses still produce one click; that&rsquo;s a fundamental Opus limitation, not something configurable.</p>
+
+<p>This is automatic &mdash; there&rsquo;s no switch. PCM mode does not have it.</p>
+
+<h3>Codec choice</h3>
+<table>
+<tr><th>Codec</th><th>Quality</th><th>Bandwidth</th><th>Use when</th></tr>
+<tr><td>PCM 48k 24-bit</td><td>Best</td><td>~2.3 Mbps</td><td>LAN, fast WAN connections.</td></tr>
+<tr><td>Opus high quality (20 ms)</td><td>Very good</td><td>~96 kbps</td><td>Most WAN connections &mdash; the right default.</td></tr>
+<tr><td>Opus lower quality (10 ms)</td><td>Good</td><td>~64 kbps</td><td>Slower or less reliable connections; tighter latency.</td></tr>
+</table>
+
+<p>PCM gives the absolute best audio with no encoding artefacts but uses about 30&times; the bandwidth of Opus. Over the open internet, Opus is almost always the right call.</p>
+
+<h2 id="shortcuts">13. Keyboard shortcuts (within the main window)</h2>
+
+<p>Each tab has its own Alt+letter shortcuts. The same letter can mean different things on different tabs without conflict &mdash; mnemonics fire only on the active tab. Move between tabs with Ctrl+Tab and Ctrl+Shift+Tab.</p>
+
+<h3>Connectivity tab</h3>
+<table>
+<tr><th>Key</th><th>Action</th></tr>
+<tr><td>Alt+C</td><td>Focus Connected peers list</td></tr>
+<tr><td>Alt+D</td><td>Focus Discovered peers list</td></tr>
+<tr><td>Alt+R</td><td>Focus Remembered peers list</td></tr>
+<tr><td>Alt+A</td><td>Add peer by IP</td></tr>
+<tr><td>Alt+S</td><td>Focus Connection status read-out</td></tr>
+</table>
+
+<p>(Logging controls &mdash; Enable logs and Write logs now &mdash; live in the Preferences dialog; reach them via File &rarr; Preferences or Ctrl+P, then Alt+L / Alt+W within the dialog.)</p>
+
+<h3>Audio inputs and outputs tab</h3>
+<table>
+<tr><th>Key</th><th>Action</th></tr>
+<tr><td>Alt+D</td><td>Focus ASIO driver listbox (hidden if no ASIO drivers are installed)</td></tr>
+<tr><td>Alt+R</td><td>Toggle Receive audio</td></tr>
+<tr><td>Alt+1</td><td>Focus ASIO outputs for received sound</td></tr>
+<tr><td>Alt+2</td><td>Focus ASIO inputs to send</td></tr>
+<tr><td>Alt+3</td><td>Focus WASAPI outputs for received sound</td></tr>
+<tr><td>Alt+4</td><td>Focus WASAPI outputs to send</td></tr>
+<tr><td>Alt+5</td><td>Focus WASAPI inputs to send</td></tr>
+<tr><td>Alt+V</td><td>Focus volume slider</td></tr>
+<tr><td>Alt+S</td><td>Toggle Send my audio</td></tr>
+</table>
+
+<h3>Audio profile tab</h3>
+
+<p>Some of these shortcuts shift depending on whether an ASIO driver is selected. When one is selected the ASIO-lane controls take the simpler Alt+L / Alt+T mnemonics; the WASAPI-lane controls move to Alt+W / Alt+Y so they don&rsquo;t collide.</p>
+
+<table>
+<tr><th>Key</th><th>Action</th></tr>
+<tr><td>Alt+C</td><td>Focus Audio codec</td></tr>
+<tr><td>Alt+P</td><td>Focus Packet size</td></tr>
+<tr><td>Alt+K</td><td>Toggle Lock to audio clock</td></tr>
+<tr><td>Alt+L</td><td>Focus latency spinner &mdash; ASIO lane when an ASIO driver is selected, otherwise the single Audio latency spinner</td></tr>
+<tr><td>Alt+T</td><td>Toggle continuous auto-tune &mdash; ASIO lane when an ASIO driver is selected, otherwise the single Continuous auto-tune toggle</td></tr>
+<tr><td>Alt+W</td><td>(Only when an ASIO driver is selected.) Focus the WASAPI-lane latency spinner</td></tr>
+<tr><td>Alt+Y</td><td>(Only when an ASIO driver is selected.) Toggle the WASAPI-lane continuous auto-tune</td></tr>
+<tr><td>Alt+I</td><td>Focus Auto-tune latency interval</td></tr>
+<tr><td>Alt+B</td><td>Focus Buffer smoothness</td></tr>
+<tr><td>Alt+A</td><td>Focus Artefact sound type</td></tr>
+</table>
+
+<h3>File menu shortcuts (work from any tab)</h3>
+<table>
+<tr><th>Key</th><th>Action</th></tr>
+<tr><td>Ctrl+S</td><td>Save active profile (or Save as if on Blank template)</td></tr>
+<tr><td>Ctrl+K</td><td>Open Keyboard shortcuts dialog</td></tr>
+<tr><td>Ctrl+P</td><td>Open Preferences dialog</td></tr>
+<tr><td>Alt+F, O</td><td>Open profile</td></tr>
+<tr><td>Alt+F, A</td><td>Save profile as</td></tr>
+<tr><td>Alt+F, R</td><td>Rename current profile</td></tr>
+<tr><td>Alt+F, M</td><td>Minimise to tray</td></tr>
+<tr><td>Alt+F, X</td><td>Exit</td></tr>
+</table>
+
+<h3>Always-available</h3>
+<table>
+<tr><th>Key</th><th>Action</th></tr>
+<tr><td><strong>F1</strong></td><td><strong>Open this manual</strong> in your default browser. Works anywhere in RemSound &mdash; main window, every dialog, the profile picker on first launch.</td></tr>
+<tr><td>Ctrl+Tab / Ctrl+Shift+Tab</td><td>Move to next / previous tab</td></tr>
+<tr><td>Tab / Shift+Tab</td><td>Move between controls within the active tab</td></tr>
+<tr><td>Spacebar</td><td>Toggle a tick in any device list, or toggle the focused checkbox</td></tr>
+<tr><td>Up / Down</td><td>Move between items in any list</td></tr>
+<tr><td>Alt+F4</td><td>Close (standard Windows)</td></tr>
+</table>
+
+<h2 id="hotkeys">14. Global hotkeys (work even when minimised)</h2>
+
+<p>Configurable in the Keyboard shortcuts dialog (Ctrl+K, or File &rarr; Keyboard shortcuts). The dialog is a single list of every bindable shortcut: arrow up and down to move between rows, press <strong>Enter</strong> to rebind the highlighted row, press <strong>Del</strong> to clear it (back to <em>not set</em>), press <strong>Escape</strong> (or Tab to the Close button) to close. Defaults:</p>
+
+<table>
+<tr><th>Hotkey</th><th>Action</th><th>Default</th></tr>
+<tr><td>Receive mute</td><td>Mute / unmute incoming audio (this machine)</td><td>Ctrl+Shift+Alt+R</td></tr>
+<tr><td>Send mute</td><td>Mute / unmute outgoing audio (this machine)</td><td>Ctrl+Shift+Alt+S</td></tr>
+<tr><td>Tray toggle</td><td>Show / hide the main window</td><td>Ctrl+Shift+F10</td></tr>
+<tr><td>Volume up / down</td><td>Adjust this machine's received-audio volume</td><td>Unset</td></tr>
+<tr><td>Send remote volume up to peers</td><td>Tell every connected peer to raise their RemSound app volume slider by 5 points (only honoured by peers that have ticked &ldquo;Accept remote volume commands&rdquo;). Doesn't change your own volume. See <a href="#remote-control">Remote control</a>.</td><td>Unset</td></tr>
+<tr><td>Send remote volume down to peers</td><td>Mirror, lower direction.</td><td>Unset</td></tr>
+<tr><td>Send remote receive mute toggle to peers</td><td>Tell every connected peer to toggle their RemSound receive mute.</td><td>Unset</td></tr>
+<tr><td>Send Windows global volume up to peers</td><td>Tell every connected peer to nudge their <em>Windows default-output-device</em> volume up by one OS native step (~2%, same as their keyboard volume key). Affects every app on the receiving machine, not just RemSound. Hold the hotkey for bigger jumps. See <a href="#remote-control">Remote control</a>.</td><td>Unset</td></tr>
+<tr><td>Send Windows global volume down to peers</td><td>Mirror, lower direction.</td><td>Unset</td></tr>
+<tr><td>Send Windows global mute toggle to peers</td><td>Tell every connected peer to toggle their Windows default-output-device mute.</td><td>Unset</td></tr>
+</table>
+
+<p>You can change any of these to whatever combination you prefer. Each accepts modifiers (Ctrl, Shift, Alt) plus one regular key.</p>
+
+<h2 id="remote-control">15. Remote control: adjusting a peer's listening volume from your end</h2>
+
+<p>The use case: you're on your laptop, listening to audio coming from your desktop, and you've got NVDA Remote open so you can drive the desktop with your laptop's keyboard. Every keystroke you make goes to the desktop &mdash; including any local volume hotkey on the laptop, which now never reaches the laptop. There's no way from inside that NVDA Remote session to nudge the laptop's listening volume without breaking out of the session.</p>
+
+<p>RemSound's <strong>remote control</strong> feature gives you a way: configure a hotkey on the desktop (the machine your keyboard is talking to) that sends a command across the audio link telling the laptop's RemSound to raise / lower / mute its own listening volume. You stay in NVDA Remote; the laptop responds.</p>
+
+<h3>Two flavours of remote command</h3>
+
+<p>You get two independent sets of remote-control hotkeys, both controlled by the same opt-in toggle on the receiver. Pick whichever fits the situation, or bind both:</p>
+
+<table>
+<tr><th>Set</th><th>What the receiver does</th><th>Best for</th></tr>
+<tr><td><strong>RemSound app volume</strong></td><td>Adjusts the receiving peer's RemSound in-app volume slider by 5 percentage points per press, or toggles the RemSound receive-mute. Only RemSound's audio is affected.</td><td>Fine adjustments while RemSound's slider is in its useful range. Doesn't affect screen-reader volume or any other app.</td></tr>
+<tr><td><strong>Windows global volume</strong></td><td>Nudges the receiving peer's Windows default-output-device master volume up or down by one OS-native step (~2%, exactly the same as pressing the keyboard volume key on the receiver), or toggles its master mute. Affects every app on the receiver, including the screen reader.</td><td>Real-world &ldquo;I need this louder&rdquo; cases, especially with hearing impairment or when RemSound's slider is already at the top. Hold the hotkey to ramp up over a longer range.</td></tr>
+</table>
+
+<p>Both sets target the receiver. Neither changes anything on the sending machine.</p>
+
+<h3>How to set it up</h3>
+
+<ol>
+<li>On the machine that should <em>respond</em> to remote commands (the one you're listening on &mdash; the laptop in the example): open <strong>Preferences</strong> (Ctrl+P) and tick <strong>Accept remote volume commands from peers</strong>. Save the profile (Ctrl+S) so the choice sticks. (One toggle covers both flavours of remote command.)</li>
+<li>On the machine that should <em>send</em> remote commands (the one your keyboard is driving &mdash; the desktop in the example): open the <strong>Keyboard shortcuts</strong> dialog (Ctrl+K). Bind whichever of the six remote-control rows you want:
+<ul>
+<li><strong>Send remote volume up / down to peers</strong> &mdash; nudges the receiver's RemSound app slider.</li>
+<li><strong>Send remote receive mute toggle to peers</strong> &mdash; toggles the receiver's RemSound mute.</li>
+<li><strong>Send Windows global volume up / down to peers</strong> &mdash; nudges the receiver's Windows master volume.</li>
+<li><strong>Send Windows global mute toggle to peers</strong> &mdash; toggles the receiver's Windows mute.</li>
+</ul>
+Bind whatever key combinations you prefer (e.g. Ctrl+Shift+Up / Ctrl+Shift+Down for one set, Ctrl+Alt+Up / Ctrl+Alt+Down for the other). These are global hotkeys: they fire as long as RemSound is running, no matter which app has focus.</li>
+<li>That's it. Press the configured hotkey on the desktop &mdash; the laptop responds the way it would if you'd pressed the corresponding key on the laptop directly, and you hear the change without leaving the NVDA Remote session. Hold the Windows-volume hotkey down for a steady ramp; the OS auto-repeat fires the step over and over.</li>
+</ol>
+
+<div class="warn">
+<strong>Heads-up about &ldquo;Windows global volume&rdquo;:</strong> system volume affects <em>everything</em> on the receiving machine &mdash; not just RemSound. NVDA's voice gets louder with it, browser audio gets louder, every notification gets louder. For a hearing-impaired listener that's usually exactly what you want (everything you hear gets a usable level), but it's a meaningfully different thing from the in-app slider, which only changes RemSound's audio. Use the right knob for the situation.
+</div>
+
+<h3>Mutuality</h3>
+
+<p>The feature is symmetric: both machines can both send and accept. If you configure hotkeys on both ends and tick &ldquo;Accept remote volume commands&rdquo; on both ends, either side can drive the other's volume. There is no &ldquo;controller&rdquo; / &ldquo;controllee&rdquo; designation.</p>
+
+<h3>What it does not touch</h3>
+
+<ul>
+<li>It changes RemSound's <em>receive volume slider</em> on the target machine, not Windows system volume. So your peer can't accidentally turn down a video call's audio or your screen reader.</li>
+<li>It only works between peers who are already connected (i.e. each has the other ticked in their connected-peers list). The audio allow-list is the gate &mdash; an unticked peer can't drive your volume.</li>
+<li>The opt-in tick is per-profile, so a setup you've designated as &ldquo;trusted home pair&rdquo; can have it on while a one-off jam-session profile keeps it off.</li>
+<li>Remote commands travel on the same UDP audio port as audio and heartbeat (47830 by default), so there's no extra firewall rule to add.</li>
+</ul>
+
+<div class="note">
+<strong>Diagnostic tip:</strong> the log file (Preferences dialog &rarr; Enable logs) records every remote-control send and receive, including <code>IGNORED</code> entries when an incoming command was rejected because the sender wasn't in your allow-list or because &ldquo;Accept remote volume commands&rdquo; was off. Useful for debugging &ldquo;why isn't my hotkey working&rdquo; without guessing.
+</div>
+
+<h2 id="startup">16. Startup behaviour</h2>
+
+<p>Open the <strong>Startup behaviour</strong> dialog from File &rarr; Preferences &rarr; Startup behaviour (or Ctrl+P, then Alt+S). It has three independent toggles, plus a profile picker that appears when the third one is on. Tab cycles between the three checkboxes, the profile list (when visible), and the Close button. Esc closes the dialog. Each tick is saved immediately &mdash; there's no OK/Apply button.</p>
+
+<table>
+<tr><th>Toggle</th><th>What it does</th></tr>
+<tr><td><strong>Start minimised to tray (Alt+M)</strong></td><td>RemSound minimises to the system tray immediately after the main window finishes loading. The window stays accessible via the tray icon and the tray hotkey. Useful when paired with the auto-start option below for a fully unattended &ldquo;boot the machine, start streaming&rdquo; flow.</td></tr>
+<tr><td><strong>Start RemSound automatically when this user logs in (Alt+A)</strong></td><td>Adds (or removes) a per-user entry in the Windows registry under <code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code> pointing at <code>RemSound.exe</code>. After ticking, Windows launches RemSound the next time you log in. The setting also shows up under Task Manager &rarr; Startup, where you can also disable it. Per-user only &mdash; doesn't need admin and doesn't affect anyone else who uses the same machine.</td></tr>
+<tr><td><strong>Start with a specific profile (Alt+P)</strong></td><td>When ticked, RemSound skips the startup profile picker and loads the profile you choose in the listbox below. When unticked, the profile picker shows as normal. If you have no saved profiles yet, ticking it shows a one-shot warning and stays unticked &mdash; save a profile first, then come back. To restore the picker temporarily without losing the choice, untick the box, launch normally, then re-tick after.</td></tr>
+</table>
+
+<p><strong>Profile to start with (Alt+L)</strong> &mdash; the listbox of saved profiles. Visible only when the third toggle is on. Arrow up/down to pick, the choice is saved as you move; double-click to pick and close the dialog at the same time.</p>
+
+<h3>Combining the three for a hands-off boot</h3>
+
+<ol>
+<li>Save a profile with the device ticks, peers, and audio settings you want for &ldquo;always-on&rdquo; use.</li>
+<li>Open Startup behaviour. Tick all three: <em>Start minimised</em>, <em>Start automatically when this user logs in</em>, <em>Start with a specific profile</em> &mdash; and pick the profile you just saved.</li>
+<li>Close the dialog. Reboot or log out and back in to test &mdash; RemSound launches itself, loads the profile, and goes straight to the tray. Audio starts flowing as soon as the peer is reachable.</li>
+</ol>
+
+<div class="note">
+<strong>Storage:</strong> the start-minimised choice and the start-with-profile name live in <code>&lt;exe&gt;\remsound.config.json</code> (machine-local, profile-independent). The auto-start toggle lives in the Windows registry only &mdash; deleting <code>remsound.config.json</code> will not turn off the auto-start; you toggle it from this dialog or from Task Manager &rarr; Startup.
+</div>
+
+<h2 id="updates">17. Updating RemSound</h2>
+
+<p>RemSound can check its own GitHub Releases page for a newer build on a schedule you choose, prompt you to install, and either ask first or do it silently. There&rsquo;s also a one-press &ldquo;check now&rdquo; button so you don&rsquo;t have to wait for the timer.</p>
+
+<h3>Settings in Preferences</h3>
+
+<p>Open <strong>File &rarr; Preferences</strong> (or Ctrl+P). The update settings sit above the logging row:</p>
+
+<table>
+<tr><th>Setting</th><th>Shortcut</th><th>What it does</th></tr>
+<tr><td><strong>Check for updates</strong> (drop-down)</td><td>Alt+U</td><td>How often RemSound polls GitHub in the background. Options: <em>Never</em>, <em>Every hour</em>, <em>Every 6 hours</em>, <em>Every 24 hours</em>. Default is <em>Every 24 hours</em>. The choice is remembered across launches; if you set it to <em>Never</em>, the only way an update arrives is via the manual button below.</td></tr>
+<tr><td><strong>Check for updates now</strong> (button)</td><td>Alt+N</td><td>Runs the GitHub check immediately. If you&rsquo;re already on the latest version you get a small &ldquo;you are running the latest version&rdquo; popup. If there&rsquo;s a newer release, you get a confirmation dialog with the release notes and a Yes / No to install. The same button is in the Help menu (Alt+H, C).</td></tr>
+<tr><td><strong>Silently install updates when available</strong> (checkbox)</td><td>Alt+I</td><td>When ticked, the background timer&rsquo;s tick installs any available update without prompting &mdash; RemSound downloads, exits briefly, swaps the files, and relaunches itself. Off by default. The <em>manual</em> &ldquo;Check for updates now&rdquo; path always prompts regardless of this checkbox.</td></tr>
+</table>
+
+<h3>What happens during an install</h3>
+
+<p>RemSound can&rsquo;t overwrite its own .exe while it&rsquo;s running, so an install spawns a small one-shot helper that finishes the job after RemSound exits:</p>
+
+<ol>
+<li>RemSound downloads the new release&rsquo;s <code>RemSound-vX.Y.zip</code> from GitHub into a staging folder next to the running .exe.</li>
+<li>It writes a tiny detached <code>_apply-update.cmd</code> alongside it that watches the RemSound process.</li>
+<li>RemSound exits.</li>
+<li>The detached cmd notices the exit, copies the staged files over the install folder, deletes the staging folder, and relaunches <code>RemSound.exe</code>.</li>
+<li>The cmd deletes itself.</li>
+</ol>
+
+<p>You&rsquo;ll see the window close, then reopen on the new version within a second or two. Anything that was unsaved on the old session (a profile in mid-edit, for instance) is lost &mdash; RemSound will not auto-save before installing. Save first if you&rsquo;ve been editing.</p>
+
+<h3>If install fails</h3>
+
+<p>The downloader is best-effort: a flaky network, a locked install folder, or a temporarily-unavailable release will pop a MessageBox saying it couldn&rsquo;t complete and leave the running version untouched. The release page URL is in the popup so you can grab the zip in a browser and install by hand if needed. If you installed RemSound into <code>Program Files</code> without granting your user write permission to the install folder, the install helper&rsquo;s file-copy step will fail too &mdash; either fix the permission or move RemSound to a writable folder (e.g. somewhere under your user profile).</p>
+
+<h3>The About dialog and release notes</h3>
+
+<p>To see what version you&rsquo;re currently on without checking for updates, open <strong>Help &rarr; About RemSound</strong> (Alt+H, A). The dialog shows the version number and the release notes for the build you&rsquo;re running, in a scrollable read-only text box you can tab into and arrow through under NVDA. Close (or Esc) dismisses.</p>
+
+<h2 id="logs">18. Logs and diagnostics</h2>
+
+<p>If logging is enabled (the <strong>Enable logs</strong> checkbox in the Preferences dialog &mdash; File → Preferences, or Ctrl+P &mdash; default on), RemSound writes a tab-separated log file per session into <code>publish\logs\</code> (relative to wherever <code>RemSound.exe</code> lives). One file per launch, named <code>RemSound-&lt;machine&gt;-&lt;PID&gt;-&lt;date&gt;-&lt;time&gt;.log</code>.</p>
+
+<p>The file contains two kinds of rows:</p>
+
+<table>
+<tr><th>Kind</th><th>Contents</th></tr>
+<tr><td>EVT</td><td>Event lines &mdash; startup, peer selected, capture started, errors, etc.</td></tr>
+<tr><td>SNAP</td><td>One-second snapshots of running stats: codec, latency target, buffered audio milliseconds, packets sent, packets received, underruns, drops, peer heartbeat RTTs.</td></tr>
+</table>
+
+<p>The <strong>Write logs now</strong> button in the Preferences dialog (Alt+W within that dialog) writes a "user requested write logs now" marker into the log so you can find the moment in the file later.</p>
+
+<p>Logs are plain UTF-8 text and openable in any spreadsheet (paste-as-tab-separated) or text editor. Most useful columns when something feels wrong:</p>
+<ul>
+<li><strong>BufferMs</strong> &mdash; how much audio is queued for playback. Should sit close to your latency target.</li>
+<li><strong>Underruns</strong> &mdash; count of moments the playback buffer ran dry. Each one is a tiny click. A few per minute is normal on WAN; hundreds per second means something is broken.</li>
+<li><strong>Drops</strong> &mdash; packets discarded because the buffer overflowed. Should stay near zero in normal use.</li>
+<li><strong>Heartbeat</strong> &mdash; RTT to each connected peer. <code>pending</code> / <code>unreachable</code> / <code>stale</code> indicate problems.</li>
+<li><strong>OpusFecRecoveries</strong> &mdash; running total of single-packet drops that were silently filled in by Opus packet-loss recovery. A non-zero number that&rsquo;s growing means FEC is saving you from clicks. Only meaningful when an Opus codec is in use.</li>
+<li><strong>OpusUnrecoveredGaps</strong> &mdash; running total of multi-packet drops that FEC couldn&rsquo;t repair. Each one corresponds to an audible click. Stays at 0 on a clean line; small numbers are normal on WAN.</li>
+</ul>
+
+<h2 id="troubleshooting">19. Troubleshooting</h2>
+
+<h3>I don&rsquo;t hear my friend</h3>
+<ol>
+<li>Connectivity tab: is your friend in <strong>Connected peers</strong> with a green RTT (e.g. &ldquo;192.168.1.5: 27 ms&rdquo;), not <em>unreachable</em> or <em>pending</em>?</li>
+<li>Audio inputs and outputs tab: is <strong>Receive audio</strong> ticked?</li>
+<li>Same tab: is at least one output device ticked in the WASAPI or ASIO output list?</li>
+<li>Same tab: is the volume slider above zero?</li>
+</ol>
+
+<h3>My friend doesn&rsquo;t hear me</h3>
+<ol>
+<li>Audio inputs and outputs tab: is <strong>Send my audio</strong> ticked?</li>
+<li>Same tab: is at least one capture source ticked across the three send lists?</li>
+<li>If you&rsquo;re using a microphone: is Windows&rsquo; microphone privacy setting allowing apps to use it? (Settings &rarr; Privacy &rarr; Microphone.)</li>
+<li>Have they ticked <em>your</em> name in their Discovered peers list?</li>
+</ol>
+
+<h3>I can hear them but the audio crackles</h3>
+<ul>
+<li><strong>First, try raising Buffer smoothness</strong> by 1 or 2 on the Audio profile tab (Alt+B). It usually fixes crackles for a smaller delay cost than bumping the latency.</li>
+<li>Then, try raising the Audio latency value (Alt+L). WAN connections often need 30&ndash;80 ms.</li>
+<li>If using PCM, switch to Opus &mdash; Opus has built-in single-packet-loss recovery that PCM doesn&rsquo;t. Much more tolerant of network instability.</li>
+<li>If on Wi-Fi, try wired Ethernet &mdash; Wi-Fi adds 5&ndash;20 ms of unpredictable jitter.</li>
+<li>If you previously set Packet size to &ldquo;Small (LAN only)&rdquo; but you&rsquo;re now on the internet rather than the same-house LAN, switch it back to Standard. Small packets double your packet rate, which makes WAN clicks more likely.</li>
+</ul>
+
+<h3>Audio is fine but the delay feels long</h3>
+<ul>
+<li>Lower the relevant latency value on the Audio profile tab in steps until clicks just start, then nudge back up by one step. With an ASIO driver selected this is two independent knobs (one per lane).</li>
+<li>Or, turn on Continuous auto-tune for the lane that feels slow and let RemSound find the right level.</li>
+<li>Drop Buffer smoothness down towards 3 if you&rsquo;d been running it high &ldquo;just in case&rdquo;.</li>
+<li>If only WASAPI matters for your session, set the ASIO driver picker to <em>(none)</em> &mdash; that disables ASIO entirely and removes its lane from the pipeline.</li>
+</ul>
+
+<h3>The ASIO lane sounds grainy or constantly micro-clicks</h3>
+<p>Most likely your ASIO latency target is below the platform&rsquo;s real-world jitter floor. The receiver fights to hold the buffer at the target by drift-dropping frames and click-trimming &mdash; both are audible. Raise <strong>ASIO latency in milliseconds (Alt+L)</strong> on the Audio profile tab to 25 ms or more and the grain should vanish. Even pure-ASIO setups don&rsquo;t safely sustain sub-15-ms receive buffers over real networks; aim higher on Wi-Fi.</p>
+
+<h3>I can&rsquo;t see my friend in Discovered peers</h3>
+<ul>
+<li>If on the same LAN: are both machines on the same Wi-Fi or Ethernet segment? Some guest networks isolate clients from each other.</li>
+<li>If on Tailscale: type their Tailscale IP into &ldquo;Add peer by IP&rdquo; (Connectivity tab, Alt+A) once. After that, both sides see each other automatically.</li>
+<li>Check Windows Firewall isn&rsquo;t blocking RemSound. The first launch usually prompts; if you said no, you&rsquo;ll need to allow it manually.</li>
+</ul>
+
+<h3>One side says &ldquo;unreachable&rdquo; even though audio is flowing</h3>
+<p>Heartbeat shares the audio port, so if audio gets through, heartbeat should too. If one side is showing &ldquo;unreachable&rdquo; while audio plays, make sure both machines are running the same RemSound build &mdash; an older version on either end can speak a different heartbeat dialect.</p>
+
+<h3>NVDA went silent or crackly when I selected an ASIO driver</h3>
+<p>You probably picked Realtek ASIO. It&rsquo;s a generic wrapper, not bound to Realtek hardware, and tends to grab whatever Windows&rsquo; default audio device is &mdash; which is usually the same one NVDA is using. Arrow back to <em>(none)</em> in the ASIO driver picker (or pick a different ASIO driver).</p>
+
+<h3>Audio device list shows old devices that are no longer plugged in</h3>
+<p>RemSound refreshes its lists every second. If a device has truly been unplugged it should disappear within a few seconds. If it&rsquo;s lingering, restart RemSound &mdash; Windows&rsquo; device cache occasionally needs poking.</p>
+
+<h2 id="glossary">20. Glossary</h2>
+
+<table>
+<tr><th>Term</th><th>Meaning</th></tr>
+<tr><td>WASAPI</td><td>Windows Audio Session API. The standard Windows audio path. Every audio device in your Windows Sound control panel is reachable via WASAPI. Latency around 10&ndash;30 ms.</td></tr>
+<tr><td>ASIO</td><td>Audio Stream Input/Output. A different audio path, written by hardware vendors, that bypasses the Windows audio engine. Used by music production software for sub-5 ms latency. Requires a vendor-supplied driver.</td></tr>
+<tr><td>Loopback capture</td><td>Capturing what&rsquo;s currently being played out of an output device (rather than what&rsquo;s coming in from a microphone). The &ldquo;WASAPI outputs to send&rdquo; list is loopback capture.</td></tr>
+<tr><td>Channel pair</td><td>A stereo pair of channels on an ASIO driver. Pair 1 = channels 1+2, Pair 2 = channels 3+4, etc.</td></tr>
+<tr><td>UDP</td><td>The network protocol RemSound uses for audio. Unlike TCP it doesn&rsquo;t retransmit lost packets &mdash; at audio rates a retransmitted packet is too late to be useful, so we just skip it and keep going.</td></tr>
+<tr><td>Heartbeat</td><td>A small UDP packet exchanged between peers every second to verify they&rsquo;re still reachable and measure round-trip time. Travels on the audio port (47830 by default).</td></tr>
+<tr><td>Discovery</td><td>The mechanism by which RemSound peers find each other on the network without needing to know each other&rsquo;s IP addresses up front.</td></tr>
+<tr><td>Tailscale</td><td>A user-friendly VPN that puts your machines on a private virtual network. The easiest way to connect RemSound across the internet without router configuration.</td></tr>
+<tr><td>Jitter</td><td>Variation in the arrival time of network packets. The reason a receive-side buffer is needed.</td></tr>
+<tr><td>Auto-tune</td><td>The receiver&rsquo;s automatic adjustment of the latency target based on observed network jitter. Off by default; turn on via the Continuous auto-tune checkbox on the Audio profile tab.</td></tr>
+<tr><td>Profile</td><td>A saved snapshot of every RemSound setting and selection &mdash; device ticks, send / receive states, codec, latency, peers, hotkeys, ASIO driver choice, the lot. Stored as one JSON file per profile. Picked at startup; switchable mid-session via File &rarr; Open profile.</td></tr>
+<tr><td>Blank template</td><td>A startup option in the profile picker that begins a session with all defaults &mdash; nothing ticked, no peers, no save name. The starting point for creating a new profile, or for one-off sessions you don&rsquo;t intend to save.</td></tr>
+<tr><td>Lock to audio clock</td><td>Sender-side timing mode that drives packet emission directly from the audio device&rsquo;s hardware-clock interrupts instead of from a Windows scheduler tick. Eliminates a few milliseconds of jitter on tight latency targets. Off by default. Toggled via the checkbox of the same name on the Audio profile tab.</td></tr>
+<tr><td>Concealment</td><td>Receiver-side feature that fills brief audio-buffer underruns with a small noise burst (the default) or raw zero-fill / click. Choice lives on the Audio profile tab as the <em>Artefact sound type</em>. Opus has its own packet-loss recovery built into the codec on top of this.</td></tr>
+<tr><td>AppConfig</td><td>A small machine-local JSON file at <code>&lt;exe&gt;\remsound.config.json</code> that stores preferences which should be sticky regardless of which profile is active &mdash; today: the profiles folder location, the Startup behaviour choices, and the &ldquo;do not show me this again&rdquo; tick on the Save-profile confirmation popup.</td></tr>
+<tr><td>Remote control</td><td>A small RemSound feature that lets one connected peer nudge another peer's listening volume (or toggle their receive mute) via configurable global hotkeys. Two sets of commands: one adjusts the receiver's RemSound app slider, the other adjusts the receiver's Windows default-output-device master volume. Off by default on both ends; the receiver opts in via &ldquo;Accept remote volume commands from peers&rdquo; in the Preferences dialog (Ctrl+P), the sender configures hotkeys in the Keyboard shortcuts dialog (Ctrl+K). Designed for the &ldquo;I'm NVDA-Remote'd into my desktop and want to nudge the laptop's volume&rdquo; case. See section 15.</td></tr>
+<tr><td>Control packet</td><td>The wire-level message used by the remote-control feature. A 14-byte UDP packet (12-byte header + 2-byte payload) carrying a kind enum (RemSound volume up / down / mute toggle, or Windows system volume up / down / mute toggle) and a signed delta. Travels on the same UDP audio port as everything else.</td></tr>
+</table>
+
+<hr>
+
+</body>
+</html>

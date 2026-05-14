@@ -20,6 +20,46 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v1.1
+
+        Priority and performance hardening, plus always-on network
+        packet priority. Aimed at the cold-start latency jitter you
+        sometimes hear when the machine has been idle.
+
+        What's new:
+          * Use CPU and Windows performance settings in high priority
+            mode (Audio profile tab, Alt+U). Off by default; opt in per
+            profile. Combines eight Windows power and scheduling levers
+            so the OS can't decide we're idle and downclock: process
+            power-throttling off (including timer-resolution honouring),
+            an execution-required power request, scheduler quantum
+            pinned to 1 ms, process priority raised to High, working-set
+            minimum locked, memory priority normalised, and
+            SetThreadExecutionState set to keep the system awake. Fully
+            reversed on toggle-off and on app exit. Costs battery on
+            laptops — that's why it's off by default.
+          * Network packet priority — always on, no toggle. The
+            outbound UDP socket is attached to Windows' built-in qWAVE
+            service at Voice priority (DSCP 46, WMM Voice on Wi-Fi). On
+            a busy Wi-Fi access point, RemSound's packets win
+            medium-contention against other clients; on wired LAN,
+            switches that honour DSCP give us scheduling priority.
+            Neutral across the public internet (most ISPs strip DSCP at
+            the edge). Silent fallback if the qWAVE service isn't
+            available on stripped-down Windows images.
+          * Sender and receiver UDP kernel buffers bumped to 1 MB each
+            way — enough to absorb roughly 30 ms of GC or scheduler
+            stall without dropping datagrams.
+          * MMCSS audio-thread priority on the network listener, mix
+            loop, and render thread bumped from High to Critical
+            (always on, no toggle).
+
+        Bug fixes:
+          * Toggling "Enable logs" in Preferences no longer marks the
+            current profile as dirty. Logs are a machine-local setting,
+            so the spurious flag was triggering the "unsaved changes?"
+            prompt on exit after just toggling logs.
+
         RemSound v1.0
 
         Initial public release.

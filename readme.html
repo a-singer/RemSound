@@ -260,7 +260,35 @@ ul, ol { padding-left: 1.4em; }
 
 <h2 id="tab-profile">8. Audio profile tab</h2>
 
-<p>Everything that shapes the audio quality / latency trade-off lives here. The tab is split into two NVDA-announced groups: <strong>Audio send parameters</strong> at the top, <strong>Audio receive parameters</strong> below. As you tab through, NVDA announces which group you&rsquo;ve entered.</p>
+<p>Everything that shapes the audio quality / latency trade-off lives here. The first thing you land on when you Tab into the tab is the <em>Priority mode</em> checkbox — kept ungrouped at the top because it's the single biggest knob for cold-start audio feel. Below that, two NVDA-announced groups: <strong>Audio send parameters</strong> first, <strong>Audio receive parameters</strong> below. As you tab through, NVDA announces which group you&rsquo;ve entered.</p>
+
+<h3>Use CPU and Windows performance settings in high priority mode (Alt+U)</h3>
+
+<p>The first control on the tab. When ticked, RemSound asks Windows for high-priority treatment across the board, the entire time RemSound is open under this profile. Specifically:</p>
+
+<ul>
+<li>No automatic CPU downclock when the machine looks idle.</li>
+<li>No migration of audio threads onto efficiency cores on hybrid CPUs (12th-gen Intel and later).</li>
+<li>No deep CPU-sleep idle states.</li>
+<li>1&nbsp;ms scheduler quantum honoured even when other apps haven&rsquo;t asked for it.</li>
+<li>High process priority class.</li>
+<li>Process memory priority asserted as normal, so Windows doesn&rsquo;t demote our pages under memory pressure.</li>
+<li>Working-set minimum locked at 32&nbsp;MB so the OS&rsquo;s idle-time trimmer can&rsquo;t page out our hot code and audio buffers.</li>
+<li>MMCSS Pro Audio thread priority bumped one notch from the default High to Critical on every hot thread (network listener, mix loop, render).</li>
+</ul>
+
+<p>Net effect: the cold-start &ldquo;first few seconds sound terrible, then it warms up&rdquo; behaviour goes away. Nothing in the OS coasts while RemSound is sitting between bursts of activity.</p>
+
+<p>It&rsquo;s a <strong>per-profile</strong> setting, so you can have one profile for live sessions where this is on and another for casual background-listening profiles where it stays off. Toggling marks the profile as having unsaved changes; save the profile to keep the choice.</p>
+
+<table>
+<tr><th>When to tick it</th><th>When to leave it off</th></tr>
+<tr><td>Live music collaboration. Anything where the first few seconds matter. Pro-audio setups using ASIO at very low latency targets (sub-15&nbsp;ms). Sessions where the CPU sits idle between brief bursts of activity (one person presses Push-To-Talk on the other end).</td><td>Battery-powered laptop, especially when running long. Background listening over hours. A passive monitoring profile that doesn&rsquo;t need responsive cold starts.</td></tr>
+</table>
+
+<p>Cost on a desktop: a couple of watts more while RemSound is open. Cost on a laptop on battery: more aggressive battery drain over the session because the cores park in a higher power state instead of dropping to deep idle &mdash; RemSound&rsquo;s actual CPU usage doesn&rsquo;t change, the cores just don&rsquo;t sleep. The override is automatically reversed when RemSound closes (or when you untick it), so leaving the app running with the box on for a session is fine &mdash; turning it off mid-session also works.</p>
+
+<p>None of the other apps on your machine are affected. RemSound only asks Windows to keep <em>itself</em> at high priority; the OS keeps throttling everything else normally, so your screen reader, browser and background services still get the usual power-saving treatment.</p>
 
 <h3>Audio send parameters</h3>
 
@@ -369,6 +397,19 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <p>One canonical audio port number is used for everything &mdash; Tailscale, LAN peer-to-peer, and any relay server. You never need to type a port after a hostname or IP; the default is implied. Both sides of a connection need to use the same audio port number.</p>
 
 <p>Heartbeat packets ride on the same UDP port as audio, so if your audio reaches the peer, your heartbeat does too &mdash; one firewall rule covers both.</p>
+
+<h3>Network packet priority (qWAVE / Voice / WMM)</h3>
+
+<p>RemSound asks Windows&rsquo; built-in Quality-of-Service service (<strong>qWAVE</strong> &mdash; Quality Windows Audio/Video Experience) to mark its outbound audio packets as <strong>Voice priority</strong> (DSCP 46, Expedited Forwarding). This happens automatically on every launch &mdash; there&rsquo;s no toggle &mdash; and falls back silently if the service is unavailable (some stripped-down Windows images).</p>
+
+<p>What it buys you, in order of how much you&rsquo;ll actually notice:</p>
+<ul>
+<li><strong>Wi-Fi:</strong> the DSCP marking maps to <strong>WMM Voice access category</strong>, the shortest medium-contention window the Wi-Fi standard defines. On a busy access point with other clients fighting for airtime (someone streaming, downloading, video-calling), RemSound&rsquo;s packets get to transmit first. This is the biggest real-world win.</li>
+<li><strong>Local NIC scheduling:</strong> the Windows network stack sends RemSound&rsquo;s packets ahead of best-effort traffic from the same machine (browser downloads, OS background transfers, cloud-sync uploads). When the upstream is saturated, audio still goes out cleanly.</li>
+<li><strong>Wired LAN switches and routers that honour DSCP:</strong> most consumer kit does, on the local side at least. The marking can give RemSound&rsquo;s packets priority through the home network.</li>
+</ul>
+
+<p>What it <em>doesn&rsquo;t</em> buy you: priority across the public internet. Most ISPs strip or rewrite DSCP markings at the network edge, so the qWAVE bits rarely survive past your local ISP&rsquo;s first hop. LAN and same-house Wi-Fi: tangible benefit. Across the internet: neutral &mdash; no harm, no help. RemSound also requests <strong>1 MB kernel send and receive buffers</strong> on its UDP sockets so a momentary stall (GC, scheduler hiccup) up to roughly 30 ms doesn&rsquo;t cause the kernel to drop datagrams on either side.</p>
 
 <h3>LAN &mdash; same Wi-Fi or Ethernet</h3>
 <p>On a normal home network, discovery and heartbeat both work without configuration. Launch RemSound on two machines and they&rsquo;ll see each other within a second or two via the discovery broadcast. No firewall changes are usually needed because UDP broadcast is allowed by default.</p>
@@ -536,6 +577,7 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 
 <table>
 <tr><th>Key</th><th>Action</th></tr>
+<tr><td>Alt+U</td><td>Toggle Use CPU and Windows performance settings in high priority mode (for this profile)</td></tr>
 <tr><td>Alt+C</td><td>Focus Audio codec</td></tr>
 <tr><td>Alt+P</td><td>Focus Packet size</td></tr>
 <tr><td>Alt+K</td><td>Toggle Lock to audio clock</td></tr>

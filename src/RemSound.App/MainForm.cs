@@ -187,6 +187,19 @@ public sealed class MainForm : Form
     private readonly ListBox smoothnessBox = new() { Width = 420, Height = 200, IntegralHeight = false, AccessibleName = "Buffer smoothness (Alt+B)" };
     private readonly ListBox artefactBox = new() { Width = 420, Height = 60, IntegralHeight = false, AccessibleName = "Artefact sound type (Alt+A) — controls how audio gaps sound" };
     private readonly AccessibleCheckBox tightLatencyBox = new() { AutoSize = true };
+    // Priority mode (per profile). Sits as the first control on the Audio profile tab,
+    // ungrouped above the two GroupBoxes, so it's the first thing focus lands on when the
+    // user Tabs into the tab. Toggling marks the profile dirty (the setting lives in
+    // Profile, not AppConfig) and flips every PerformanceMode lever in one shot — CPU
+    // scheduling, Windows power management, memory priority, working-set lock, and
+    // MMCSS thread priority. Label deliberately mentions both "CPU" and "Windows
+    // performance settings" because the toggle reaches well past just CPU scheduling.
+    private readonly AccessibleCheckBox priorityModeBox = new()
+    {
+        Text = "&Use CPU and Windows performance settings in high priority mode (Alt+U)",
+        AccessibleName = "Use CPU and Windows performance settings in high priority mode",
+        AutoSize = true,
+    };
 
     // --- Connectivity tab controls (Phase 2 refactor) ---
     private readonly LiveCheckedListBox connectedPeersList = new() { CheckOnClick = true, Width = 430, Height = 90, AccessibleName = "Connected peers (Alt+C)" };
@@ -626,6 +639,12 @@ public sealed class MainForm : Form
         // having to infer from sender-engine restarts. Includes the audio mode because what
         // "tight" means is mode-dependent (per-callback ASIO emission vs. WASAPI push-mode).
         logFile.Event($"tight latency at startup: {(initialTightLatency ? "on" : "off")} (audio mode={settings.LoadAudioMode()})");
+
+        // Priority mode (per-profile). Applies every PerformanceMode lever on first launch
+        // under this profile so the OS doesn't start coasting before the user has tabbed
+        // onto the Audio profile tab. The Audio-profile tab's checkbox handler re-applies
+        // on every toggle.
+        PerformanceMode.Apply(settings.LoadPriorityMode(), msg => logFile.Event(msg));
         // Native-rate passthrough is automatic now (driven by codec, not a user setting):
         // PCM+single-source-WASAPI-push = pass capture-device rate through to the wire;
         // Opus = always pre-resample to 48 kHz (encoder is locked at 48 k); MixingEngine /
@@ -801,6 +820,10 @@ public sealed class MainForm : Form
             continuousTuneTimer.Stop();
             updateCheckTimer.Stop();
             asioDriverChangeDebounce.Stop();
+            // Reverse every Win32 lever PerformanceMode applied. The kernel would clean
+            // these up on process exit anyway, but doing it explicitly releases the power
+            // request handle and matches our timeBeginPeriod with a timeEndPeriod.
+            try { PerformanceMode.Apply(false, msg => logFile.Event(msg)); } catch { /* harmless */ }
             try { discovery.Dispose(); } catch { }
             try { heartbeatService?.Dispose(); } catch { }
 
@@ -1522,19 +1545,37 @@ public sealed class MainForm : Form
     /// mirrors of hidden form-fields.</summary>
     private void BuildAudioProfileTab()
     {
-        // Outer layout: one column, two rows — one row per GroupBox. AutoScroll on so the
-        // tab page handles overflow rather than the inner groups clipping their contents.
+        // Outer layout: one column, three rows. Row 0 is the Full-CPU-speed checkbox — the
+        // first thing the user lands on when they Tab into the tab, deliberately ungrouped
+        // and at the top so it can't be missed. Rows 1 and 2 are the existing Audio send
+        // parameters / Audio receive parameters GroupBoxes. AutoScroll on so the tab page
+        // handles overflow rather than the inner groups clipping their contents.
         var outerPanel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(12),
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 3,
             AutoScroll = true,
         };
         outerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         outerPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         outerPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        outerPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        // Wrap the checkbox in its own FlowLayoutPanel — same NVDA-friendly pattern the
+        // form's other top-level checkboxes use (a bare CheckBox in a TableLayoutPanel
+        // cell suppresses some state-change announcements; the FlowLayoutPanel restores
+        // the announcement chain).
+        var priorityModePanel = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        priorityModePanel.Controls.Add(priorityModeBox);
+        priorityModeBox.Checked = settings.LoadPriorityMode();
+        priorityModeBox.CheckedChanged += (_, _) =>
+        {
+            settings.SavePriorityMode(priorityModeBox.Checked);
+            PerformanceMode.Apply(priorityModeBox.Checked, msg => logFile.Event(msg));
+            MarkProfileDirty();
+        };
 
         var sendGroup = new GroupBox
         {
@@ -1554,8 +1595,9 @@ public sealed class MainForm : Form
         BuildAudioSendGroupContents(sendGroup);
         BuildAudioReceiveGroupContents(receiveGroup);
 
-        outerPanel.Controls.Add(sendGroup, 0, 0);
-        outerPanel.Controls.Add(receiveGroup, 0, 1);
+        outerPanel.Controls.Add(priorityModePanel, 0, 0);
+        outerPanel.Controls.Add(sendGroup, 0, 1);
+        outerPanel.Controls.Add(receiveGroup, 0, 2);
         audioProfileTabPage.Controls.Add(outerPanel);
     }
 

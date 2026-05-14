@@ -30,8 +30,14 @@ public sealed class WindowsAudioThreadBoost : IDisposable
 
         if (avrtHandle != IntPtr.Zero)
         {
-            AvSetMmThreadPriority(avrtHandle, AvrtPriority.High);
-            Mode = $"MMCSS {taskName}";
+            // Critical sits one notch above the MMCSS task's default priority (High).
+            // It's still well below RealTime — the OS keeps a reservation for system
+            // services above us so the audio stack and screen reader can't be starved.
+            // Empirically the bump helps the receive listener and the render thread when
+            // the machine is also doing other foreground work (browser, NVDA reading a
+            // page) by getting us off the queue ahead of those tasks' worker threads.
+            AvSetMmThreadPriority(avrtHandle, AvrtPriority.Critical);
+            Mode = $"MMCSS {taskName} (priority Critical)";
         }
     }
 

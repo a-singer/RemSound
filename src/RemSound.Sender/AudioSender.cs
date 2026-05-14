@@ -44,6 +44,12 @@ public sealed class AudioSender : IDisposable
     private ICaptureBackend engine;
     private IReadOnlyList<CaptureSourceSpec> pendingSources = [];
     private readonly UdpClient udp;
+    // qWAVE attachment for the outbound UDP socket. Marks our packets at DSCP Voice (EF/46)
+    // and gives them NIC-scheduler priority over best-effort traffic. Wins on LAN and Wi-Fi
+    // (WMM Voice access category); neutral across the public internet (most ISPs strip DSCP).
+    // Always on — no toggle. Failure (qwave.dll missing, QoS service disabled) is logged and
+    // ignored; the socket continues unprioritised.
+    private readonly NetworkPriority networkPriority = new();
     // Two lanes. defaultLane carries every output in the three classic modes (Mixed route).
     // In BothIndependent mode defaultLane carries WASAPI-only audio (route WasapiLane) and
     // asioLane carries ASIO-only audio (route AsioLane), each producing its own UDP stream
@@ -141,8 +147,11 @@ public sealed class AudioSender : IDisposable
     public AudioSender()
     {
         udp = new UdpClient(AddressFamily.InterNetwork);
-        udp.Client.SendBufferSize = 256 * 1024;
-        udp.Client.ReceiveBufferSize = 256 * 1024;
+        // 1 MB kernel buffers each way — big enough to absorb GC pauses or scheduler hiccups
+        // up to ~30 ms at typical PCM-stereo bitrates without dropping packets on the kernel
+        // side. The old 256 KB ceiling was the actual cap on resilience to short stalls.
+        udp.Client.SendBufferSize = 1024 * 1024;
+        udp.Client.ReceiveBufferSize = 1024 * 1024;
         // Explicit bind to port 0 (OS picks an ephemeral). Two reasons:
         //   1. ReceiveFrom on an unbound UDP socket throws SocketException (WSAEINVAL) on
         //      Windows — the receive thread we start below would then CPU-spin in its
@@ -152,6 +161,12 @@ public sealed class AudioSender : IDisposable
         //      this; LAN peer-to-peer is unaffected (we still send from this port, peer just
         //      sends to its own well-known port as before).
         udp.Client.Bind(new IPEndPoint(IPAddress.Any, 0));
+        // Attach the bound socket to qWAVE Voice flow. Must happen after Bind — qWAVE
+        // inspects the local endpoint when it registers the flow. Diagnostics route through
+        // the same sink as everything else; if Diagnostic hasn't been wired yet (typical at
+        // construction time), the lines are silently dropped, which is acceptable for a
+        // success/no-op outcome. On failure the socket keeps working without prioritisation.
+        networkPriority.TryAttach(udp.Client, msg => diagnostic?.Invoke(msg));
         defaultLane = new SenderLane(this, opusFrameMs, OpusBitrateLan);
         asioLane = new SenderLane(this, opusFrameMs, OpusBitrateLan);
         // WasapiOnly at startup — no ASIO needed yet, so persistentAsio stays null.
@@ -528,6 +543,11 @@ public sealed class AudioSender : IDisposable
         // own it here and close the driver as part of app shutdown.
         try { persistentAsio?.Dispose(); } catch { /* ignore */ }
         persistentAsio = null;
+        // Detach the qWAVE flow before closing the socket — the qwave handle holds a
+        // reference into the kernel-side socket state, and closing the socket first leaves
+        // the QOS flow handle pointing at freed state. Order matters even though both calls
+        // are wrapped in try/catch.
+        try { networkPriority.Dispose(); } catch { /* ignore */ }
         udp.Dispose();
     }
 

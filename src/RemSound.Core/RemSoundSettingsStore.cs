@@ -284,6 +284,21 @@ public sealed class RemSoundSettingsStore
         Save(s);
     }
 
+    /// <summary>Priority mode for the current profile. When true, the App's
+    /// <c>PerformanceMode</c> helper drives every Win32 lever that elevates a process's
+    /// scheduling and memory behaviour: EcoQoS opt-out, kernel power request, High
+    /// priority class, 1&nbsp;ms scheduler quantum, memory priority, working-set lock,
+    /// and MMCSS thread priority. Off by default; the user opts in per profile.</summary>
+    public bool LoadPriorityMode(bool defaultValue = false) =>
+        Try(() => Load()?.PriorityMode) ?? defaultValue;
+
+    public void SavePriorityMode(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.PriorityMode = value;
+        Save(s);
+    }
+
     /// <summary>Suppresses the connect/disconnect sound cues that play when a peer's health
     /// transitions to/from Healthy. Off by default — cues are on. Saved per-profile so users
     /// who don't want them in a given setup don't have to remember to mute every session.
@@ -399,6 +414,7 @@ public sealed class RemSoundSettingsStore
             // mode is derived from AsioDriverName and the Both-mode warning popup is gone.
             SendRate = profile.SendRate,
             TightLatencyMode = profile.TightLatencyMode,
+            PriorityMode = profile.PriorityMode,
             Smoothness = profile.Smoothness,
             ConcealmentArtifact = (ConcealmentArtifact)profile.ConcealmentArtifactRaw,
             MuteConnectionCues = profile.MuteConnectionCues,
@@ -439,6 +455,7 @@ public sealed class RemSoundSettingsStore
         // popup that owned the suppression flag is gone.
         if (s.SendRate is SendRate sr) profile.SendRate = sr;
         if (s.TightLatencyMode is bool tl) profile.TightLatencyMode = tl;
+        if (s.PriorityMode is bool pm) profile.PriorityMode = pm;
         if (s.Smoothness is int sm) profile.Smoothness = sm;
         if (s.ConcealmentArtifact is ConcealmentArtifact ca) profile.ConcealmentArtifactRaw = (int)ca;
         if (s.MuteConnectionCues is bool mc) profile.MuteConnectionCues = mc;
@@ -492,6 +509,7 @@ public sealed class RemSoundSettingsStore
         // derived from AsioDriverName via LoadAudioMode; the Both-mode warning popup is gone.
         public SendRate? SendRate { get; set; }
         public bool? TightLatencyMode { get; set; }
+        public bool? PriorityMode { get; set; }
         public int? Smoothness { get; set; }
         public ConcealmentArtifact? ConcealmentArtifact { get; set; }
         public bool? MuteConnectionCues { get; set; }

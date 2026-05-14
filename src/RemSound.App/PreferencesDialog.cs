@@ -201,8 +201,12 @@ internal sealed class PreferencesDialog : Form
         loggingBox.Checked = getLoggingEnabled();
         loggingBox.CheckedChanged += (_, _) =>
         {
+            // Machine-local setting (AppConfig.LoggingEnabled). applyLoggingEnabled writes
+            // through immediately and flips the live gate, so closing the dialog needs no
+            // further action. NOT a profile setting — do NOT touch ChangedAnyProfileSetting
+            // or we'll trigger a spurious "save profile?" prompt on exit when the user
+            // toggled nothing else.
             applyLoggingEnabled(loggingBox.Checked);
-            ChangedAnyProfileSetting = true;
         };
 
         writeLogsNowButton.Click += (_, _) => writeLogsNow();

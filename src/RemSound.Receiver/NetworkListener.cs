@@ -45,7 +45,11 @@ internal sealed class NetworkListener : IDisposable
         cts = new CancellationTokenSource();
         socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
         socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-        socket.ReceiveBufferSize = 512 * 1024;
+        // 1 MB kernel receive buffer — large enough to ride out ~30 ms of audio-thread or GC
+        // stall at typical PCM-stereo bitrates before the kernel starts dropping inbound
+        // datagrams. Cheap on modern Windows; the old 512 KB cap was below what the receive
+        // thread can saturate during a long-tail GC pause.
+        socket.ReceiveBufferSize = 1024 * 1024;
         socket.Bind(new IPEndPoint(IPAddress.Any, udpPort));
 
         var startedSocket = socket;

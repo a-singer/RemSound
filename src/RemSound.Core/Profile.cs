@@ -52,8 +52,17 @@ public sealed class Profile
     public int OpusFrameMilliseconds { get; set; } = 10;
     public int SendRateRaw { get; set; } = (int)SendRate.Standard;
     public bool TightLatencyMode { get; set; }
-    /// <summary>True suppresses the connect/disconnect sound cues. Off by default.
-    /// 2026-05-06.</summary>
+    /// <summary>True if this profile asks Windows to keep the RemSound process in
+    /// high-priority mode while it's running — CPU scheduling, power management, memory
+    /// priority, working-set lock, and MMCSS thread priority all elevated. Off by default;
+    /// the user opts in per profile when they want a "live session" feel where the
+    /// cold-start CPU ramp doesn't audibly hurt latency. On laptops that drains the
+    /// battery faster; on desktops it costs a couple of extra watts. See
+    /// <c>PerformanceMode</c> in the App project for the full lever list. Saved per
+    /// profile (not in AppConfig) because the right answer genuinely differs between
+    /// profiles.</summary>
+    public bool PriorityMode { get; set; }
+    /// <summary>True suppresses the connect/disconnect sound cues. Off by default.</summary>
     public bool MuteConnectionCues { get; set; }
     public int MaxLatencyMs { get; set; } = 80;
     public int Smoothness { get; set; } = 3;

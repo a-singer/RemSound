@@ -196,8 +196,8 @@ ul, ol { padding-left: 1.4em; }
 
 <table>
 <tr><th>Item</th><th>Shortcut</th><th>What it does</th></tr>
-<tr><td><strong>Start recording / Stop recording</strong></td><td>Ctrl+R, or Alt+O, S</td><td>Toggle. The label flips between the two states so NVDA announces whichever action the next press would perform. Each press of Start plays a short cue sound (if enabled in Preferences), then creates a new file in your recordings folder named <code>RemSound-yyyy-MM-dd_HH-mm-ss.&lt;ext&gt;</code>. Stop closes the file then plays the stop cue. Ctrl+R works from anywhere in the main window.</td></tr>
-<tr><td><strong>Recording settings&hellip;</strong></td><td>Alt+O, T</td><td>Opens the Recording settings dialog. Three listboxes side-by-side: <em>Recording source</em> (Alt+S), <em>File format</em> (Alt+F), <em>Audio format attributes</em> (Alt+A). The attributes list repopulates based on the selected format. OK saves to the current profile; Cancel discards.</td></tr>
+<tr><td><strong>Start recording / Stop recording</strong></td><td>Ctrl+R, or Alt+O, R</td><td>Toggle. The label flips between &ldquo;Start recording&rdquo; and &ldquo;Stop recording&rdquo; so NVDA announces whichever action the next press would perform. Either label is activated by Alt+R (the underline stays on a letter R in both). Each press of Start plays a short cue sound (if enabled in Preferences), then creates a new file in your recordings folder named <code>RemSound-yyyy-MM-dd_HH-mm-ss.&lt;ext&gt;</code>. Stop closes the file then plays the stop cue. Ctrl+R works from anywhere in the main window.</td></tr>
+<tr><td><strong>Recording settings&hellip;</strong></td><td>Alt+O, S</td><td>Opens the Recording settings dialog. Up to five listboxes: <em>Recording source</em> (Alt+S), <em>File format</em> (Alt+F), <em>Audio format attributes</em> (Alt+A), <em>FLAC compression level</em> (Alt+L &mdash; visible only when FLAC is selected), <em>Channels</em> (Alt+C). The attributes list repopulates based on the selected format. OK saves to the current profile; Cancel discards.</td></tr>
 <tr><td><strong>Open current recordings folder</strong></td><td>Alt+O, O</td><td>Opens your current recordings folder in Windows Explorer. Creates the folder if it doesn&rsquo;t exist yet (first launch after a fresh install).</td></tr>
 <tr><td><strong>Change recordings folder&hellip;</strong></td><td>Alt+O, C</td><td>Folder picker. Pick a different folder for future recordings. The choice is saved on the current profile, so different profiles can record to different places.</td></tr>
 </table>
@@ -612,8 +612,8 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <tr><td>Ctrl+K</td><td>Open Keyboard shortcuts dialog</td></tr>
 <tr><td>Ctrl+P</td><td>Open Preferences dialog</td></tr>
 <tr><td>Ctrl+R</td><td>Start or stop recording (toggles)</td></tr>
-<tr><td>Alt+O, S</td><td>Start or stop recording (via menu &mdash; Record menu is Alt+O, item is S)</td></tr>
-<tr><td>Alt+O, T</td><td>Recording settings dialog</td></tr>
+<tr><td>Alt+O, R</td><td>Start or stop recording (via menu &mdash; Record menu is Alt+O, item is R for &ldquo;recording&rdquo;)</td></tr>
+<tr><td>Alt+O, S</td><td>Recording settings dialog</td></tr>
 <tr><td>Alt+O, O</td><td>Open current recordings folder</td></tr>
 <tr><td>Alt+O, C</td><td>Change recordings folder</td></tr>
 <tr><td>Alt+F, O</td><td>Open profile</td></tr>
@@ -829,16 +829,18 @@ Bind whatever key combinations you prefer (e.g. Ctrl+Shift+Up / Ctrl+Shift+Down 
 
 <h3>Recording settings dialog</h3>
 
-<p>Reached via <strong>Record &rarr; Recording settings</strong>. Three keyboard-navigable listboxes:</p>
+<p>Reached via <strong>Record &rarr; Recording settings</strong>. Up to five keyboard-navigable listboxes laid out left-to-right. Channel mode used to be folded into every attribute row, which doubled their length for no real gain; it&rsquo;s now its own dedicated list. FLAC&rsquo;s compression level has its own list too, but it only shows when the file format is FLAC.</p>
 
 <table>
 <tr><th>List</th><th>Shortcut</th><th>What goes in it</th></tr>
 <tr><td><strong>Recording source</strong></td><td>Alt+S</td><td>Receive only / Send only / Both. See the source explainer above.</td></tr>
-<tr><td><strong>File format</strong></td><td>Alt+F</td><td>WAV / MP3 / Ogg-Opus / FLAC. The attributes list to the right repopulates whenever you change this.</td></tr>
-<tr><td><strong>Audio format attributes</strong></td><td>Alt+A</td><td>Repopulates per format, with the 48 kHz sample rate stated on every row so there&rsquo;s no ambiguity. WAV: six rows pairing bit-depth (16 / 24 / 32-bit float) with channel mode (stereo / mono). MP3: eight rows pairing CBR bitrate (128 / 192 / 256 / 320 kbps) with channel mode. OGG-Opus: eight rows pairing VBR bitrate (96 / 128 / 192 / 256 kbps) with channel mode. FLAC: four rows pairing bit-depth (16 / 24-bit) with channel mode &mdash; FLAC is integer-PCM only, so no 32-bit-float row. Compression level for FLAC is fixed at 5 (the libFLAC reference default).</td></tr>
+<tr><td><strong>File format</strong></td><td>Alt+F</td><td>WAV / MP3 / Ogg-Opus / FLAC. The attributes (and FLAC compression) lists to the right repopulate whenever you change this.</td></tr>
+<tr><td><strong>Audio format attributes</strong></td><td>Alt+A</td><td>Repopulates per format, with the 48 kHz sample rate stated on every row so there&rsquo;s no ambiguity. WAV: three rows (16-bit PCM / 24-bit PCM / 32-bit float). MP3: four rows (128 / 192 / 256 / 320 kbps CBR). OGG-Opus: four rows (96 / 128 / 192 / 256 kbps VBR). FLAC: two rows (16-bit / 24-bit) &mdash; FLAC is integer-PCM only, so no 32-bit-float row.</td></tr>
+<tr><td><strong>FLAC compression level</strong></td><td>Alt+L</td><td>Visible <strong>only when FLAC is the selected file format</strong>. Nine rows for levels 0..8, with friendly labels on the endpoints (&ldquo;0 &mdash; fastest encode, biggest file&rdquo;, &ldquo;5 &mdash; default (libFLAC reference)&rdquo;, &ldquo;8 &mdash; slowest encode, smallest file&rdquo;). All levels produce bit-identical lossless audio &mdash; it&rsquo;s a pure encode-time vs file-size trade-off.</td></tr>
+<tr><td><strong>Channels</strong></td><td>Alt+C</td><td>Stereo or Mono. Applies to every format.</td></tr>
 </table>
 
-<p>OK saves the choices to the current profile. Cancel (or Esc) discards. Settings persist via the normal profile-save mechanism &mdash; changes here flag the profile as having unsaved changes and you&rsquo;ll be prompted on exit if you haven&rsquo;t saved.</p>
+<p>OK (Alt+O) saves the choices to the current profile. Cancel (Alt+N) or Esc discards. Settings persist via the normal profile-save mechanism &mdash; changes here flag the profile as having unsaved changes and you&rsquo;ll be prompted on exit if you haven&rsquo;t saved.</p>
 
 <h2 id="logs">19. Logs and diagnostics</h2>
 

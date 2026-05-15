@@ -3,15 +3,26 @@ using RemSound.Core;
 namespace RemSound.App;
 
 /// <summary>
-/// Recording settings dialog. Three listboxes laid out left-to-right:
-///   * Recording &source (Alt+S) — what audio gets captured
-///   * File &format (Alt+F)       — WAV / MP3 / Ogg / FLAC
-///   * Audio &attributes (Alt+A)  — bit depth or bitrate, plus channel mode
+/// Recording settings dialog. Up to five listboxes laid out left-to-right:
+///   * Recording &source (Alt+S)            — what audio gets captured
+///   * File &format (Alt+F)                 — WAV / MP3 / OGG-Opus / FLAC
+///   * Audio format &attributes (Alt+A)     — bit depth (WAV/FLAC) or bitrate (MP3/Ogg)
+///   * FLAC compression &level (Alt+L)      — 0..8; visible only when FLAC is selected
+///   * &Channels (Alt+C)                    — Stereo / Mono
 ///
-/// The attributes list repopulates whenever the file-format selection changes, so the user
-/// always sees only the choices that make sense for the format. Selecting a WAV-only
-/// attribute then switching the format to MP3 doesn't carry forward — the format-attributes
-/// list resets to a sensible default for the new format.
+/// Channel mode was originally folded into every attribute row (16-bit stereo / 16-bit
+/// mono / 24-bit stereo / 24-bit mono / …) which doubled the attribute count for no real
+/// benefit. Pulling it out into its own listbox keeps each list focused on one decision.
+///
+/// FLAC has TWO independent quality knobs (bit depth + compression level); the bit depth
+/// stays in the attributes column, the compression level gets its own conditional column
+/// that only appears when FLAC is selected. Compression level 0 = fastest encode and
+/// biggest file; 8 = slowest and smallest. The libFLAC reference default is 5, which is
+/// where the slider defaults if nothing's been set. All levels produce bit-identical
+/// audio — it's a pure encode-time-vs-file-size tradeoff.
+///
+/// The attribute and compression lists repopulate whenever the file-format selection
+/// changes, so the user always sees only the choices that make sense for the format.
 ///
 /// Settings are written back to the profile only when the user presses OK. Cancel / Esc
 /// discards. The dialog also exposes <see cref="ChangedAnything"/> so the caller can
@@ -68,6 +79,52 @@ internal sealed class RecordingSettingsDialog : Form
         Height = 200,
     };
 
+    // FLAC compression level. Wrapped in its own column that toggles visibility on the
+    // current file-format selection — visible for FLAC, hidden otherwise. Held as fields
+    // so the column-visibility refresh in <see cref="UpdateFlacCompressionVisibility"/>
+    // can flip them together.
+    private readonly Label flacCompressionLabel = new()
+    {
+        Text = "FLAC compression &level (Alt+L):",
+        AutoSize = true,
+        Padding = new Padding(0, 0, 0, 4),
+    };
+
+    private readonly ListBox flacCompressionList = new()
+    {
+        AccessibleName = "FLAC compression level",
+        SelectionMode = SelectionMode.One,
+        IntegralHeight = false,
+        Height = 200,
+    };
+
+    // Channel mode (Stereo / Mono) extracted out of the per-format attributes so the
+    // attributes list only carries the bit-depth-or-bitrate decision. Always visible —
+    // every format has a channel-count choice.
+    private readonly Label channelLabel = new()
+    {
+        // Alt+C — the natural letter for Channels. The Cancel button gives this letter
+        // up (it's on Alt+N) so the mnemonic is unambiguous.
+        Text = "&Channels (Alt+C):",
+        AutoSize = true,
+        Padding = new Padding(0, 0, 0, 4),
+    };
+
+    private readonly ListBox channelList = new()
+    {
+        AccessibleName = "Channels",
+        SelectionMode = SelectionMode.One,
+        IntegralHeight = false,
+        Height = 80,
+    };
+
+    // The compression column is wrapped in a Panel held here so its Visible can be
+    // toggled atomically with the column's ColumnStyle width — visible+20% width when
+    // FLAC, hidden+0% width otherwise. Kept as a field so UpdateFlacCompressionVisibility
+    // and the layout-building code share the same instance.
+    private Control? compressionColumn;
+    private TableLayoutPanel? grid;
+
     private readonly Button okButton = new()
     {
         Text = "&OK",
@@ -77,7 +134,10 @@ internal sealed class RecordingSettingsDialog : Form
 
     private readonly Button cancelButton = new()
     {
-        Text = "&Cancel",
+        // Alt+N rather than the conventional Alt+C — Channels takes Alt+C as its natural
+        // mnemonic. Esc still dismisses the dialog (CancelButton wiring below), so the
+        // less-conventional letter has no real cost.
+        Text = "Ca&ncel",
         AutoSize = true,
         DialogResult = DialogResult.Cancel,
     };
@@ -102,15 +162,19 @@ internal sealed class RecordingSettingsDialog : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterParent;
         KeyPreview = true;
-        ClientSize = new Size(700, 360);
+        ClientSize = new Size(900, 380);
 
         PopulateSourceList();
         PopulateFormatList();
         PopulateAttributesList();
+        PopulateFlacCompressionList();
+        PopulateChannelList();
 
         SelectFromSource(working.Source);
         SelectFromFormat(working.FileFormat);
         SelectFromAttributes(working);
+        SelectFromFlacCompression(working);
+        SelectFromChannelMode(working);
 
         sourceList.SelectedIndexChanged += (_, _) =>
         {
@@ -126,6 +190,7 @@ internal sealed class RecordingSettingsDialog : Form
             working.FileFormat = newFormat;
             PopulateAttributesList();
             SelectFromAttributes(working);
+            UpdateFlacCompressionVisibility();
         };
 
         attributesList.SelectedIndexChanged += (_, _) =>
@@ -134,32 +199,59 @@ internal sealed class RecordingSettingsDialog : Form
             ApplyAttributesSelection();
         };
 
+        flacCompressionList.SelectedIndexChanged += (_, _) =>
+        {
+            if (flacCompressionList.SelectedIndex < 0) return;
+            // The compression list always carries levels 0..8 at indices 0..8 — pure
+            // 1:1 mapping. Saved even when FLAC isn't the active format so flipping
+            // formats back-and-forth preserves the user's compression choice.
+            working.FlacCompressionLevel = flacCompressionList.SelectedIndex;
+        };
+
+        channelList.SelectedIndexChanged += (_, _) =>
+        {
+            if (channelList.SelectedIndex < 0) return;
+            working.ChannelMode = (RecordingChannelMode)channelList.SelectedIndex;
+        };
+
         okButton.Click += (_, _) =>
         {
             ChangedAnything = !SettingsEqual(initialSnapshot, working);
         };
 
-        // Three columns side by side, OK/Cancel row beneath.
-        var grid = new TableLayoutPanel
+        // Five columns side by side, OK/Cancel row beneath. The FLAC-compression column
+        // (index 3) is collapsed to zero width when the selected file format isn't FLAC,
+        // so non-FLAC formats see a clean 4-column layout without a blank gap.
+        grid = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(12),
-            ColumnCount = 3,
+            ColumnCount = 5,
             RowCount = 2,
         };
-        for (var i = 0; i < 3; i++) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.3f));
+        for (var i = 0; i < 5; i++) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20f));
         grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         var sourceColumn = MakeColumn(sourceLabel, sourceList);
         var formatColumn = MakeColumn(formatLabel, formatList);
         var attributesColumn = MakeColumn(attributesLabel, attributesList);
+        compressionColumn = MakeColumn(flacCompressionLabel, flacCompressionList);
+        var channelColumn = MakeColumn(channelLabel, channelList);
         grid.Controls.Add(sourceColumn, 0, 0);
         grid.SetRowSpan(sourceColumn, 2);
         grid.Controls.Add(formatColumn, 1, 0);
         grid.SetRowSpan(formatColumn, 2);
         grid.Controls.Add(attributesColumn, 2, 0);
         grid.SetRowSpan(attributesColumn, 2);
+        grid.Controls.Add(compressionColumn, 3, 0);
+        grid.SetRowSpan(compressionColumn, 2);
+        grid.Controls.Add(channelColumn, 4, 0);
+        grid.SetRowSpan(channelColumn, 2);
+
+        // Initial column-visibility refresh, AFTER the grid has all five children so we
+        // can flip the compression column's ColumnStyle width together with its Visible.
+        UpdateFlacCompressionVisibility();
 
         var buttonRow = new FlowLayoutPanel
         {
@@ -178,12 +270,38 @@ internal sealed class RecordingSettingsDialog : Form
         AcceptButton = okButton;
         CancelButton = cancelButton;
 
-        // Tab order top-to-bottom of the visible flow: source, format, attributes, OK, Cancel.
+        // Tab order left-to-right across the visible columns. The FLAC compression list
+        // sits between attributes and channels in tab order so the Alt+L mnemonic and Tab
+        // both land there when it's visible; when hidden it's still in tab order but
+        // skipped because Visible=false controls aren't focusable.
         sourceList.TabIndex = 0;
         formatList.TabIndex = 1;
         attributesList.TabIndex = 2;
-        okButton.TabIndex = 3;
-        cancelButton.TabIndex = 4;
+        flacCompressionList.TabIndex = 3;
+        channelList.TabIndex = 4;
+        okButton.TabIndex = 5;
+        cancelButton.TabIndex = 6;
+    }
+
+    /// <summary>Show or hide the FLAC compression column based on the current file-format
+    /// selection. Driven from the formatList change handler and once at dialog open.
+    /// When hidden, the column's ColumnStyle width is set to 0% and the other four columns
+    /// each take 25% — visually the dialog reads as a clean 4-column layout. When visible,
+    /// all five columns share 20% each.</summary>
+    private void UpdateFlacCompressionVisibility()
+    {
+        if (grid is null || compressionColumn is null) return;
+        var isFlac = working.FileFormat == RecordingFileFormat.Flac;
+        compressionColumn.Visible = isFlac;
+        if (isFlac)
+        {
+            for (var i = 0; i < 5; i++) grid.ColumnStyles[i].Width = 20f;
+        }
+        else
+        {
+            // Distribute the hidden column's space evenly across the four remaining ones.
+            for (var i = 0; i < 5; i++) grid.ColumnStyles[i].Width = (i == 3) ? 0f : 25f;
+        }
     }
 
     private static Control MakeColumn(Label label, ListBox list)
@@ -227,58 +345,45 @@ internal sealed class RecordingSettingsDialog : Form
     }
 
     // === Per-format attribute tables ===
-    // All four formats currently record at the engine's 48 kHz mix rate, so labels include
-    // "48 kHz" to make the sample rate explicit (it's not a choice — it's a statement of fact
-    // about what gets written, which removes a common surprise for users who expected to see
-    // a rate picker). Channel mode is part of every row because it determines file shape
-    // alongside the format-specific quality knob.
+    // All four formats record at the engine's 48 kHz mix rate, so labels include "48 kHz"
+    // to make the sample rate explicit (it's not a choice — it's a statement of fact about
+    // what gets written, which removes a common surprise for users who expected to see a
+    // rate picker). Channel mode is NOT part of any row — it has its own dedicated listbox
+    // since 2026-05-15 (was previously folded into every row, doubling the count for no
+    // real benefit).
 
-    private static readonly (int Bits, RecordingChannelMode Mode, string Label)[] WavAttributes =
+    private static readonly (int Bits, string Label)[] WavAttributes =
     {
-        (16, RecordingChannelMode.Stereo, "16-bit PCM, 48 kHz, stereo"),
-        (16, RecordingChannelMode.Mono,   "16-bit PCM, 48 kHz, mono"),
-        (24, RecordingChannelMode.Stereo, "24-bit PCM, 48 kHz, stereo"),
-        (24, RecordingChannelMode.Mono,   "24-bit PCM, 48 kHz, mono"),
-        (32, RecordingChannelMode.Stereo, "32-bit float, 48 kHz, stereo"),
-        (32, RecordingChannelMode.Mono,   "32-bit float, 48 kHz, mono"),
+        (16, "16-bit PCM, 48 kHz"),
+        (24, "24-bit PCM, 48 kHz"),
+        (32, "32-bit float, 48 kHz"),
     };
 
-    private static readonly (int Kbps, RecordingChannelMode Mode, string Label)[] Mp3Attributes =
+    private static readonly (int Kbps, string Label)[] Mp3Attributes =
     {
-        (128, RecordingChannelMode.Stereo, "128 kbps, 48 kHz, stereo"),
-        (128, RecordingChannelMode.Mono,   "128 kbps, 48 kHz, mono"),
-        (192, RecordingChannelMode.Stereo, "192 kbps, 48 kHz, stereo"),
-        (192, RecordingChannelMode.Mono,   "192 kbps, 48 kHz, mono"),
-        (256, RecordingChannelMode.Stereo, "256 kbps, 48 kHz, stereo"),
-        (256, RecordingChannelMode.Mono,   "256 kbps, 48 kHz, mono"),
-        (320, RecordingChannelMode.Stereo, "320 kbps, 48 kHz, stereo"),
-        (320, RecordingChannelMode.Mono,   "320 kbps, 48 kHz, mono"),
+        (128, "128 kbps, 48 kHz"),
+        (192, "192 kbps, 48 kHz"),
+        (256, "256 kbps, 48 kHz"),
+        (320, "320 kbps, 48 kHz"),
     };
 
     // OGG-Opus is VBR — kbps numbers are the encoder's target average. Opus' music-quality
     // sweet spot starts around 96 kbps; we expose 96 / 128 / 192 / 256 so users have a
     // smaller-file option without it sounding obviously lossy on dense material.
-    private static readonly (int Kbps, RecordingChannelMode Mode, string Label)[] OggOpusAttributes =
+    private static readonly (int Kbps, string Label)[] OggOpusAttributes =
     {
-        (96,  RecordingChannelMode.Stereo, "96 kbps, 48 kHz, stereo"),
-        (96,  RecordingChannelMode.Mono,   "96 kbps, 48 kHz, mono"),
-        (128, RecordingChannelMode.Stereo, "128 kbps, 48 kHz, stereo"),
-        (128, RecordingChannelMode.Mono,   "128 kbps, 48 kHz, mono"),
-        (192, RecordingChannelMode.Stereo, "192 kbps, 48 kHz, stereo"),
-        (192, RecordingChannelMode.Mono,   "192 kbps, 48 kHz, mono"),
-        (256, RecordingChannelMode.Stereo, "256 kbps, 48 kHz, stereo"),
-        (256, RecordingChannelMode.Mono,   "256 kbps, 48 kHz, mono"),
+        (96,  "96 kbps, 48 kHz"),
+        (128, "128 kbps, 48 kHz"),
+        (192, "192 kbps, 48 kHz"),
+        (256, "256 kbps, 48 kHz"),
     };
 
-    // FLAC is lossless — quality knob is just bit depth (and silently, compression level,
-    // which we hard-fix at the reference encoder's default 5). 32-bit float isn't a FLAC
-    // option (FLAC stores integer PCM), so it's deliberately absent.
-    private static readonly (int Bits, RecordingChannelMode Mode, string Label)[] FlacAttributes =
+    // FLAC is integer-PCM only — quality knob in this column is just bit depth. The
+    // compression level is its own listbox (visible only when FLAC is selected).
+    private static readonly (int Bits, string Label)[] FlacAttributes =
     {
-        (16, RecordingChannelMode.Stereo, "16-bit, 48 kHz, stereo"),
-        (16, RecordingChannelMode.Mono,   "16-bit, 48 kHz, mono"),
-        (24, RecordingChannelMode.Stereo, "24-bit, 48 kHz, stereo"),
-        (24, RecordingChannelMode.Mono,   "24-bit, 48 kHz, mono"),
+        (16, "16-bit, 48 kHz"),
+        (24, "24-bit, 48 kHz"),
     };
 
     private void PopulateAttributesList()
@@ -288,22 +393,53 @@ internal sealed class RecordingSettingsDialog : Form
         switch (working.FileFormat)
         {
             case RecordingFileFormat.Wav:
-                foreach (var (_, _, label) in WavAttributes) attributesList.Items.Add(label);
+                foreach (var (_, label) in WavAttributes) attributesList.Items.Add(label);
                 break;
             case RecordingFileFormat.Mp3:
-                foreach (var (_, _, label) in Mp3Attributes) attributesList.Items.Add(label);
+                foreach (var (_, label) in Mp3Attributes) attributesList.Items.Add(label);
                 break;
             case RecordingFileFormat.Ogg:
-                foreach (var (_, _, label) in OggOpusAttributes) attributesList.Items.Add(label);
+                foreach (var (_, label) in OggOpusAttributes) attributesList.Items.Add(label);
                 break;
             case RecordingFileFormat.Flac:
-                foreach (var (_, _, label) in FlacAttributes) attributesList.Items.Add(label);
+                foreach (var (_, label) in FlacAttributes) attributesList.Items.Add(label);
                 break;
             default:
                 attributesList.Items.Add("Default settings");
                 break;
         }
         attributesList.EndUpdate();
+    }
+
+    /// <summary>Populate the FLAC compression listbox with all 9 levels (0..8). Levels are
+    /// identified verbatim — the user picks by index, which maps 1:1 to the level number.
+    /// Headers on the "fastest" and "smallest" ends are tagged so the trade-off is obvious
+    /// without needing a separate explanatory label.</summary>
+    private void PopulateFlacCompressionList()
+    {
+        flacCompressionList.BeginUpdate();
+        flacCompressionList.Items.Clear();
+        flacCompressionList.Items.Add("0 — fastest encode, biggest file");
+        flacCompressionList.Items.Add("1");
+        flacCompressionList.Items.Add("2");
+        flacCompressionList.Items.Add("3");
+        flacCompressionList.Items.Add("4");
+        flacCompressionList.Items.Add("5 — default (libFLAC reference)");
+        flacCompressionList.Items.Add("6");
+        flacCompressionList.Items.Add("7");
+        flacCompressionList.Items.Add("8 — slowest encode, smallest file");
+        flacCompressionList.EndUpdate();
+    }
+
+    /// <summary>Populate the channel listbox. Order MUST match RecordingChannelMode enum
+    /// values 0 / 1 so the SelectedIndex → enum mapping is direct.</summary>
+    private void PopulateChannelList()
+    {
+        channelList.BeginUpdate();
+        channelList.Items.Clear();
+        channelList.Items.Add("Stereo");
+        channelList.Items.Add("Mono");
+        channelList.EndUpdate();
     }
 
     private void SelectFromSource(RecordingSource src)
@@ -325,50 +461,46 @@ internal sealed class RecordingSettingsDialog : Form
             case RecordingFileFormat.Wav:
                 for (var i = 0; i < WavAttributes.Length; i++)
                 {
-                    var (bits, mode, _) = WavAttributes[i];
-                    if (bits == s.WavBitsPerSample && mode == s.ChannelMode)
+                    if (WavAttributes[i].Bits == s.WavBitsPerSample)
                     {
                         attributesList.SelectedIndex = i;
                         return;
                     }
                 }
-                attributesList.SelectedIndex = 2; // 24-bit stereo default
+                attributesList.SelectedIndex = 1; // 24-bit default
                 break;
             case RecordingFileFormat.Mp3:
                 for (var i = 0; i < Mp3Attributes.Length; i++)
                 {
-                    var (kbps, mode, _) = Mp3Attributes[i];
-                    if (kbps == s.Mp3BitrateKbps && mode == s.ChannelMode)
+                    if (Mp3Attributes[i].Kbps == s.Mp3BitrateKbps)
                     {
                         attributesList.SelectedIndex = i;
                         return;
                     }
                 }
-                attributesList.SelectedIndex = 6; // 320 kbps stereo default
+                attributesList.SelectedIndex = 3; // 320 kbps default
                 break;
             case RecordingFileFormat.Ogg:
                 for (var i = 0; i < OggOpusAttributes.Length; i++)
                 {
-                    var (kbps, mode, _) = OggOpusAttributes[i];
-                    if (kbps == s.OggOpusBitrateKbps && mode == s.ChannelMode)
+                    if (OggOpusAttributes[i].Kbps == s.OggOpusBitrateKbps)
                     {
                         attributesList.SelectedIndex = i;
                         return;
                     }
                 }
-                attributesList.SelectedIndex = 4; // 192 kbps stereo default
+                attributesList.SelectedIndex = 2; // 192 kbps default
                 break;
             case RecordingFileFormat.Flac:
                 for (var i = 0; i < FlacAttributes.Length; i++)
                 {
-                    var (bits, mode, _) = FlacAttributes[i];
-                    if (bits == s.FlacBitsPerSample && mode == s.ChannelMode)
+                    if (FlacAttributes[i].Bits == s.FlacBitsPerSample)
                     {
                         attributesList.SelectedIndex = i;
                         return;
                     }
                 }
-                attributesList.SelectedIndex = 2; // 24-bit stereo default
+                attributesList.SelectedIndex = 1; // 24-bit default
                 break;
             default:
                 if (attributesList.Items.Count > 0) attributesList.SelectedIndex = 0;
@@ -383,40 +515,39 @@ internal sealed class RecordingSettingsDialog : Form
         switch (working.FileFormat)
         {
             case RecordingFileFormat.Wav:
-                if (idx < WavAttributes.Length)
-                {
-                    var (bits, mode, _) = WavAttributes[idx];
-                    working.WavBitsPerSample = bits;
-                    working.ChannelMode = mode;
-                }
+                if (idx < WavAttributes.Length) working.WavBitsPerSample = WavAttributes[idx].Bits;
                 break;
             case RecordingFileFormat.Mp3:
-                if (idx < Mp3Attributes.Length)
-                {
-                    var (kbps, mode, _) = Mp3Attributes[idx];
-                    working.Mp3BitrateKbps = kbps;
-                    working.ChannelMode = mode;
-                }
+                if (idx < Mp3Attributes.Length) working.Mp3BitrateKbps = Mp3Attributes[idx].Kbps;
                 break;
             case RecordingFileFormat.Ogg:
-                if (idx < OggOpusAttributes.Length)
-                {
-                    var (kbps, mode, _) = OggOpusAttributes[idx];
-                    working.OggOpusBitrateKbps = kbps;
-                    working.ChannelMode = mode;
-                }
+                if (idx < OggOpusAttributes.Length) working.OggOpusBitrateKbps = OggOpusAttributes[idx].Kbps;
                 break;
             case RecordingFileFormat.Flac:
-                if (idx < FlacAttributes.Length)
-                {
-                    var (bits, mode, _) = FlacAttributes[idx];
-                    working.FlacBitsPerSample = bits;
-                    working.ChannelMode = mode;
-                }
+                if (idx < FlacAttributes.Length) working.FlacBitsPerSample = FlacAttributes[idx].Bits;
                 break;
             default:
                 break;
         }
+    }
+
+    /// <summary>Select the FLAC compression list row that matches the current settings.
+    /// Levels 0..8 map directly to list indices 0..8. Out-of-range or unset values fall
+    /// back to level 5 (the libFLAC reference default).</summary>
+    private void SelectFromFlacCompression(RecordingSettings s)
+    {
+        var level = s.FlacCompressionLevel;
+        if (level < 0 || level > 8) level = 5;
+        flacCompressionList.SelectedIndex = level;
+    }
+
+    /// <summary>Select the channel-mode row matching the current setting. Falls back to
+    /// Stereo (index 0) for any unrecognised value.</summary>
+    private void SelectFromChannelMode(RecordingSettings s)
+    {
+        var idx = (int)s.ChannelMode;
+        if (idx < 0 || idx >= channelList.Items.Count) idx = 0;
+        channelList.SelectedIndex = idx;
     }
 
     private static bool SettingsEqual(RecordingSettings a, RecordingSettings b) =>

@@ -1139,14 +1139,20 @@ public sealed class MainForm : Form
         // / Record) and reads as "Recording" naturally enough for the mnemonic to stick.
         var recordMenu = new ToolStripMenuItem("Rec&ord") { AccessibleName = "Record menu" };
 
-        startStopRecordingMenuItem = new ToolStripMenuItem("&Start recording")
+        // Start/Stop uses Alt+R — matches the Ctrl+R global toggle so the same letter does
+        // the same job from either entry point. The "&" position shifts when the label flips
+        // (Sta&rt → Stop &recording) so the underline stays on an R in both states. See
+        // UpdateStartStopRecordingMenuLabel for the runtime label flip.
+        startStopRecordingMenuItem = new ToolStripMenuItem("Sta&rt recording")
         {
             ShortcutKeys = Keys.Control | Keys.R,
             AccessibleName = "Start recording",
         };
         startStopRecordingMenuItem.Click += (_, _) => ToggleRecording();
 
-        var settingsItem = new ToolStripMenuItem("Recording se&ttings...")
+        // Recording settings → Alt+S (was Alt+T). S reads more naturally than T for
+        // "settings", and the slot freed up when Start/Stop moved off Alt+S.
+        var settingsItem = new ToolStripMenuItem("Recording &settings...")
         {
             AccessibleName = "Recording settings",
         };
@@ -1216,7 +1222,11 @@ public sealed class MainForm : Form
         void Apply()
         {
             if (startStopRecordingMenuItem is null) return;
-            startStopRecordingMenuItem.Text = nowRecording ? "&Stop recording" : "&Start recording";
+            // Mnemonic stays on an "R" in both states: "Sta&rt recording" (Alt+R activates
+            // the R in Start) when not recording, "Stop &recording" (Alt+R activates the R
+            // in recording) when recording. Same keystroke does the same job in both states
+            // — matches the Ctrl+R global toggle.
+            startStopRecordingMenuItem.Text = nowRecording ? "Stop &recording" : "Sta&rt recording";
             startStopRecordingMenuItem.AccessibleName = nowRecording ? "Stop recording" : "Start recording";
         }
         if (InvokeRequired) BeginInvoke(Apply);

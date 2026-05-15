@@ -313,6 +313,79 @@ public sealed class RemSoundSettingsStore
         Save(s);
     }
 
+    // === Per-cue enable flags (2026-05-15) ===
+    // Each cue sound has its own enable toggle, surfaced in the Preferences dialog as a
+    // CheckedListBox. The legacy MuteConnectionCues above used to gate both connect AND
+    // disconnect — when the new flags are absent (null cache + null profile), the load
+    // helpers fall back to the legacy value as a migration step. Once the user touches
+    // any per-cue toggle, that flag's load returns the explicit value directly and the
+    // legacy field becomes irrelevant for that cue.
+
+    public bool LoadEnableConnectCue()
+    {
+        var s = Load();
+        if (s?.EnableConnectCue is bool v) return v;
+        // Legacy fallback: an older profile with MuteConnectionCues=true was muting both
+        // connect AND disconnect at once. Honour that intent on first load.
+        if (s?.MuteConnectionCues == true) return false;
+        return true;
+    }
+
+    public void SaveEnableConnectCue(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.EnableConnectCue = value;
+        Save(s);
+    }
+
+    public bool LoadEnableDisconnectCue()
+    {
+        var s = Load();
+        if (s?.EnableDisconnectCue is bool v) return v;
+        if (s?.MuteConnectionCues == true) return false;
+        return true;
+    }
+
+    public void SaveEnableDisconnectCue(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.EnableDisconnectCue = value;
+        Save(s);
+    }
+
+    public bool LoadEnableRecordStartCue() =>
+        Try(() => Load()?.EnableRecordStartCue) ?? true;
+
+    public void SaveEnableRecordStartCue(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.EnableRecordStartCue = value;
+        Save(s);
+    }
+
+    public bool LoadEnableRecordStopCue() =>
+        Try(() => Load()?.EnableRecordStopCue) ?? true;
+
+    public void SaveEnableRecordStopCue(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.EnableRecordStopCue = value;
+        Save(s);
+    }
+
+    /// <summary>The whole recording-settings bag for the current profile. Loaded as a
+    /// CLONE so callers can mutate the returned object without inadvertently writing
+    /// back to the cache. Save flushes the object atomically.</summary>
+    public RecordingSettings LoadRecordingSettings() =>
+        (Try(() => Load()?.RecordingSettings) ?? new RecordingSettings()).Clone();
+
+    public void SaveRecordingSettings(RecordingSettings value)
+    {
+        var s = Load() ?? new Settings();
+        s.RecordingSettings = value?.Clone() ?? new RecordingSettings();
+        Save(s);
+    }
+
     /// <summary>How aggressively the receiver pulls the playout queue back to the user's
     /// target latency under network jitter. 1 = stupid aggressive (~10 % playback rate change,
     /// audible pitch shift on drift, sub-second recovery). 10 = perfectly smooth (gentle
@@ -418,6 +491,11 @@ public sealed class RemSoundSettingsStore
             Smoothness = profile.Smoothness,
             ConcealmentArtifact = (ConcealmentArtifact)profile.ConcealmentArtifactRaw,
             MuteConnectionCues = profile.MuteConnectionCues,
+            EnableConnectCue = profile.EnableConnectCue,
+            EnableDisconnectCue = profile.EnableDisconnectCue,
+            EnableRecordStartCue = profile.EnableRecordStartCue,
+            EnableRecordStopCue = profile.EnableRecordStopCue,
+            RecordingSettings = profile.RecordingSettings?.Clone() ?? new RecordingSettings(),
         };
     }
 
@@ -459,6 +537,14 @@ public sealed class RemSoundSettingsStore
         if (s.Smoothness is int sm) profile.Smoothness = sm;
         if (s.ConcealmentArtifact is ConcealmentArtifact ca) profile.ConcealmentArtifactRaw = (int)ca;
         if (s.MuteConnectionCues is bool mc) profile.MuteConnectionCues = mc;
+        // Per-cue enable flags — copy through verbatim (nullable on both sides, so an
+        // unset flag in the cache stays unset on the profile, letting the legacy
+        // MuteConnectionCues path govern that cue on the next load).
+        profile.EnableConnectCue = s.EnableConnectCue;
+        profile.EnableDisconnectCue = s.EnableDisconnectCue;
+        profile.EnableRecordStartCue = s.EnableRecordStartCue;
+        profile.EnableRecordStopCue = s.EnableRecordStopCue;
+        if (s.RecordingSettings is RecordingSettings rs) profile.RecordingSettings = rs.Clone();
     }
 
     private static HotkeySetting HotkeySettingFromRecord(HotkeyRecord r) => new()
@@ -513,6 +599,13 @@ public sealed class RemSoundSettingsStore
         public int? Smoothness { get; set; }
         public ConcealmentArtifact? ConcealmentArtifact { get; set; }
         public bool? MuteConnectionCues { get; set; }
+        // Per-cue enable flags (2026-05-15). Nullable so an absent value in the loaded
+        // profile falls back to the legacy MuteConnectionCues migration path.
+        public bool? EnableConnectCue { get; set; }
+        public bool? EnableDisconnectCue { get; set; }
+        public bool? EnableRecordStartCue { get; set; }
+        public bool? EnableRecordStopCue { get; set; }
+        public RecordingSettings? RecordingSettings { get; set; }
     }
 
     private sealed class HotkeySetting

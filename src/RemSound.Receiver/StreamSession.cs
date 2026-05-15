@@ -39,6 +39,39 @@ internal sealed class StreamSession : IDisposable
     /// <summary>For PCM streams: number of partially-assembled frames discarded mid-flight.</summary>
     public long PcmFrameDiscardedPartials => pcmAssembler.DiscardedPartialCount;
 
+    // Post-decode discontinuity probe. Scans the float buffer right after Int24LEToFloat
+    // (PCM) or short-to-float (Opus) so we can compare to the sender's pre-encode probe and
+    // detect any wire-level or decode-level artefacts. Same buffer is then handed to the
+    // session playout, so the post-ring-read probe in SessionPlayout sees the exact same
+    // samples a moment later (after riding through the ring buffer).
+    private readonly AudioStepProbe postDecodeStepProbe = new();
+    public float TakeMaxPostDecodeStep() => postDecodeStepProbe.TakeMax();
+
+    // === Wire-level sequence tracking (Phase 5, 2026-05-14) ===
+    // Every audio packet carries a wire sequence number that monotonically increases per
+    // session (audioSequence in SenderLane). The Opus path uses this for FEC recovery. The
+    // PCM path historically ignored it entirely. Now we track it to detect:
+    //   * MISSING packets — sequence > expected (gap > 1 frames)
+    //   * REORDERED packets — sequence < expected (a packet arrived after a later one)
+    //   * DUPLICATE packets — sequence == previous (same packet delivered twice)
+    //   * IN-ORDER packets — sequence == expected
+    //
+    // Any of MISSING / REORDERED / DUPLICATE on a healthy LAN would point straight at a
+    // transport-level issue (NIC offload bug, switch buffer overflow, RSS hash collision
+    // causing packets to take different queues). MISSING on PCM = silent audio drop at
+    // the packet boundary = audible click. REORDERED = the receiver processes audio in
+    // the wrong order = audible click. DUPLICATE = same audio played twice in a row =
+    // audible click.
+    private uint? expectedNextWireSequence;
+    private long wireInOrderTotal;
+    private long wireMissedTotal;     // sum of missing-packet counts (sequence > expected by N → +N)
+    private long wireReorderedTotal;  // count of times a sequence < expected arrived
+    private long wireDuplicatedTotal; // count of times a sequence == previous arrived
+    public long WireInOrderCount => Interlocked.Read(ref wireInOrderTotal);
+    public long WireMissedCount => Interlocked.Read(ref wireMissedTotal);
+    public long WireReorderedCount => Interlocked.Read(ref wireReorderedTotal);
+    public long WireDuplicatedCount => Interlocked.Read(ref wireDuplicatedTotal);
+
     public StreamSession(
         IPEndPoint endpoint,
         ushort streamId,
@@ -74,12 +107,67 @@ internal sealed class StreamSession : IDisposable
     public bool HandleAudioPayload(uint sequence, ReadOnlySpan<byte> payload)
     {
         diagnostics.RecordPacketArrived();
+        TrackWireSequence(sequence);
         return Codec switch
         {
             AudioTransportCodec.Pcm => HandlePcm(payload),
             AudioTransportCodec.Opus => HandleOpus(sequence, payload),
             _ => false,
         };
+    }
+
+    /// <summary>
+    /// Classify each arriving packet against the expected next wire sequence:
+    /// IN-ORDER (== expected), MISSING (> expected, diff sample frames), REORDERED (< expected
+    /// but within a small sane window), DUPLICATE (== previous). On the very first packet we
+    /// just seed expected and bail. On a wild jump (huge gap) we treat it as a re-sync rather
+    /// than logging hundreds of thousands of "missing" packets — this can happen if the sender
+    /// restarts mid-session or a router drops a long burst.
+    /// All counters use Interlocked because the readers are on the UI thread.
+    /// </summary>
+    private void TrackWireSequence(uint sequence)
+    {
+        if (expectedNextWireSequence is not uint expected)
+        {
+            expectedNextWireSequence = sequence + 1U;
+            Interlocked.Increment(ref wireInOrderTotal);
+            return;
+        }
+
+        if (sequence == expected)
+        {
+            Interlocked.Increment(ref wireInOrderTotal);
+            expectedNextWireSequence = sequence + 1U;
+            return;
+        }
+
+        // Treat the gap as an unsigned forward gap. If it's small-ish (< 1M packets, well over
+        // 10 minutes of audio at our packet rates) treat as forward MISSING. If it's huge,
+        // assume sequence ran backwards (reorder or restart).
+        uint forwardGap = sequence - expected;
+        if (forwardGap < 1_000_000U)
+        {
+            // Forward jump → forwardGap packets we never saw at the expected slot.
+            Interlocked.Add(ref wireMissedTotal, forwardGap);
+            expectedNextWireSequence = sequence + 1U;
+        }
+        else
+        {
+            // Backward jump. Distance behind expected:
+            uint backwardDistance = expected - sequence;
+            if (backwardDistance == 1U)
+            {
+                // sequence == previous (the one just before expected) → duplicate.
+                Interlocked.Increment(ref wireDuplicatedTotal);
+            }
+            else
+            {
+                // Out-of-order arrival from further back.
+                Interlocked.Increment(ref wireReorderedTotal);
+            }
+            // Do NOT roll expectedNextWireSequence backwards — that would re-count the
+            // already-missing packets when the originally-expected packet arrives.
+        }
     }
 
     public void Dispose() { /* IOpusDecoder has no Dispose; nothing else to free */ }
@@ -105,6 +193,12 @@ internal sealed class StreamSession : IDisposable
         Span<byte> floatScratch = floatBytes <= 16 * 1024 ? stackalloc byte[floatBytes] : new byte[floatBytes];
         var floatSpan = MemoryMarshal.Cast<byte, float>(floatScratch);
         PcmPack.Int24LEToFloat(assembled, floatSpan);
+
+        // Discontinuity probe — what does the audio look like right after we decode it?
+        // Compared to the sender's pre-encode probe, a higher value here would mean the
+        // wire codec roundtrip introduced steps. Same probe is also useful as a baseline
+        // for the post-ring-read probe in SessionPlayout.
+        postDecodeStepProbe.ScanStereo(floatSpan);
 
         sessionPlayout.Write(floatScratch);
         onFramesQueued(sampleCount / Format.Channels);

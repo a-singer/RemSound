@@ -52,6 +52,17 @@ internal sealed class SenderLane
     private OpusEncoderState opusEncoder;
     private int opusFrameStereoSamples;
 
+    // Per-lane pre-encode discontinuity probe. Moved here from AudioSender (2026-05-15) so
+    // each lane has its OWN probe state and the cross-buffer step measurement (which carries
+    // lastL/lastR across calls) only sees samples from one continuous audio stream. With the
+    // earlier shared-probe design, BothIndependent mode mixed two unrelated streams' samples
+    // into the same probe's cross-buffer carry, producing synthetic "steps" of arbitrary
+    // magnitude every time the two lanes' callbacks interleaved — making the diag log unable
+    // to tell a real capture glitch from instrumentation aliasing. Per-lane separation fixes
+    // that without changing what the probe measures.
+    private readonly AudioStepProbe preEncodeStepProbe = new();
+    public float TakeMaxPreEncodeStep() => preEncodeStepProbe.TakeMax();
+
     // Which render route this lane announces in its format packets. The receiver reads the
     // Lane byte on the wire and tags the matching SessionPlayout, which makes PlayoutEngine
     // route the lane's audio to the corresponding per-route IWaveProvider surface (lane
@@ -143,6 +154,20 @@ internal sealed class SenderLane
         var diag = RemSound.Core.DiagnosticsGate.Enabled;
         var emitStart = diag ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
         EnsureFormatPacketSent();
+
+        // Recording tap — the recorder gets the float audio about to be encoded. The lane
+        // doesn't know whether the recorder is running; the dispatcher early-outs when no
+        // callback is wired. Captured here (before encoding) so the recording is bit-clean
+        // float, independent of which codec the wire is using.
+        owner.DispatchSentSamples(stereoFloats);
+
+        // Discontinuity probe — what does the audio look like just before we encode it?
+        // Compared to the receiver's per-stage probes, this tells us whether artefacts are
+        // present at the sender side already (capture hardware glitch, mix-bus issue) or
+        // introduced somewhere in the wire / decode / playout chain. Per-lane probe — see
+        // <see cref="preEncodeStepProbe"/> field comment for why this isn't shared with the
+        // other lane in BothIndependent.
+        preEncodeStepProbe.ScanStereo(span);
 
         switch (owner.Codec)
         {

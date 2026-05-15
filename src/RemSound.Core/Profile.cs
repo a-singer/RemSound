@@ -62,8 +62,23 @@ public sealed class Profile
     /// profile (not in AppConfig) because the right answer genuinely differs between
     /// profiles.</summary>
     public bool PriorityMode { get; set; }
-    /// <summary>True suppresses the connect/disconnect sound cues. Off by default.</summary>
+    /// <summary>Legacy combined "mute connect/disconnect sounds" toggle. True suppresses
+    /// both connect AND disconnect cues. Superseded 2026-05-15 by the four individual
+    /// <c>Enable*Cue</c> flags below — the new flags take precedence when set. This field
+    /// is preserved on the profile for backward compatibility with older builds that don't
+    /// know about the per-cue flags; on first load the per-cue flags inherit from this
+    /// (true → connect+disconnect cues disabled).</summary>
     public bool MuteConnectionCues { get; set; }
+
+    /// <summary>Per-cue enable flags. Nullable so a missing entry in an older profile JSON
+    /// falls back to the legacy <see cref="MuteConnectionCues"/> migration path; once the
+    /// user touches the new UI we write a concrete <c>true</c>/<c>false</c> and the legacy
+    /// field stops mattering. Defaults to "play the sound" (true) for both cases — the
+    /// audio cues are part of the normal user feedback loop, not opt-in. 2026-05-15.</summary>
+    public bool? EnableConnectCue { get; set; }
+    public bool? EnableDisconnectCue { get; set; }
+    public bool? EnableRecordStartCue { get; set; }
+    public bool? EnableRecordStopCue { get; set; }
     public int MaxLatencyMs { get; set; } = 80;
     public int Smoothness { get; set; } = 3;
     public bool ContinuousAutoTuneEnabled { get; set; }
@@ -94,6 +109,15 @@ public sealed class Profile
         get => (ConcealmentArtifact)ConcealmentArtifactRaw;
         set => ConcealmentArtifactRaw = (int)value;
     }
+
+    // === Recording ===
+    /// <summary>Recording source / format / attributes. The whole settings object is saved
+    /// per profile so different profiles can record different things (a "long session"
+    /// profile might record everything to MP3, a "monitoring" profile might not record at
+    /// all but keep the dialog defaults sensible). The recording isn't running until the
+    /// user explicitly triggers it via the Record menu; this just holds the configuration
+    /// the recorder picks up when it starts.</summary>
+    public RecordingSettings RecordingSettings { get; set; } = new();
 
     // === Peers ===
     public List<string> RememberedPeers { get; set; } = [];

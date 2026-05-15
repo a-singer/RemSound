@@ -134,6 +134,19 @@ public sealed class AudioReceiver : IDisposable
         playoutEngine.SetConcealmentArtifact(artifact);
 
     /// <summary>
+    /// Optional callback invoked when the engine produces fully-processed mixed received
+    /// audio (volume / mute / limiter all applied). Span is 48 kHz interleaved stereo
+    /// float, lives on the render thread — copy or consume quickly. Used by the recorder
+    /// to capture "what we heard". Setter mirrors directly onto <see cref="PlayoutEngine"/>;
+    /// null clears the tap.
+    /// </summary>
+    public Action<ReadOnlyMemory<float>>? OnReceivedSamples
+    {
+        get => playoutEngine.OnReceivedSamples;
+        set => playoutEngine.OnReceivedSamples = value;
+    }
+
+    /// <summary>
     /// Sets the allow-list of sender endpoints whose audio will be rendered. Pass an empty set
     /// to block all (the user has selected no peers); pass null to disable filtering and accept
     /// everyone (test/diagnostic only — production UI always passes a real set).
@@ -268,6 +281,24 @@ public sealed class AudioReceiver : IDisposable
         }
     }
 
+    /// <summary>Take the worst post-decode single-sample step magnitude across all active
+    /// stream sessions since the last call, resetting each session's probe. Used by the
+    /// diag log to pinpoint where in the pipeline audio discontinuities are being
+    /// introduced.</summary>
+    public float TakeMaxPostDecodeStep()
+    {
+        lock (sessionsLock)
+        {
+            var max = 0f;
+            foreach (var s in sessions.Values)
+            {
+                var v = s.TakeMaxPostDecodeStep();
+                if (v > max) max = v;
+            }
+            return max;
+        }
+    }
+
     public long PcmFrameDiscardedPartials
     {
         get
@@ -331,6 +362,26 @@ public sealed class AudioReceiver : IDisposable
     /// buffer aligned with target. Each event = 21 µs of audio at 48 kHz, sub-audible.</summary>
     public long DriftDropFrames => playoutEngine.AggregateDriftDropFrames;
     public long DriftRepeatFrames => playoutEngine.AggregateDriftRepeatFrames;
+    /// <summary>Cumulative count of FULL-empty playout reads (framesRead == 0) — the audible
+    /// underrun events that trigger noise-burst concealment + fade-in. Separated from
+    /// <see cref="Underruns"/> (which conflates full and partial short reads) so the diag
+    /// log can show "real underruns this second" distinct from "partial near-misses".</summary>
+    public long ConcealmentFires => playoutEngine.AggregateConcealmentFires;
+    /// <summary>Cumulative count of sub-frame partial reads (0 &lt; framesRead &lt; requested).
+    /// Inaudible since the 2026-05-14 concealment fix but tracked so we can see clock
+    /// in-phase patterns.</summary>
+    public long ShortReadFires => playoutEngine.AggregateShortReadFires;
+    /// <summary>Live LP-filtered drift error of the primary active session (stereo frames,
+    /// signed). Negative = buffer running below target on average; positive = above.</summary>
+    public double FilteredDriftErrorFrames => playoutEngine.PrimaryFilteredDriftErrorFrames;
+    /// <summary>Live drift integrator accumulator of the primary session. Crosses ±1 to fire
+    /// a drop / repeat correction.</summary>
+    public double DriftAccumulator => playoutEngine.PrimaryDriftAccumulator;
+    /// <summary>Take the worst single-sample step out of the ring buffer (after decode +
+    /// SessionPlayout.Write, before resampler) since the last call.</summary>
+    public float TakeMaxPostRingReadStep() => playoutEngine.TakeMaxPostRingReadStep();
+    /// <summary>Take the worst single-sample step out of the resampler since the last call.</summary>
+    public float TakeMaxPostResamplerStep() => playoutEngine.TakeMaxPostResamplerStep();
     /// <summary>RingbufferOverflowDropBytes = AggregateDrops minus the deliberate trim+drain
     /// causes. Whatever's left was the producer-side overflow (Write into a full buffer) or
     /// the catastrophic-cap trim from NoteFramesQueued. Both indicate "we genuinely couldn't
@@ -366,6 +417,71 @@ public sealed class AudioReceiver : IDisposable
             lock (sessionsLock)
             {
                 foreach (var s in sessions.Values) total += s.OpusUnrecoveredGaps;
+            }
+            return total;
+        }
+    }
+
+    // === Wire-level packet sequence diagnostics ===
+    // Each audio packet carries a per-session sequence number from the sender. Tracking it
+    // at receipt tells us whether the network or NIC stack between sender and receiver is
+    // reordering, dropping, or duplicating packets — any of which would manifest as audible
+    // pops on the PCM path. On a healthy LAN all four counters should grow as
+    // WireInOrder == packets, all others == 0. A non-zero Missed / Reordered / Duplicated
+    // points straight at transport pathology and rules out codec / playout / hardware as
+    // pop sources.
+
+    /// <summary>Cumulative count of audio packets that arrived with the expected wire sequence.</summary>
+    public long WireInOrderCount
+    {
+        get
+        {
+            long total = 0;
+            lock (sessionsLock)
+            {
+                foreach (var s in sessions.Values) total += s.WireInOrderCount;
+            }
+            return total;
+        }
+    }
+
+    /// <summary>Cumulative count of packets that the wire claims went missing (forward gaps).</summary>
+    public long WireMissedCount
+    {
+        get
+        {
+            long total = 0;
+            lock (sessionsLock)
+            {
+                foreach (var s in sessions.Values) total += s.WireMissedCount;
+            }
+            return total;
+        }
+    }
+
+    /// <summary>Cumulative count of packets that arrived out-of-order (later sequence first, then earlier).</summary>
+    public long WireReorderedCount
+    {
+        get
+        {
+            long total = 0;
+            lock (sessionsLock)
+            {
+                foreach (var s in sessions.Values) total += s.WireReorderedCount;
+            }
+            return total;
+        }
+    }
+
+    /// <summary>Cumulative count of duplicate-sequence packets (the same wire seq delivered twice).</summary>
+    public long WireDuplicatedCount
+    {
+        get
+        {
+            long total = 0;
+            lock (sessionsLock)
+            {
+                foreach (var s in sessions.Values) total += s.WireDuplicatedCount;
             }
             return total;
         }

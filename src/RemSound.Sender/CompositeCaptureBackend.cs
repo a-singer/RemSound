@@ -119,6 +119,16 @@ internal sealed class CompositeCaptureBackend : ICaptureBackend
         }
     }
 
+    /// <summary>Max raw-capture step across both inner backends since the last call. Has to
+    /// drain BOTH probes (so neither sits accumulating forever after we read one) and return
+    /// the larger value.</summary>
+    public float TakeMaxRawCaptureStep()
+    {
+        var w = wasapi?.TakeMaxRawCaptureStep() ?? 0f;
+        var a = asio?.TakeMaxRawCaptureStep() ?? 0f;
+        return w > a ? w : a;
+    }
+
     public void Start(IReadOnlyList<CaptureSourceSpec> specs)
     {
         lock (gate)

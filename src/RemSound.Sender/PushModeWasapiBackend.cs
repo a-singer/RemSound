@@ -67,6 +67,14 @@ internal sealed class PushModeWasapiBackend : ICaptureBackend
     private long bytesCaptured;
     private long clippedSampleCount;
 
+    // Raw-capture step probe — scans the WASAPI source buffer as floats right after we
+    // reinterpret the byte buffer, BEFORE resampling / stereo-mixdown / clamp. This is the
+    // earliest float-form view of what the Windows audio engine handed us. Used together
+    // with the per-lane pre-encode probe to localise where discontinuities enter on the
+    // WASAPI path. Per-backend so BothIndependent doesn't cross-contaminate ASIO and WASAPI
+    // probes' cross-buffer state.
+    private readonly AudioStepProbe rawCaptureStepProbe = new();
+
     // Resampling state — only allocated when source rate != MixSampleRate.
     private WdlResampler? resampler;
     private int sourceSampleRate;
@@ -99,6 +107,8 @@ internal sealed class PushModeWasapiBackend : ICaptureBackend
     /// <see cref="AsioCaptureBackend.TakeMaxCallbackGapMs"/> which does track it because that's
     /// where Ed has been hunting jitter.</summary>
     public int TakeMaxCallbackGapMs() => 0;
+
+    public float TakeMaxRawCaptureStep() => rawCaptureStepProbe.TakeMax();
 
     public void Start(IReadOnlyList<CaptureSourceSpec> specs)
     {
@@ -246,6 +256,21 @@ internal sealed class PushModeWasapiBackend : ICaptureBackend
             // 10 ms at 96 kHz stereo float.
             Buffer.BlockCopy(e.Buffer, 0, sourceFloatScratch, 0, e.BytesRecorded);
             var sourceFrames = sourceFloatCount / sourceChannels;
+
+            // Raw-capture probe — scans the L channel of the source buffer in the form
+            // Windows handed it to us, before our resample / mixdown / clamp. Channel layout
+            // for WASAPI loopback is interleaved [L,R,...] for stereo or a single channel for
+            // mono; the probe walks every Nth sample where N=sourceChannels. If this probe
+            // shows steps that the per-lane pre-encode probe doesn't, our downstream
+            // processing is masking real source-side issues. If both show the same steps,
+            // the discontinuity arrived from Windows / the device driver.
+            if (sourceFrames > 0 && sourceChannels > 0)
+            {
+                rawCaptureStepProbe.ScanInterleavedChannel(
+                    new ReadOnlySpan<float>(sourceFloatScratch, 0, sourceFloatCount),
+                    sourceChannels,
+                    0);
+            }
 
             // 2. Resample to MixSampleRate if needed. The resampler is pull-mode; we drive the
             //    pull from our callback. Approximate output frames = input * outRate / inRate.

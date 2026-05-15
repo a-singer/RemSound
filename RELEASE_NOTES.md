@@ -1,20 +1,33 @@
-# RemSound v1.0
+# RemSound v1.2
 
-Initial public release.
+Recording, sound cues, and receiver-side drift compensation. The wire format and audio pipeline are unchanged from v1.1, so v1.1 and v1.2 peers interoperate.
 
 ## Highlights
 
-- Low-latency peer-to-peer audio over UDP. WASAPI for any Windows audio device, with a parallel ASIO lane for pro audio interfaces (Audient, Komplete Audio, Focusrite, RME). Each lane keeps its own native callback latency.
-- Pick an ASIO driver from the dropdown at the top of the Audio inputs and outputs tab to bring ASIO into the pipeline; select **(none)** to run WASAPI-only.
-- Profile system. Save your entire setup — device ticks, peers, codec, latency targets, hotkeys, ASIO driver choice — into a JSON file. Pick which profile to load at every launch.
-- Continuous auto-tune on either lane. Watches receive jitter and nudges the latency target up or down to stay click-free without forcing you to overshoot.
-- Opus inband FEC. Single-packet losses recover transparently in both Opus modes; you don't hear them at all. PCM is also available for clean LAN connections.
-- Remote control. Configurable global hotkeys can nudge a peer's RemSound volume or their Windows default-output-device master volume, opt-in on the receiver.
-- Built-in self-updater. Optionally polls GitHub for newer releases on a schedule you set; can install them silently if you want.
+- **Recording to disk.** Dedicated Record menu (Alt+O) with Start/Stop on Ctrl+R, settings dialog, per-profile source / format / bit-depth / channel-mode / folder. Pick **received only**, **sent only**, or **both** as the recording source. Files are crash-resilient — a process crash mid-recording leaves a playable file containing everything up to the last header refresh (~5 seconds).
+- **Four output formats, all functional.** WAV (16/24-bit PCM or 32-bit float), MP3 (LAME, 128–320 kbps CBR), **OGG-Opus** (96–256 kbps VBR, reuses the Concentus encoder from the wire path), **FLAC** (pure-managed CUETools FLAKE, lossless ~50% the size of WAV). All four record at 48 kHz; labels make the rate explicit.
+- **Recording start / stop sound cues.** Short audible confirmation when recording transitions on or off. Played via the default Windows output device, separate from the recording pipeline, so a normal recording does not include the cue.
+- **Per-cue sound preferences.** The single "Mute connect/disconnect sounds" checkbox in Preferences is replaced by a per-cue CheckedListBox: Connect / Disconnect / Recording start / Recording stop. Old profiles with the legacy mute on are honoured automatically on first load.
+- **Receiver-side drift compensation upgraded.** Continuous `WdlResampler` running at a slowly-updated rate ratio replaces v1.1's discrete single-frame splice corrector. Smooths long-session sender-vs-receiver clock drift without the occasional 21 µs splice.
+
+## UI changes
+
+- **Record menu moved to Alt+O.** The old `Alt+R` chord collided with the **Receive audio (Alt+R)** checkbox on the main form. Inside the menu the item mnemonics are unchanged (S / T / O / C).
+- **Auto-tune interval label is mode-aware.** In BothIndependent mode the interval combo's label reads "Auto-tune interval — WASAPI and ASIO" so it's clear the same combo drives both lanes' tick cadence — each lane still independently tunes to its own latency target.
+
+## Diagnostics (only active with Enable logs ticked)
+
+- Per-stage discontinuity probes: sender raw-capture, sender pre-encode (per-lane in BothIndependent), receiver post-decode, post-ring-buffer, post-resampler. Lets log inspection localise where in the chain an audio click was introduced.
+- Wire-level sequence tracking on each PCM stream: in-order / missed / reordered / duplicated packet counts in the diag log.
+- Clipped-sample delta in the diag log.
+
+## Bug fixes
+
+- Auto-tune interval combo no longer greys out when only the ASIO lane's auto-tune is ticked in BothIndependent mode. Previously the combo's enabled state followed only the WASAPI checkbox.
 
 ## Install
 
-1. Download `RemSound-v1.0.zip` from this release.
+1. Download `RemSound-v1.2.zip` from this release.
 2. Extract somewhere with write permission (e.g. `C:\RemSound\`, `Documents\RemSound\`, etc.). Avoid `Program Files` unless you grant write permission so the self-updater can replace files in place.
 3. Run `RemSound.exe`. Allow on private networks when Windows Firewall prompts.
 4. Press F1 (or use the Help menu) for the user manual.

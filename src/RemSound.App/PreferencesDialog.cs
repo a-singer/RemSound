@@ -3,15 +3,21 @@ using RemSound.Core;
 namespace RemSound.App;
 
 /// <summary>
-/// Preferences dialog. Holds the three settings that used to live on the (now-removed)
-/// Profiles and preferences tab and aren't profile-management actions in their own right:
-///   * Mute connect/disconnect sounds — the small ding on peer state changes.
+/// Preferences dialog. Holds settings that aren't profile-management actions in their own
+/// right:
+///   * Browse for RemSound profiles folder — picks the directory the profile picker scans
+///     next launch.
+///   * Cue sounds — per-cue enable list (connect, disconnect, recording start/stop). One
+///     CheckedListBox; ticked items play, unticked are silent. Replaced the old single
+///     "Mute connect/disconnect sounds" toggle (2026-05-15) when recording start/stop cues
+///     were added — a CheckedListBox scales to future cues without dialog re-layout.
 ///   * Accept remote volume commands from peers — opt-in for the remote-control feature.
 ///   * Startup behaviour — opens the existing <see cref="StartupBehaviourDialog"/> sub-dialog.
+///   * Update settings — frequency, manual check, silent-install toggle.
+///   * Enable logs + Write logs now.
 ///
-/// Both checkboxes save through <see cref="RemSoundSettingsStore"/> on every change (so
-/// the user doesn't need to re-confirm via an OK button). The Startup behaviour button
-/// just opens the existing modal sub-dialog. Esc or the Close button dismisses.
+/// All settings save through <see cref="RemSoundSettingsStore"/> or <see cref="AppConfig"/>
+/// on every change (no OK-to-commit). Esc or Close dismisses.
 ///
 /// Reachable via the File → Preferences menu item or Ctrl+P from the main window.
 /// </summary>
@@ -24,12 +30,35 @@ internal sealed class PreferencesDialog : Form
         AutoSize = true,
     };
 
-    private readonly AccessibleCheckBox muteCuesBox = new()
+    // Per-cue enable list (2026-05-15). Replaces the single "mute connect/disconnect"
+    // checkbox with one item per cue sound, ticked = play, unticked = silent. Same
+    // CheckOnClick / mnemonic-via-label pattern as the audio device lists on the main
+    // form — visually familiar and NVDA-friendly. The Items collection order MUST match
+    // the CueIndex enum below so the ItemCheck handler can dispatch by index.
+    private readonly Label cueListLabel = new()
     {
-        Text = "Mute connect/disconnect sounds (Alt+&M)",
-        AccessibleName = "Mute connect/disconnect sounds",
+        Text = "Cue sou&nds (Alt+N):",
+        AccessibleName = "Cue sounds",
         AutoSize = true,
+        Padding = new Padding(0, 6, 0, 4),
     };
+
+    private readonly CheckedListBox cueList = new()
+    {
+        CheckOnClick = true,
+        IntegralHeight = false,
+        Height = 100,
+        Width = 360,
+        AccessibleName = "Cue sounds",
+    };
+
+    private enum CueIndex
+    {
+        Connect = 0,
+        Disconnect = 1,
+        RecordStart = 2,
+        RecordStop = 3,
+    }
 
     private readonly AccessibleCheckBox acceptRemoteVolumeBox = new()
     {
@@ -119,7 +148,7 @@ internal sealed class PreferencesDialog : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterParent;
         KeyPreview = true;
-        ClientSize = new Size(560, 440);
+        ClientSize = new Size(560, 540);
 
         // 1st row — Browse for profiles folder. Same FolderBrowserDialog the startup
         // ProfileSelectionDialog uses; the choice is persisted to AppConfig.ProfilesDirectory
@@ -154,10 +183,27 @@ internal sealed class PreferencesDialog : Form
                 "Profiles folder updated", MessageBoxButtons.OK, MessageBoxIcon.Information);
         };
 
-        muteCuesBox.Checked = settings.LoadMuteConnectionCues();
-        muteCuesBox.CheckedChanged += (_, _) =>
+        // Populate the cue list — order must match CueIndex enum. Each item is ticked from
+        // its corresponding settings flag; the toggle handler dispatches by index so adding
+        // a future cue is just two lines (enum value + Items.Add + Save case).
+        cueList.Items.Clear();
+        cueList.Items.Add("Connect sound", settings.LoadEnableConnectCue());
+        cueList.Items.Add("Disconnect sound", settings.LoadEnableDisconnectCue());
+        cueList.Items.Add("Recording start sound", settings.LoadEnableRecordStartCue());
+        cueList.Items.Add("Recording stop sound", settings.LoadEnableRecordStopCue());
+        cueList.ItemCheck += (_, e) =>
         {
-            settings.SaveMuteConnectionCues(muteCuesBox.Checked);
+            // ItemCheck fires BEFORE the visual state actually flips; e.NewValue is what
+            // it's about to become. Use that for the persist call so the saved value
+            // matches what the user just clicked.
+            var nowEnabled = e.NewValue == CheckState.Checked;
+            switch ((CueIndex)e.Index)
+            {
+                case CueIndex.Connect: settings.SaveEnableConnectCue(nowEnabled); break;
+                case CueIndex.Disconnect: settings.SaveEnableDisconnectCue(nowEnabled); break;
+                case CueIndex.RecordStart: settings.SaveEnableRecordStartCue(nowEnabled); break;
+                case CueIndex.RecordStop: settings.SaveEnableRecordStopCue(nowEnabled); break;
+            }
             ChangedAnyProfileSetting = true;
         };
 
@@ -224,11 +270,11 @@ internal sealed class PreferencesDialog : Form
         for (var i = 0; i < 9; i++) panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        // Tab order top-to-bottom: browse, mute cues, accept remote, startup, update
+        // Tab order top-to-bottom: browse, cue-sound list, accept remote, startup, update
         // frequency, check-now, silent install, enable logs, write logs now, close. Updates
         // sit above the log row so a user setting up the app meets them first.
         browseProfilesFolderButton.TabIndex = 0;
-        muteCuesBox.TabIndex = 1;
+        cueList.TabIndex = 1;
         acceptRemoteVolumeBox.TabIndex = 2;
         startupBehaviourButton.TabIndex = 3;
         updateFrequencyBox.TabIndex = 4;
@@ -252,8 +298,24 @@ internal sealed class PreferencesDialog : Form
         freqRow.Controls.Add(updateFrequencyLabel);
         freqRow.Controls.Add(updateFrequencyBox);
 
+        // Wrap label + list as one logical group so they share the same row in the
+        // top-level layout. The label's Alt+N mnemonic focuses the list when activated.
+        var cueGroup = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            ColumnCount = 1,
+            RowCount = 2,
+        };
+        cueGroup.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        cueGroup.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        cueGroup.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        cueGroup.Controls.Add(cueListLabel, 0, 0);
+        cueGroup.Controls.Add(cueList, 0, 1);
+        cueListLabel.Click += (_, _) => cueList.Focus();
+
         panel.Controls.Add(browseProfilesFolderButton, 0, 0);
-        panel.Controls.Add(muteCuesBox, 0, 1);
+        panel.Controls.Add(cueGroup, 0, 1);
         panel.Controls.Add(acceptRemoteVolumeBox, 0, 2);
         panel.Controls.Add(startupBehaviourButton, 0, 3);
         panel.Controls.Add(freqRow, 0, 4);

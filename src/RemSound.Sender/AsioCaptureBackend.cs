@@ -37,6 +37,11 @@ internal sealed class AsioCaptureBackend : ICaptureBackend
     // open driver can keep running while routing changes between Mixed / AsioLane / no-op.
     // Volatile is sufficient for reference assignment on .NET (atomic, with memory barrier).
     private volatile Action<ReadOnlyMemory<float>> onMixedSamples;
+    // Raw-capture step probe — measures discontinuities in the ASIO buffer exactly as the
+    // driver delivered it, BEFORE our code sums the selected channel pairs or clamps to ±1.0.
+    // Each capture backend owns its own probe so BothIndependent mode (ASIO and WASAPI both
+    // capturing) can be diagnosed without the probes contaminating each other's state.
+    private readonly AudioStepProbe rawCaptureStepProbe = new();
     private readonly Action<string>? onDiagnostic;
     private readonly string driverName;
     public string DriverName => driverName;
@@ -81,6 +86,8 @@ internal sealed class AsioCaptureBackend : ICaptureBackend
     /// </summary>
     public void SetCallback(Action<ReadOnlyMemory<float>> callback) =>
         onMixedSamples = callback;
+
+    public float TakeMaxRawCaptureStep() => rawCaptureStepProbe.TakeMax();
 
     public bool IsRunning => asio is not null;
     public long TotalCaptureCallbacks => Interlocked.Read(ref callbackCount);
@@ -263,6 +270,23 @@ internal sealed class AsioCaptureBackend : ICaptureBackend
         lock (gate) pairs = activeChannelPairIndices;
 
         if (pairs.Count == 0) return;
+
+        // Diagnostic raw-capture probe — scans the FIRST active channel pair's L channel in
+        // the as-delivered-by-the-driver interleaved buffer. Fires BEFORE the mix/sum/clamp
+        // below so the probe sees the driver's data verbatim. If this probe goes non-zero
+        // on big steps while the post-mix probe also does, the discontinuity is upstream of
+        // our code (driver, USB transport, audio hardware). If it stays clean while the
+        // post-mix probe goes non-zero, something in the mix/clamp loop is creating the step.
+        if (frames > 0 && recordChannelCount > 0)
+        {
+            var firstPair = pairs[0];
+            var lCh = firstPair * 2;
+            if (lCh < recordChannelCount)
+            {
+                rawCaptureStepProbe.ScanInterleavedChannel(
+                    new ReadOnlySpan<float>(interleavedScratch, 0, written), recordChannelCount, lCh);
+            }
+        }
 
         for (var f = 0; f < frames; f++)
         {

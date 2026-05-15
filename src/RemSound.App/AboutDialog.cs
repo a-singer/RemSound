@@ -20,6 +20,74 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v1.2
+
+        Recording, sound cues, and receiver-side drift compensation.
+        This release is mostly about features that sit on top of the
+        v1.1 transport — the wire format and audio pipeline are
+        unchanged, so v1.1 and v1.2 peers interoperate.
+
+        What's new:
+          * Recording. New Record menu (Alt+O) — Start / Stop with
+            Ctrl+R, dedicated settings dialog, per-profile choice of
+            source (received only, sent only, or both), file format
+            (WAV, MP3, OGG-Opus, FLAC), bit depth or bitrate, mono or
+            stereo, and recordings folder. Files are crash-resilient:
+            WAV re-patches its RIFF header every 5 seconds, MP3 / FLAC
+            / OGG-Opus all produce well-formed truncated files if the
+            app crashes mid-recording.
+          * OGG-Opus and FLAC encoders now wired up — they were stubs
+            in earlier builds. OGG-Opus reuses the same Concentus
+            encoder as the wire path; FLAC uses pure-managed CUETools
+            FLAKE (no native DLL).
+          * Recording start / stop sound cues. Plays a short ding
+            when recording transitions on or off. Played via the
+            default Windows output device, separate from the
+            recording pipeline, so a normal recording does not include
+            the cue.
+          * Sound-cue Preferences. The old single "Mute connect /
+            disconnect sounds" checkbox is replaced by a per-cue
+            CheckedListBox: Connect / Disconnect / Recording start /
+            Recording stop, each independently toggleable. Old profile
+            settings that had the legacy mute on are honoured on first
+            load.
+          * Receiver-side drift compensation switched from discrete
+            single-frame splices to a continuous WdlResampler running
+            at a slowly-updated rate ratio. Smooths out long-session
+            clock drift between sender and receiver without the
+            occasional 21 µs splice the v1.1 corrector emitted.
+
+        UI changes:
+          * Record menu moved to Alt+O (Rec&ord). The old Alt+R chord
+            conflicted with the Receive audio checkbox on the main
+            form. Inside the menu the item mnemonics are unchanged
+            (S / T / O / C for Start, settings, Open folder, Change
+            folder).
+          * Auto-tune interval combo label and accessible name are now
+            mode-aware. In BothIndependent mode it reads "Auto-tune
+            interval — WASAPI and ASIO" so it's clear the same combo
+            drives ticks for both lanes; each lane still independently
+            tunes to its own target latency. Earlier builds also had
+            a bug where ticking ASIO auto-tune alone left this combo
+            greyed out — fixed.
+
+        Diagnostics (only active with Enable logs ticked):
+          * Per-stage discontinuity probes — sender raw capture,
+            sender pre-encode (now per lane in BothIndependent),
+            receiver post-decode, receiver post-ring, receiver
+            post-resampler. Lets a log inspection localise where a
+            click was introduced (capture / wire / decode / playout).
+          * Wire-level sequence tracking on each PCM stream:
+            in-order / missed / reordered / duplicated packet counts
+            in the diag log. Healthy LAN should show all-zero except
+            in-order; non-zero on the others points to transport
+            issues rather than software.
+          * Clipped-sample delta in the diag log.
+
+        Bug fixes:
+          * Auto-tune interval combo no longer greys out when only
+            ASIO auto-tune is ticked in BothIndependent.
+
         RemSound v1.1
 
         Priority and performance hardening, plus always-on network

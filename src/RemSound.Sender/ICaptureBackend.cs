@@ -45,6 +45,13 @@ internal interface ICaptureBackend : IDisposable
     /// support per-callback timing (e.g. trivial test backends) may return 0.</summary>
     int TakeMaxCallbackGapMs();
 
+    /// <summary>Worst single-sample step magnitude observed in the raw capture buffer since
+    /// the last call; resets on read. Each backend owns its own probe instance so the
+    /// cross-buffer step measurement doesn't get fooled by another backend's interleaved
+    /// callbacks (which is what produced spurious 0.4-0.5 readings in BothIndependent mode
+    /// before 2026-05-15). Backends that can't sensibly expose raw samples return 0.</summary>
+    float TakeMaxRawCaptureStep();
+
     void Start(IReadOnlyList<CaptureSourceSpec> specs);
 
     /// <summary>Live-update of the active source set without stopping the mix loop. Adds/removes

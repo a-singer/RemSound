@@ -125,6 +125,37 @@ public sealed class AudioSender : IDisposable
     public int TakeMaxEmitMs() => (int)(Interlocked.Exchange(ref maxEmitTicks, 0) * 1000 / Stopwatch.Frequency);
     public int TakeMaxSendCallMs() => (int)(Interlocked.Exchange(ref maxSendCallTicks, 0) * 1000 / Stopwatch.Frequency);
 
+    // Pre-encode discontinuity probe — per-lane (each <see cref="SenderLane"/> owns its own).
+    // The aggregate accessor returns the max across both lanes since the last read; per-lane
+    // accessors expose them individually so BothIndependent mode can tell which lane is
+    // producing the artefact. Splitting the probe per-lane (2026-05-15) eliminates the
+    // cross-stream synthetic-step artefact that appeared when both lanes shared one probe and
+    // their interleaved callbacks fooled the cross-buffer step computation into recording a
+    // "step" between two unrelated audio streams.
+    public float TakeMaxSenderPreEncodeStep()
+    {
+        var a = defaultLane.TakeMaxPreEncodeStep();
+        var b = asioLane.TakeMaxPreEncodeStep();
+        return a > b ? a : b;
+    }
+    public float TakeMaxPreEncodeStepWasapiLane() => defaultLane.TakeMaxPreEncodeStep();
+    public float TakeMaxPreEncodeStepAsioLane() => asioLane.TakeMaxPreEncodeStep();
+
+    // Raw capture-side step probe — now lives inside each <see cref="ICaptureBackend"/>
+    // implementation so the ASIO path and the WASAPI path each measure their own buffers
+    // independently. The aggregate just asks the backend for the max since last read; in
+    // BothIndependent mode the composite backend forwards to both inners and returns the
+    // larger value.
+    public float TakeMaxSenderRawCaptureStep() => engine.TakeMaxRawCaptureStep();
+
+    // Snapshot the cumulative "hit the hard clamp" sample counter. The sender's mix path
+    // clamps any sample whose magnitude exceeds 1.0 (avoids producing samples the int24 path
+    // can't represent or that the resampler would treat as garbage). Per-second delta tells
+    // us whether the input signal is getting close enough to the rails that clipping is
+    // active — clipping itself produces no step, but a flat-topped sample plateau plus a
+    // following sharp drop can produce audible distortion that masquerades as a click.
+    public long ClippedSampleCount => engine.ClippedSampleCount;
+
     // === inbound dispatch (relay-mode) ===
     // The send socket is normally write-only, but in relay-mode the same socket is what
     // catches return packets — the relay forwards traffic into our NAT pinhole, which lives on
@@ -143,6 +174,28 @@ public sealed class AudioSender : IDisposable
     /// Set this before <see cref="StartReceiving"/> is called.
     /// </summary>
     public Action<byte[], int, IPEndPoint>? OnInboundPacket { get; set; }
+
+    /// <summary>
+    /// Optional callback invoked every time a SenderLane is about to encode a buffer of
+    /// captured float audio. The span is 48 kHz interleaved stereo float, lives on the
+    /// audio thread, and must be processed quickly or copied — the buffer is reused on
+    /// the very next callback. The recorder uses this tap to capture "what we sent" with
+    /// zero impact on the wire path (no allocation, no extra encoder pass). Null = no tap.
+    /// </summary>
+    public Action<ReadOnlyMemory<float>>? OnSentSamples { get; set; }
+
+    /// <summary>
+    /// Internal helper for <see cref="SenderLane"/> to invoke <see cref="OnSentSamples"/>
+    /// without paying a delegate-invocation cost when no tap is wired. Catches and drops
+    /// any exception from the user callback — a misbehaving recorder must not crash the
+    /// audio thread.
+    /// </summary>
+    internal void DispatchSentSamples(ReadOnlyMemory<float> samples)
+    {
+        var cb = OnSentSamples;
+        if (cb is null) return;
+        try { cb(samples); } catch { /* recorder failure isolated from audio path */ }
+    }
 
     public AudioSender()
     {
@@ -357,7 +410,6 @@ public sealed class AudioSender : IDisposable
     public int TakeMaxCaptureCallbackGapMs() => engine.TakeMaxCallbackGapMs();
     public string? CaptureFormatDescription => engine.FirstCaptureFormatDescription;
     public string? LastCaptureError => engine.FirstCaptureLastError;
-    public long ClippedSampleCount => engine.ClippedSampleCount;
     public AudioTransportCodec Codec => codec;
     public int OpusFrameMilliseconds => opusFrameMs;
 

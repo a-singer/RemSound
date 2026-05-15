@@ -160,6 +160,25 @@ internal sealed class PlayoutEngine : IWaveProvider
     }
 
     /// <summary>
+    /// Optional callback invoked every time the engine produces a buffer of mixed received
+    /// audio (after volume/mute/limiter, before pack-to-bytes). The span is 48 kHz
+    /// interleaved stereo float and lives on the render thread; copy or process quickly.
+    /// Used by the recorder to capture "what we heard". Wired in App; null = no tap.
+    ///
+    /// In BothIndependent the callback fires once per lane Read (so the recorder sees two
+    /// streams paced at the per-lane render rates) — the recorder consolidates them on its
+    /// background thread. In classic modes only the main Read path fires.
+    /// </summary>
+    public Action<ReadOnlyMemory<float>>? OnReceivedSamples { get; set; }
+
+    private void DispatchReceivedSamples(ReadOnlyMemory<float> samples)
+    {
+        var cb = OnReceivedSamples;
+        if (cb is null) return;
+        try { cb(samples); } catch { /* recorder failure isolated from audio path */ }
+    }
+
+    /// <summary>
     /// IWaveProvider surface for sessions tagged <see cref="RenderRoute.WasapiLane"/>. Only
     /// used in BothIndependent mode where the WASAPI render backend reads its own lane
     /// independently of the ASIO render. In the three classic modes (WasapiOnly / AsioOnly /
@@ -378,6 +397,93 @@ internal sealed class PlayoutEngine : IWaveProvider
         }
     }
 
+    /// <summary>Cumulative count of full-empty reads (framesRead == 0) across all sessions.
+    /// These are the audible underrun events that trigger noise-burst concealment + fade-in
+    /// on the next read. Split out from <see cref="AggregateUnderruns"/> (which conflates
+    /// full and partial short reads) so diagnostic code can tell "the buffer fully emptied"
+    /// from "the buffer was a frame or two short of the request".</summary>
+    public long AggregateConcealmentFires
+    {
+        get
+        {
+            long total = 0;
+            foreach (var s in sessionsSnapshot) total += s.ConcealmentFiresTotal;
+            return total;
+        }
+    }
+
+    /// <summary>Cumulative count of sub-frame partial reads (0 &lt; framesRead &lt; requested)
+    /// across all sessions. Since the 2026-05-14 concealment fix these are no longer audible
+    /// events — the ring buffer's zero-fill tail is left in place rather than running cosine
+    /// fade-in on the next read — but counting them is useful for diagnosis. A high rate
+    /// indicates sender/receiver clocks are running so close in-phase that the ring buffer
+    /// occasionally returns N-1 of N requested frames.</summary>
+    public long AggregateShortReadFires
+    {
+        get
+        {
+            long total = 0;
+            foreach (var s in sessionsSnapshot) total += s.PartialReadFiresTotal;
+            return total;
+        }
+    }
+
+    /// <summary>Live state — the LP-filtered drift error in stereo frames of the FIRST
+    /// active session in the snapshot. Most setups have exactly one session, in which case
+    /// this is exactly that session's value. Positive = buffer running above target on
+    /// average; negative = buffer below target. 0 if no sessions exist.</summary>
+    public double PrimaryFilteredDriftErrorFrames
+    {
+        get
+        {
+            var snap = sessionsSnapshot;
+            return snap.Length > 0 ? snap[0].FilteredDriftErrorFrames : 0.0;
+        }
+    }
+
+    /// <summary>Live state — the drift integrator accumulator of the first active session.
+    /// Crosses ±1 to fire a single-frame drop / repeat. Useful for "is the corrector about
+    /// to fire?" diagnosis.</summary>
+    public double PrimaryDriftAccumulator
+    {
+        get
+        {
+            var snap = sessionsSnapshot;
+            return snap.Length > 0 ? snap[0].DriftAccumulator : 0.0;
+        }
+    }
+
+    /// <summary>Worst single-sample step seen out of the ring buffer since the last call.
+    /// Compared against the sender's pre-encode probe and the session's post-resampler
+    /// probe, this locates where in the pipeline an audio discontinuity was introduced.
+    /// Takes the max across all sessions and resets each.</summary>
+    public float TakeMaxPostRingReadStep()
+    {
+        var snap = sessionsSnapshot;
+        var max = 0f;
+        foreach (var s in snap)
+        {
+            var v = s.TakeMaxPostRingReadStep();
+            if (v > max) max = v;
+        }
+        return max;
+    }
+
+    /// <summary>Worst single-sample step in the resampler output since the last call.
+    /// Significantly larger than <see cref="TakeMaxPostRingReadStep"/> would point the
+    /// finger at the resampler integration.</summary>
+    public float TakeMaxPostResamplerStep()
+    {
+        var snap = sessionsSnapshot;
+        var max = 0f;
+        foreach (var s in snap)
+        {
+            var v = s.TakeMaxPostResamplerStep();
+            if (v > max) max = v;
+        }
+        return max;
+    }
+
     // === WASAPI render thread ===
 
     /// <summary>
@@ -478,6 +584,13 @@ internal sealed class PlayoutEngine : IWaveProvider
 
         if (recordDiagnostics) diagnostics.RecordOutputSampleSteps(mixBuf.AsSpan(0, outFloats));
 
+        // Recording tap (per-lane). Mix is fully processed at this point — volume, mute and
+        // limiter have all been applied — so the recorder sees exactly what the user is
+        // about to hear from this lane. The tap fires regardless of whether the lane has an
+        // attached output device; that way a recording set to "received only" still captures
+        // audio in setups where the user has no WASAPI outputs ticked.
+        DispatchReceivedSamples(mixBuf.AsMemory(0, outFloats));
+
         Buffer.BlockCopy(mixBuf, 0, buffer, offset, outFloats * sizeof(float));
         return count;
     }
@@ -546,6 +659,13 @@ internal sealed class PlayoutEngine : IWaveProvider
         }
 
         if (recordDiagnostics) diagnostics.RecordOutputSampleSteps(mixBuf.AsSpan(0, outFloats));
+
+        // Recording tap (all-sessions path, classic modes / WasapiOnly). Same point in the
+        // pipeline as the lane-routed tap above — fully processed mix, just before the
+        // pack-to-bytes step. The recorder gets a clean copy of what the user is about
+        // to hear.
+        DispatchReceivedSamples(mixBuf.AsMemory(0, outFloats));
+
         Buffer.BlockCopy(mixBuf, 0, buffer, offset, outFloats * sizeof(float));
         return count;
     }
@@ -606,6 +726,13 @@ internal sealed class PlayoutEngine : IWaveProvider
         }
 
         public int Read(byte[] buffer, int offset, int count) =>
-            owner.ReadForRoute(buffer, offset, count, route, MixScratch, SessionScratch, recordDiagnostics: false);
+            // recordDiagnostics: true so the diag log line in MainForm gets buffer-level
+            // and render-read samples in BothIndependent mode. Originally false to avoid
+            // double-counting when both lanes ran concurrently, but in practice only one
+            // lane has sessions at a time (the user's chosen capture path) — the other
+            // lane's Read returns zero-mix and contributes nothing meaningful to the diag
+            // numbers. Without this the diag line never fires in BothIndependent setups,
+            // which is the user's normal mode of operation. 2026-05-14.
+            owner.ReadForRoute(buffer, offset, count, route, MixScratch, SessionScratch, recordDiagnostics: true);
     }
 }

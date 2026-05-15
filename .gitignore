@@ -28,6 +28,11 @@ PLAN-*.md
 Thumbs.db
 .DS_Store
 
+# Audio-editor sidecar files. Sony / Magix Sound Forge writes a `.sfk` peak-cache file
+# next to every `.wav` it touches; these are pure metadata, regenerated on demand by the
+# editor, and shouldn't be in source control alongside the cue-sound wavs themselves.
+*.sfk
+
 # Misc
 *.log
 *.tmp

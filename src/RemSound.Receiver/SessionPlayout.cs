@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Net;
+using System.Runtime.InteropServices;
+using NAudio.Dsp;
 using RemSound.Core;
 
 namespace RemSound.Receiver;
@@ -27,9 +29,6 @@ internal sealed class SessionPlayout : IDisposable
     private const int MixBytesPerSecond = MixSampleRate * MixBytesPerFrame;
 
     private readonly AudioRingBuffer playout;
-    // Scratch buffer used by the drift-correction crossfade path. Sized as needed inside
-    // ReadFloats; persistent here so we don't reallocate per call.
-    private float[] driftScratch = new float[8192];
 
     private volatile bool playbackArmed;
     private volatile bool drainRequested;
@@ -90,88 +89,163 @@ internal sealed class SessionPlayout : IDisposable
     // gets a different sequence — but we don't care about reproducibility, just character.
     private readonly Random concealRng = new(Random.Shared.Next());
 
-    // === Drift correction (Phase 2, 2026-05-06) ===
-    // Continuous low-rate clock-drift correction. The receiver and sender each have their own
-    // audio crystal; over time their rates differ by a few-tens-of-ppm (typical for cheap USB
-    // audio). Without correction, the playout buffer slowly drifts up (sender faster) or down
-    // (sender slower) and eventually clicks via either overflow or underrun.
+    // === Drift correction (Phase 4, 2026-05-14) — fixed-ratio resampler ===
     //
-    // The previous design corrected via a continuously-modulated WdlResampler — which produced
-    // sample-level corruption and was the source of all the per-sample artefacts we hunted for
-    // weeks (see analysis 2026-05-06). The replacement is the Jamulus / Mumble pattern:
-    // **integrate the buffer-level error over time and discretely drop or repeat ONE STEREO
-    // FRAME at a time when the integrator signals sustained drift.** A single-frame drop or
-    // repeat at 48 kHz is 21 µs of audio — below the threshold of audibility on any normal
-    // content, especially when timed by an integrator that fires only on sustained drift, not
-    // on packet-arrival jitter.
+    // Replaces the Phase-2/3 discrete-splice drift corrector. Sender and receiver each have
+    // their own free-running audio crystal and the two rates differ by a few-tens to a few-
+    // hundreds of ppm. Without compensation the receive ring buffer slowly drifts up
+    // (sender faster) or down (sender slower) and eventually clicks via either overflow or
+    // underrun.
     //
-    // Mechanism per Read:
-    //   1. Sample the current buffer level vs target.
-    //   2. Integrate (buffer_level_error_frames * dt_sec * DriftGain) into driftAccumulator.
-    //   3. If accumulator >= 1, drop one frame from the head of the playout buffer
-    //      (sender faster — we've consumed less than it produced; speed up consumption by
-    //      one frame). Decrement accumulator.
-    //   4. If accumulator <= -1, queue a "repeat one frame" for the next Read (sender slower —
-    //      stall consumption by one frame). Increment accumulator.
+    // Discrete single-frame drop / repeat splices — even with cosine crossfade and adaptive-
+    // gain integrator scheduling — are audible at any drift rate above roughly 1 correction
+    // per second on tonal content. Ed reported them as a continuous train of "tiny pops" all
+    // through this session. The instrumentation added 2026-05-14 confirmed the corrector
+    // was firing at 4-13 repeats/sec for his Audient EVO4 ↔ EVO8 setup (~150-200 ppm drift).
     //
-    // Behaviour by drift rate:
-    //   - 0 ppm (perfectly matched clocks): error stays near 0, accumulator stays near 0,
-    //     no corrections fire. Silent.
-    //   - 50 ppm drift (typical USB crystal mismatch = ~5 frames/sec on 48 kHz): accumulator
-    //     grows to ±1 every ~4 seconds; one frame correction every ~4 seconds. 21 µs of audio
-    //     dropped or repeated every ~4 seconds. Inaudible.
-    //   - Higher transient drift (e.g. system load briefly): integrator catches up within
-    //     seconds, brief burst of corrections, then settles. Still inaudible.
+    // The fixed-ratio resampler approach is what every serious networked-audio implementation
+    // (Jamulus, SonoBus, Dante) uses for the same problem:
+    //   1. Measure the sender's effective sample rate by comparing bytes written to the ring
+    //      vs bytes output to the audio device over a long window (multi-second).
+    //   2. Configure a WdlResampler with input rate = measured-sender-rate and output rate =
+    //      MixSampleRate. The resampler continuously stretches or compresses the incoming
+    //      stream by the necessary ppm.
+    //   3. Update the resampler's input rate ONLY every DriftMeasurementWindowSec, smoothed
+    //      heavily. The earlier doomed attempt (May) modulated rates per-sample based on
+    //      instantaneous buffer level; that caused phase discontinuities and sample-level
+    //      artefacts. Slow updates avoid that entirely.
     //
-    // The existing click-trim block above is kept as a safety net for catastrophic conditions
-    // (large step changes that the slow integrator can't keep up with). At normal drift rates
-    // the integrator never lets the buffer reach the click-trim threshold, so the trim should
-    // effectively never fire in steady-state operation.
-    private double driftAccumulatorFrames;
+    // Pitch shift introduced by a fixed-ratio resampler at, say, 200 ppm is 0.02 % — far
+    // below the ~5 % human pitch-discrimination threshold and even below tuning precision.
+    // Genuinely inaudible.
+    //
+    // Safety net: the legacy click-trim block above stays in place and fires only at
+    // catastrophic buffer levels (target + ~23 ms or 1 second worst-case cap). The discrete
+    // splice corrector (drop / repeat with crossfade) is GONE — the resampler handles
+    // steady-state drift smoothly. If the resampler somehow can't keep up (transient
+    // catastrophe), the click-trim safety net fires once.
+    //
+    // The resampler. Output-driven (we want N output frames; ask the resampler how many
+    // input frames it needs and feed those in from the ring buffer). interp=true with
+    // filtercnt=0 selects WdlResampler's low-cost linear-interpolation mode — plenty good
+    // enough for the ppm-scale rate corrections we apply. Higher filter modes would add
+    // CPU cost for a sample quality difference well below audibility at these tiny ratios.
+    // SetRates is called periodically from the audio thread (the only thread that touches
+    // this resampler) so we don't need any cross-thread synchronisation around it.
+    private readonly WdlResampler driftResampler;
+
+    // Drift measurement counters. bytesWrittenForDriftEst is incremented by the producer
+    // thread on every Write; bytesReadOutputForDriftEst is incremented by the consumer
+    // thread (us) on every successful ReadFloats. Their ratio over a multi-second window
+    // is the sender's effective rate divided by the receiver's nominal rate — exactly the
+    // ratio the resampler needs.
+    private long bytesWrittenForDriftEst;
+    private long bytesReadOutputForDriftEst;
+
+    // Window state. windowStartTicks = when the current measurement window started, ticks
+    // 0 means "not yet armed for measurement". The values at window start are snapshotted
+    // so we can compute the delta cleanly even if the counters wrap (long is 63-bit so wrap
+    // is ~190 years at 48 kHz stereo float, but the math is still cleaner with snapshots).
+    private long resamplerWindowStartTicks;
+    private long resamplerWindowStartBytesWritten;
+    private long resamplerWindowStartBytesOutput;
+
+    // Smoothed ratio currently applied to the resampler (1.0 = no resampling). Smoothing
+    // is "first measurement = the measurement; subsequent = 70 % previous + 30 % new" so
+    // a one-window outlier doesn't yank the rate. Settles within a few windows to the
+    // true drift.
+    private double smoothedRateRatio = 1.0;
+    private bool resamplerActivelyTracking;
+    private long resamplerUpdatesTotal;
+
+    // Scratch buffer for reading from the ring buffer in float form. Sized lazily based on
+    // the largest input-frames request the resampler asks for; persists across calls so
+    // we don't realloc on the hot path.
+    private float[] resamplerInputScratch = new float[2048];
+
+    // Retained for backward compatibility with the diagnostic surface — the diag log line
+    // still emits driftDrop / driftRep counters and the DriftAccumulator / FilteredError
+    // accessors. In the Phase-4 design these are all just informational metrics that stay
+    // at zero / track the same buffer-vs-target offset, but old log parsers don't break.
+    // Explicit zero init so the compiler doesn't flag them as never-assigned when the
+    // Phase-4 design no longer increments them anywhere.
+    private long driftDropFramesTotal = 0;
+    private long driftRepeatFramesTotal = 0;
+    // Live state for the diag log — the current buffer-level offset from target, low-pass
+    // filtered. Lets the diag line continue to surface "where the buffer is sitting".
+    // Updated each Read; no longer drives any correction logic itself.
+    private double filteredErrorFrames;
     private long prevDriftSampleTicks;
-    private int pendingRepeatFrames;
-    private long driftDropFramesTotal;
-    private long driftRepeatFramesTotal;
     // Integrator gain. Lowered 2026-05-06 (10×) after an empirical test where the previous
     // gain (0.05) produced ~10 corrections per second on the user's hardware (two free-running
-    // USB audio crystals with combined drift around 200 ppm = 10 frames/sec). Even with
-    // single-frame corrections, 10 clicks/sec was audible. Lowering the gain alone trades
-    // click rate for buffer drift; combined with the crossfade-on-splice change, each
-    // correction is also significantly less audible per event.
-    //
-    // At 0.005, sustained 1-frame error reaches accumulator = 1 in ~200 seconds. For 200 ppm
-    // drift (10 frames/sec error growth), the integrator catches up at ~2 corrections/sec
-    // steady-state — which combined with crossfaded splices should push perceived click rate
-    // toward inaudible.
-    //
-    // 2026-05-06 (later): added adaptive gain scaling. The base gain above is fine for steady-
-    // state clock-drift compensation but pathologically slow when the buffer is far from
-    // target — e.g. after a slider raise the buffer sits below target and drift correction
-    // takes minutes to fill it. Empirically observed in user testing as "every session sounds
-    // different": the buffer wandered for tens of seconds at whatever level the initial
-    // arming chaos left it at. Now the effective gain scales linearly with absolute error
-    // beyond the small-error band, capped, so:
-    //   * |error| <= DriftSmallErrorFrames: gain = DriftGain (today's behaviour, gentle)
-    //   * |error|  > DriftSmallErrorFrames: gain = DriftGain × min(|error|/small, maxScale)
-    // At 50 frames (~1 ms) the gain is 1×; at 1000 frames (~21 ms) it's 20× capped, giving
-    // a fill rate of ~100 frames/sec — a 20 ms slider raise converges in ~10 seconds with
-    // a barely-audible 0.2% rate offset during the fill.
-    private const double DriftGain = 0.005;
-    // Below this absolute error, gain stays at the steady-state baseline. ~1 ms at 48 kHz.
-    private const double DriftSmallErrorFrames = 50;
-    // Cap on adaptive-gain scale, so even huge errors don't produce an audible time-stretch
-    // (200/sec frame edits = 0.42% rate change, edge of noticeable on tonal content).
-    private const double DriftMaxGainScale = 20.0;
+    // Drift-measurement window for the fixed-ratio resampler. After this many seconds of
+    // sustained streaming, we compute (bytes_written / bytes_output) over the window and
+    // smooth-update the resampler's input rate. Long enough that brief network jitter or
+    // GC pauses don't bias the measurement; short enough to track temperature-induced
+    // crystal-rate changes (USB audio clocks can drift several ppm over minutes as the
+    // device warms up). 10 sec is the canonical Jamulus / SonoBus value.
+    private const double DriftMeasurementWindowSec = 10.0;
+    // First-window length. Same as DriftMeasurementWindowSec for simplicity; could be
+    // shortened to engage compensation faster after session start at the cost of a noisier
+    // initial measurement.
+    private const double DriftFirstWindowSec = 10.0;
+    // Ratio smoothing weight. New measurement = 30 %; previous smoothed = 70 %. Tunes how
+    // quickly the rate tracks vs how stable it is. The first measurement after session
+    // start uses 100 % new (no previous value to weight).
+    private const double DriftRatioSmoothingNew = 0.30;
+    // Sanity-range clamp on the measured ratio. Real clock differences between USB audio
+    // crystals are sub-1000 ppm (0.1 %); anything beyond ±5 % indicates a measurement
+    // artefact (a buffer-fill burst, a transient, or a counter wrap). Reject those and
+    // keep the previous ratio.
+    private const double DriftRatioMin = 0.95;
+    private const double DriftRatioMax = 1.05;
+    // Low-pass filter time constant for the buffer-level-error display in the diag log.
+    // Doesn't affect any correction logic in Phase 4 — purely informational.
+    private const double DriftFilterTimeConstantSec = 2.0;
     // Number of stereo frames each side of a splice point that get blended when a drop or
     // repeat fires. Cosine crossfade over this window smooths the discontinuity into an audio
-    // characteristic that's much harder to perceive as a click. 8 frames = 167 µs at 48 kHz —
-    // shorter than a typical impulse response, so the smear doesn't blur transients audibly.
-    private const int DriftCrossfadeFrames = 8;
-    // Pending corrections (sample-aligned single-frame edits at the next Read).
-    private int pendingDropFrames;
-    // Public accessors for the diag log.
+    // Public accessors for the diag log. Drop / repeat counters are retained for the diag
+    // surface (the Phase-4 resampler doesn't increment them, so they stay flat at the
+    // last value from any pre-Phase-4 fallback path — informationally that's "the splice
+    // path didn't fire", which is what we want to see now).
     public long DriftDropFramesTotal => Interlocked.Read(ref driftDropFramesTotal);
     public long DriftRepeatFramesTotal => Interlocked.Read(ref driftRepeatFramesTotal);
+    /// <summary>Diagnostic accessor — current smoothed sender-rate-ratio applied to the
+    /// resampler. 1.0 = no resampling (matched clocks). Values like 1.0002 = sender running
+    /// 200 ppm faster than receiver; 0.9998 = 200 ppm slower.</summary>
+    public double DriftResamplerRatio => smoothedRateRatio;
+    /// <summary>Number of times the resampler rate has been updated since session start.</summary>
+    public long DriftResamplerUpdates => Interlocked.Read(ref resamplerUpdatesTotal);
+
+    // Per-stage discontinuity probes — the receiver-side instrumentation that, combined
+    // with the sender's pre-encode probe and the StreamSession's post-decode probe,
+    // localises exactly where in the pipeline a click is introduced. PostRingRead is
+    // what came out of the ring buffer (after wire+decode+ring). PostResampler is what
+    // came out of the resampler (after rate compensation).
+    private readonly AudioStepProbe postRingReadStepProbe = new();
+    private readonly AudioStepProbe postResamplerStepProbe = new();
+    public float TakeMaxPostRingReadStep() => postRingReadStepProbe.TakeMax();
+    public float TakeMaxPostResamplerStep() => postResamplerStepProbe.TakeMax();
+
+    // Concealment vs partial-read counters split from the legacy "Underruns" — that one
+    // increments on ANY short read at the AudioRingBuffer level (whether framesRead==0
+    // or framesRead<requested). For diagnosis we care about the split: full-empty reads
+    // (concealmentFiresTotal) are audible events that trigger noise-burst + fade-in;
+    // sub-frame partial reads (partialReadFiresTotal) used to be audible too but are
+    // now silent after the 2026-05-14 fix that stops concealment from engaging on partials.
+    private long concealmentFiresTotal;
+    private long partialReadFiresTotal;
+    public long ConcealmentFiresTotal => Interlocked.Read(ref concealmentFiresTotal);
+    public long PartialReadFiresTotal => Interlocked.Read(ref partialReadFiresTotal);
+    /// <summary>Live state — the LP-filtered drift error in stereo frames. Positive = buffer
+    /// running above target on average (sender clock faster); negative = buffer below
+    /// target. Magnitude shows how off-target the buffer's average position is right now.</summary>
+    public double FilteredDriftErrorFrames => filteredErrorFrames;
+    /// <summary>Legacy diag accessor — the Phase-2 / Phase-3 integrator accumulator is no
+    /// longer used in the Phase-4 resampler design. Always returns 0. Kept on the surface
+    /// so MainForm's existing diag log line still compiles; can be removed once the diag
+    /// columns are pruned.</summary>
+    public double DriftAccumulator => 0.0;
 
     public IPEndPoint Endpoint { get; }
     /// <summary>The stream ID this session was opened for. Sessions are keyed by
@@ -216,6 +290,18 @@ internal sealed class SessionPlayout : IDisposable
         Endpoint = endpoint;
         StreamId = streamId;
         playout = new AudioRingBuffer(capacityBytes);
+
+        // Resampler init. interp=true, filtercnt=0 picks WdlResampler's linear-interpolation
+        // mode — perfectly adequate for the sub-1000-ppm rate corrections we apply (the
+        // higher-cost sinc modes would buy theoretical quality wins below human audibility).
+        // sinc=false confirms we're not using the sinc-table mode. Output-driven feed: each
+        // ResamplePrepare call asks the resampler "how many input frames do you need for N
+        // output frames" and we satisfy from the ring buffer. SetRates(in, out) starts at
+        // 1:1; we update with measured drift after the first window completes.
+        driftResampler = new WdlResampler();
+        driftResampler.SetMode(interp: true, filtercnt: 0, sinc: false);
+        driftResampler.SetFeedMode(false);
+        driftResampler.SetRates(MixSampleRate, MixSampleRate);
     }
 
     public void Write(ReadOnlySpan<byte> source)
@@ -223,6 +309,10 @@ internal sealed class SessionPlayout : IDisposable
         var ms = source.Length * 1000 / MixBytesPerSecond;
         if (ms > largestWriteMs) largestWriteMs = ms;
         playout.Write(source);
+        // Track bytes written for the drift-resampler measurement window. Producer thread
+        // updates this; consumer thread (audio thread in ReadFloats) reads it via
+        // Interlocked.Read when sampling the window. Cumulative since session start.
+        Interlocked.Add(ref bytesWrittenForDriftEst, source.Length);
         LastWriteUtc = DateTime.UtcNow;
     }
 
@@ -276,10 +366,21 @@ internal sealed class SessionPlayout : IDisposable
         consecutiveEmptyReads = 0;
         lastConcealSampleL = 0f;
         lastConcealSampleR = 0f;
-        driftAccumulatorFrames = 0;
+        filteredErrorFrames = 0;
         prevDriftSampleTicks = 0;
-        pendingDropFrames = 0;
-        pendingRepeatFrames = 0;
+        // Phase-4 drift resampler state. Reset counters and window state. Reset() on the
+        // resampler clears its internal filter delay line so a fresh session doesn't
+        // inherit phase from a prior one. SetRates back to 1:1 — we'll re-measure drift
+        // from scratch.
+        bytesWrittenForDriftEst = 0;
+        bytesReadOutputForDriftEst = 0;
+        resamplerWindowStartTicks = 0;
+        resamplerWindowStartBytesWritten = 0;
+        resamplerWindowStartBytesOutput = 0;
+        smoothedRateRatio = 1.0;
+        resamplerActivelyTracking = false;
+        driftResampler.Reset();
+        driftResampler.SetRates(MixSampleRate, MixSampleRate);
     }
 
     public void Dispose()
@@ -424,268 +525,254 @@ internal sealed class SessionPlayout : IDisposable
             }
         }
 
-        // === Drift correction (Phase 2) ===
+        // === Drift compensation (Phase 4) — fixed-ratio resampler ===
         //
-        // Continuously integrate buffer-level error and drop / repeat single frames at low
-        // rate to keep buffer aligned with target despite clock-drift between sender and
-        // receiver crystals. Replaces the continuous adaptive resampling that produced
-        // sample-level artefacts (analysed 2026-05-06). See the field-block comment above
-        // for the design rationale.
+        // 1. Update the LP-filtered buffer-level error for the diag log (informational only).
+        // 2. Update the resampler's rate ratio if the measurement window has elapsed.
+        // 3. Read through the resampler into the caller's output span.
         //
-        // SAMPLE-RATE MISMATCH (future): the direct read below requires input PCM to already
-        // be at MixSampleRate (48 kHz). When endpoints have mismatched device rates (e.g.
-        // one machine at 44.1 kHz), the sender's MixingEngine still resamples to 48 kHz on
-        // the capture side so the wire format is consistent — but if a future change emits
-        // at the source's native rate, we'd need a FIXED-ratio resampler here (input_rate /
-        // 48000, computed once, never modulated). The continuous-modulation pattern was the
-        // bug; a fixed ratio is fine.
-        var driftTicks = Stopwatch.GetTimestamp();
+        // The buffer-level error LP filter no longer drives any correction — that job is
+        // now the resampler's. It's kept purely as a diag display so the log shows where
+        // the buffer is sitting.
+        var nowTicks = Stopwatch.GetTimestamp();
         var driftTargetBytes = MillisecondsToBytes(targetLatencyMs);
         if (prevDriftSampleTicks != 0)
         {
-            var dtSec = (driftTicks - prevDriftSampleTicks) / (double)Stopwatch.Frequency;
+            var dtSec = (nowTicks - prevDriftSampleTicks) / (double)Stopwatch.Frequency;
             var errorFrames = ((double)playout.BufferedBytes - driftTargetBytes) / MixBytesPerFrame;
-            // Adaptive gain: baseline at small errors (gentle steady-state compensation for
-            // clock drift) but accelerated at large errors (fast convergence after a slider
-            // raise or initial arming overshoot). Without this, the buffer can sit at any
-            // level between 0 and target+jitter for tens of seconds — making sessions feel
-            // randomly different. With this, the buffer reliably reaches target within a few
-            // seconds of any disturbance.
-            var absErrorFrames = errorFrames < 0 ? -errorFrames : errorFrames;
-            var gainScale = absErrorFrames <= DriftSmallErrorFrames
-                ? 1.0
-                : Math.Min(absErrorFrames / DriftSmallErrorFrames, DriftMaxGainScale);
-            driftAccumulatorFrames += errorFrames * dtSec * DriftGain * gainScale;
-            // Clamp to prevent runaway in pathological conditions (e.g. session pause).
-            if (driftAccumulatorFrames > 100.0) driftAccumulatorFrames = 100.0;
-            else if (driftAccumulatorFrames < -100.0) driftAccumulatorFrames = -100.0;
+            var filterAlpha = dtSec / (DriftFilterTimeConstantSec + dtSec);
+            filteredErrorFrames = (1.0 - filterAlpha) * filteredErrorFrames + filterAlpha * errorFrames;
         }
-        prevDriftSampleTicks = driftTicks;
+        prevDriftSampleTicks = nowTicks;
 
-        // Queue at most one correction per Read so corrections spread evenly rather than burst.
-        if (driftAccumulatorFrames >= 1.0)
-        {
-            pendingDropFrames++;
-            driftAccumulatorFrames -= 1.0;
-        }
-        else if (driftAccumulatorFrames <= -1.0)
-        {
-            pendingRepeatFrames++;
-            driftAccumulatorFrames += 1.0;
-        }
+        UpdateDriftResamplerRateIfDue(nowTicks);
 
-        // === Read with optional crossfaded drop / repeat ===
-        //
-        // The trick to audibly-clean drift correction: don't perform the splice as a hard
-        // cut. Read one extra frame (drop) or one fewer frame (repeat) from the buffer, then
-        // CROSSFADE around the splice point over DriftCrossfadeFrames samples. The cosine
-        // window blends the audio either side of the splice into a smooth smear instead of
-        // a discontinuity. At 8 frames (~167 µs at 48 kHz) the smear is much shorter than
-        // any audible transient and far less perceptible than the original sample-level
-        // discontinuity.
-        //
-        // Splice position: middle of the output buffer. Could choose a low-amplitude moment
-        // for further inaudibility (PSOLA-style) but middle-of-buffer is good enough on
-        // typical content and keeps the code simple.
-        var dropThisCall = pendingDropFrames > 0 && outFrames > DriftCrossfadeFrames * 2 ? 1 : 0;
-        var repeatThisCall = pendingRepeatFrames > 0 && outFrames > DriftCrossfadeFrames * 2 ? 1 : 0;
-        // Don't try to do both in the same Read; they'd cancel anyway.
-        if (dropThisCall > 0 && repeatThisCall > 0) { dropThisCall = 0; repeatThisCall = 0; }
-
-        if (dropThisCall > 0)
-        {
-            // Read outFrames + 1 frames into the output span by reading the first half,
-            // skipping the splice with crossfade, then reading the second half. We need
-            // a small extra-sample scratch for the splice. Reuse driftScratch as
-            // temp storage (it's already managed and grows with outFrames).
-            var extraFloats = (outFrames + 1) * MixChannels;
-            if (driftScratch.Length < extraFloats)
-            {
-                driftScratch = new float[extraFloats];
-            }
-            var temp = driftScratch.AsSpan(0, extraFloats);
-            ReadInputWithConcealment(temp);
-            // Crossfade the splice. Splice position = midpoint of the output frame.
-            // Result: outFrames samples where one is "elided" via a cosine cross-blend.
-            ApplyDropCrossfade(temp, output, outFrames);
-            pendingDropFrames--;
-            Interlocked.Increment(ref driftDropFramesTotal);
-        }
-        else if (repeatThisCall > 0)
-        {
-            // Read outFrames - 1 frames into temp, then expand to outFrames via a crossfaded
-            // insertion at the splice point.
-            var shortFloats = (outFrames - 1) * MixChannels;
-            if (driftScratch.Length < shortFloats)
-            {
-                driftScratch = new float[shortFloats];
-            }
-            var temp = driftScratch.AsSpan(0, shortFloats);
-            ReadInputWithConcealment(temp);
-            ApplyRepeatCrossfade(temp, output, outFrames);
-            pendingRepeatFrames--;
-            Interlocked.Increment(ref driftRepeatFramesTotal);
-        }
-        else
-        {
-            ReadInputWithConcealment(output);
-        }
+        // Read through the resampler and apply concealment on full underruns.
+        ReadThroughResampler(output, outFrames);
         return outFrames;
     }
 
-    /// <summary>Drop-mode crossfade: temp has (outFrames + 1) frames, output gets outFrames
-    /// frames with one elided at the splice via a cosine blend across DriftCrossfadeFrames
-    /// samples on each side.</summary>
-    private static void ApplyDropCrossfade(ReadOnlySpan<float> temp, Span<float> output, int outFrames)
+    /// <summary>
+    /// If the current drift-measurement window has expired, compute the new sender-to-
+    /// receiver rate ratio from the bytes-written and bytes-output counters, smooth it
+    /// into the live ratio, and push it to the resampler. Called from the audio thread
+    /// on every ReadFloats. No-op if the window hasn't elapsed yet.
+    /// </summary>
+    private void UpdateDriftResamplerRateIfDue(long nowTicks)
     {
-        // Splice at midpoint of output frames. The "skipped" sample in temp lives at index
-        // spliceIdx; either side of it gets cross-blended.
-        var spliceIdx = outFrames / 2;
-        var window = DriftCrossfadeFrames;
-        var halfWindow = window / 2;
-
-        // Pre-window: copy temp[0..spliceIdx-halfWindow] verbatim.
-        var preEnd = spliceIdx - halfWindow;
-        if (preEnd > 0)
+        if (resamplerWindowStartTicks == 0)
         {
-            temp.Slice(0, preEnd * MixChannels).CopyTo(output);
+            // First call — anchor the measurement window. Defer the first rate update by
+            // DriftFirstWindowSec so we get a stable initial measurement rather than one
+            // based on the first few writes (which can be bursty during session arming).
+            resamplerWindowStartTicks = nowTicks;
+            resamplerWindowStartBytesWritten = Interlocked.Read(ref bytesWrittenForDriftEst);
+            resamplerWindowStartBytesOutput = bytesReadOutputForDriftEst;
+            return;
         }
 
-        // Window: cosine crossfade. As we walk through `window` output frames, blend from
-        // temp[preEnd + k] (the "before-skip" sample) toward temp[preEnd + 1 + k] (the
-        // "after-skip" sample). The blend mixes consecutive temp positions so the splice
-        // is spread out smoothly.
-        for (var k = 0; k < window; k++)
+        var windowDuration = resamplerActivelyTracking ? DriftMeasurementWindowSec : DriftFirstWindowSec;
+        var elapsedSec = (nowTicks - resamplerWindowStartTicks) / (double)Stopwatch.Frequency;
+        if (elapsedSec < windowDuration) return;
+
+        var bytesWrittenNow = Interlocked.Read(ref bytesWrittenForDriftEst);
+        var bytesWrittenInWindow = bytesWrittenNow - resamplerWindowStartBytesWritten;
+        var bytesOutputInWindow = bytesReadOutputForDriftEst - resamplerWindowStartBytesOutput;
+
+        if (bytesOutputInWindow > 0 && bytesWrittenInWindow > 0)
         {
-            var t = (k + 1) / (double)(window + 1);
-            // Cosine-shaped smooth fade from 0 to 1 across the window.
-            var fadeIn = (float)((1.0 - Math.Cos(Math.PI * t)) * 0.5);
-            var fadeOut = 1f - fadeIn;
-            var beforeIdx = (preEnd + k) * MixChannels;
-            var afterIdx = (preEnd + 1 + k) * MixChannels;
-            var dstIdx = (preEnd + k) * MixChannels;
-            output[dstIdx] = temp[beforeIdx] * fadeOut + temp[afterIdx] * fadeIn;
-            output[dstIdx + 1] = temp[beforeIdx + 1] * fadeOut + temp[afterIdx + 1] * fadeIn;
+            // ratio = bytes_sender_produced / bytes_receiver_consumed over the window.
+            // Above 1.0 = sender clock faster than receiver. Below 1.0 = sender slower.
+            // For Ed's hardware (sender slower than receiver) this should settle ~0.9998.
+            var measuredRatio = (double)bytesWrittenInWindow / bytesOutputInWindow;
+            if (measuredRatio >= DriftRatioMin && measuredRatio <= DriftRatioMax)
+            {
+                if (!resamplerActivelyTracking)
+                {
+                    // First measurement — use directly. No previous value to weight.
+                    smoothedRateRatio = measuredRatio;
+                    resamplerActivelyTracking = true;
+                }
+                else
+                {
+                    // Subsequent — smooth so a one-window outlier doesn't yank the rate.
+                    smoothedRateRatio = (1.0 - DriftRatioSmoothingNew) * smoothedRateRatio + DriftRatioSmoothingNew * measuredRatio;
+                }
+                // Push to the resampler. SetRates(input_rate, output_rate). Input rate
+                // = measured sender rate; output rate = the receiver's nominal MixSampleRate.
+                // The resampler now stretches or compresses incoming audio by the ppm
+                // necessary to keep the playout ring buffer level constant.
+                driftResampler.SetRates(MixSampleRate * smoothedRateRatio, MixSampleRate);
+                Interlocked.Increment(ref resamplerUpdatesTotal);
+            }
+            // If the measured ratio is outside the sanity window (>5 % off), reject it.
+            // That happens transiently during session arming, slider raises, or sender
+            // start-of-stream bursts. Keep the previous ratio rather than yanking.
         }
 
-        // Post-window: copy temp[spliceIdx+halfWindow+1..outFrames+1] to output[spliceIdx+halfWindow..outFrames].
-        // The "+1" on the source side is the elision: we skip one frame from temp.
-        var postStartTemp = spliceIdx + halfWindow + 1;
-        var postStartOut = spliceIdx + halfWindow;
-        var postLen = outFrames - postStartOut;
-        if (postLen > 0)
-        {
-            temp.Slice(postStartTemp * MixChannels, postLen * MixChannels)
-                .CopyTo(output.Slice(postStartOut * MixChannels));
-        }
-    }
-
-    /// <summary>Repeat-mode crossfade: temp has (outFrames - 1) frames, output gets outFrames
-    /// with one synthesised at the splice via a cosine blend that "stretches" temp by one
-    /// frame.</summary>
-    private static void ApplyRepeatCrossfade(ReadOnlySpan<float> temp, Span<float> output, int outFrames)
-    {
-        var spliceIdx = outFrames / 2;
-        var window = DriftCrossfadeFrames;
-        var halfWindow = window / 2;
-
-        // Pre-window: copy temp[0..spliceIdx-halfWindow] verbatim.
-        var preEnd = spliceIdx - halfWindow;
-        if (preEnd > 0)
-        {
-            temp.Slice(0, preEnd * MixChannels).CopyTo(output);
-        }
-
-        // Window of (window + 1) output frames mapped to (window) temp frames. Cosine
-        // crossfade synthesizes the extra frame: each output sample in the window is a
-        // blend of two adjacent temp samples, with the blend weight progressing slower than
-        // the index, effectively inserting a "smoothed" extra sample.
-        for (var k = 0; k <= window; k++)
-        {
-            var t = k / (double)(window + 1);
-            var fadeIn = (float)((1.0 - Math.Cos(Math.PI * t)) * 0.5);
-            var fadeOut = 1f - fadeIn;
-            // Map output index -> temp position: output[preEnd+k] takes from temp[preEnd+k-1] and temp[preEnd+k].
-            // For k=0 we use temp[preEnd] alone; for k=window we use temp[preEnd+window-1] alone.
-            var leftTempIdx = Math.Max(0, preEnd + k - 1) * MixChannels;
-            var rightTempIdx = Math.Min(temp.Length / MixChannels - 1, preEnd + k) * MixChannels;
-            var dstIdx = (preEnd + k) * MixChannels;
-            output[dstIdx] = temp[leftTempIdx] * fadeOut + temp[rightTempIdx] * fadeIn;
-            output[dstIdx + 1] = temp[leftTempIdx + 1] * fadeOut + temp[rightTempIdx + 1] * fadeIn;
-        }
-
-        // Post-window: copy temp[spliceIdx+halfWindow..outFrames-1] to output[spliceIdx+halfWindow+1..outFrames].
-        var postStartTemp = spliceIdx + halfWindow;
-        var postStartOut = spliceIdx + halfWindow + 1;
-        var postLen = outFrames - postStartOut;
-        if (postLen > 0)
-        {
-            temp.Slice(postStartTemp * MixChannels, postLen * MixChannels)
-                .CopyTo(output.Slice(postStartOut * MixChannels));
-        }
+        // Anchor the next window.
+        resamplerWindowStartTicks = nowTicks;
+        resamplerWindowStartBytesWritten = bytesWrittenNow;
+        resamplerWindowStartBytesOutput = bytesReadOutputForDriftEst;
     }
 
     /// <summary>
-    /// Wraps <see cref="AudioRingBuffer.ReadFloats"/> with packet-loss-style concealment.
-    /// On a short read, replaces the silence-filled tail with a brief synthesised burst
-    /// (character chosen by <see cref="SetConcealmentArtifact"/>) decaying to zero. On the
-    /// next full read after a gap, applies a matching fade-in so the resumed audio doesn't
-    /// start with a hard discontinuity. The result is a smooth attack-and-release at the
-    /// edges of any gap — the human ear is much more forgiving of "dipped briefly then came
-    /// back" than of "instant click into silence and instant click back".
-    ///
-    /// Stereo-only (matches the rest of the audio path). Output flows through the mix bus
-    /// and limiter as usual.
+    /// Resampler-backed read. Asks the resampler how many input frames it needs to
+    /// produce <paramref name="outFrames"/> output frames at the current rate ratio,
+    /// reads that many from the playout ring, runs ResampleOut, and copies the result
+    /// into <paramref name="output"/> with a safety clamp to [-1, 1]. Handles full-empty
+    /// underruns with the existing concealment fade-out / fade-in machinery.
     /// </summary>
-    private void ReadInputWithConcealment(Span<float> inSpan)
+    private void ReadThroughResampler(Span<float> output, int outFrames)
     {
-        var requestedFloats = inSpan.Length;
-        var floatsRead = playout.ReadFloats(inSpan);
-        var requestedFrames = requestedFloats / MixChannels;
-        var framesRead = floatsRead / MixChannels;
-
-        var artifact = (ConcealmentArtifact)concealmentArtifactRaw;
-
-        if (framesRead < requestedFrames)
+        var outFloats = outFrames * MixChannels;
+        var inputFramesNeeded = driftResampler.ResamplePrepare(outFrames, MixChannels, out var inBuf, out var inBufOff);
+        lastInputFramesAvailable = inputFramesNeeded;
+        if (inputFramesNeeded <= 0)
         {
-            // Don't synthesise concealment forever during a sustained empty-buffer state — the
-            // sender has probably gone away. After N consecutive empty reads we just leave the
-            // buffer's hard-zero in place; result is true silence rather than a "shshshsh"
-            // tremolo as the noise/cosine artifact retriggers each render callback.
-            consecutiveEmptyReads = framesRead == 0 ? consecutiveEmptyReads + 1 : 0;
+            // Resampler doesn't need any input this call (its internal filter delay line
+            // has enough). Just produce output from buffered state.
+            ResampleOutAndCopy(output, outFrames);
+            bytesReadOutputForDriftEst += outFloats * sizeof(float);
+            return;
+        }
+
+        var inputFloatsNeeded = inputFramesNeeded * MixChannels;
+
+        // Grow our scratch buffer if a larger request than ever before. After the first few
+        // reads at session start, this stops being a fresh allocation.
+        if (resamplerInputScratch.Length < inputFloatsNeeded)
+        {
+            resamplerInputScratch = new float[inputFloatsNeeded];
+        }
+        var ringBytes = MemoryMarshal.AsBytes(resamplerInputScratch.AsSpan(0, inputFloatsNeeded));
+        var bytesGot = playout.Read(ringBytes);
+        var floatsGot = bytesGot / sizeof(float);
+        var framesGot = floatsGot / MixChannels;
+
+        // Pipeline-stage probe — scan what we got out of the ring buffer BEFORE the
+        // resampler touches it. If this shows large steps, the artefact is being
+        // introduced somewhere between the sender and here (wire, decode, ring buffer).
+        // If this is clean but the post-resampler probe shows large steps, the resampler
+        // is the source.
+        if (floatsGot > 0)
+        {
+            postRingReadStepProbe.ScanStereo(resamplerInputScratch.AsSpan(0, floatsGot));
+        }
+
+        // Copy whatever we got into the resampler's input buffer. AudioRingBuffer.Read
+        // already zero-fills the tail of a short read, but we copy via the float view so
+        // the resampler sees consistent float samples regardless of read shortfall.
+        resamplerInputScratch.AsSpan(0, floatsGot).CopyTo(inBuf.AsSpan(inBufOff));
+        if (floatsGot < inputFloatsNeeded)
+        {
+            inBuf.AsSpan(inBufOff + floatsGot, inputFloatsNeeded - floatsGot).Clear();
+        }
+
+        // Diagnostic split — distinguish full-empty reads from partial short reads. Only
+        // full-empty (framesGot == 0) triggers audible concealment treatment. Partial
+        // reads happen when the ring has fewer than inputFramesNeeded frames but more
+        // than zero; the zero-padded tail just produces silence at the resampler output
+        // for that fraction.
+        var artifact = (ConcealmentArtifact)concealmentArtifactRaw;
+        if (framesGot == 0)
+        {
+            Interlocked.Increment(ref concealmentFiresTotal);
+            consecutiveEmptyReads++;
+        }
+        else if (framesGot < inputFramesNeeded)
+        {
+            Interlocked.Increment(ref partialReadFiresTotal);
+            consecutiveEmptyReads = 0;
+        }
+        else
+        {
+            consecutiveEmptyReads = 0;
+        }
+
+        // Run the resampler. Output goes into outputScratch (the resampler needs a float[]
+        // not a Span<float>); we then copy with clamp to the caller's span.
+        ResampleOutAndCopy(output, outFrames);
+        bytesReadOutputForDriftEst += outFloats * sizeof(float);
+
+        // Concealment overlay on full-empty reads. The resampler will have produced
+        // mostly-silence output for this call (we zero-padded its input); replace the
+        // head of that silence with the chosen artifact so the user hears the "something
+        // went wrong" cue rather than dead air, with a cosine fade-in on the next read
+        // when real audio resumes.
+        if (framesGot == 0)
+        {
             if (consecutiveEmptyReads <= ConcealmentMaxConsecutiveEmpties)
             {
-                // AudioRingBuffer silence-filled inSpan[floatsRead..] with zero. Replace the
-                // head of that silence with the chosen artifact, then leave the rest at zero.
-                var silenceFrameStart = framesRead;
-                var silenceFrameCount = requestedFrames - framesRead;
-                ApplyFadeOut(inSpan, silenceFrameStart, silenceFrameCount, artifact);
+                ApplyFadeOut(output, startFrame: 0, outFrames, artifact);
             }
             inUnderrunConcealment = true;
         }
         else if (inUnderrunConcealment)
         {
-            // First full read after a gap. Fade the new audio in from zero so we don't
-            // instantly jump back to whatever the new audio's amplitude is.
-            ApplyFadeIn(inSpan, requestedFrames, artifact);
+            ApplyFadeIn(output, outFrames, artifact);
             inUnderrunConcealment = false;
-            consecutiveEmptyReads = 0;
-        }
-        else
-        {
-            consecutiveEmptyReads = 0;
         }
 
-        // Remember the last real sample for the next fade-out. Use the last frame of actual
-        // ring data, not anything we just synthesised. (Only meaningful if we read at least
-        // one real frame this call — i.e. framesRead > 0.)
-        if (framesRead > 0)
+        // Track the last real sample for the next fade-out.
+        if (framesGot > 0)
         {
-            var lastIdx = (framesRead - 1) * MixChannels;
-            lastConcealSampleL = inSpan[lastIdx];
-            lastConcealSampleR = inSpan[lastIdx + 1];
+            var lastIdx = (framesGot - 1) * MixChannels;
+            lastConcealSampleL = resamplerInputScratch[lastIdx];
+            lastConcealSampleR = resamplerInputScratch[lastIdx + 1];
         }
     }
+
+    /// <summary>Run the resampler with already-supplied input and copy the result to the
+    /// caller's span, clamping samples to [-1, 1] as a safety against any pathological
+    /// resampler output. If the resampler returns fewer than requested output frames, the
+    /// tail is zero-filled.</summary>
+    private void ResampleOutAndCopy(Span<float> output, int outFrames)
+    {
+        var outFloats = outFrames * MixChannels;
+        if (resamplerOutputScratch.Length < outFloats)
+        {
+            resamplerOutputScratch = new float[outFloats];
+        }
+        // ResampleOut consumes the input we wrote into the buffer obtained from
+        // ResamplePrepare, plus any state it holds internally, and produces up to outFrames
+        // output frames. Returns the actual count.
+        var produced = driftResampler.ResampleOut(resamplerOutputScratch, 0, GetLastInputFramesAvailable(), outFrames, MixChannels);
+        var producedFloats = produced * MixChannels;
+        // Pipeline-stage probe — scan the resampler output before we clamp or copy. If this
+        // shows steps that don't appear in the post-ring-read probe, the resampler itself
+        // is the source.
+        if (producedFloats > 0)
+        {
+            postResamplerStepProbe.ScanStereo(resamplerOutputScratch.AsSpan(0, producedFloats));
+        }
+        for (var i = 0; i < producedFloats; i++)
+        {
+            var v = resamplerOutputScratch[i];
+            // Safety clamp. Real resampler output should never escape [-1, 1] from in-range
+            // input, but a single bad sample / NaN would otherwise produce a loud audible
+            // pop. Clamping is cheap insurance.
+            if (v > 1f) v = 1f;
+            else if (v < -1f) v = -1f;
+            else if (float.IsNaN(v)) v = 0f;
+            output[i] = v;
+        }
+        // Zero-fill if the resampler didn't produce as many frames as we asked for. Should
+        // only happen in pathological cases (just after session start with empty filter
+        // delay line, or after a Reset).
+        if (produced < outFrames)
+        {
+            output.Slice(producedFloats, (outFrames - produced) * MixChannels).Clear();
+        }
+    }
+
+    // Resampler scratch — output buffer (input scratch is the resamplerInputScratch field).
+    private float[] resamplerOutputScratch = new float[2048];
+    // How many input frames we just supplied to the resampler this call. Used by
+    // ResampleOutAndCopy to call ResampleOut with the right input count. Updated by
+    // ReadThroughResampler before the ResampleOutAndCopy call.
+    private int lastInputFramesAvailable;
+    private int GetLastInputFramesAvailable() => lastInputFramesAvailable;
 
     /// <summary>Synthesises the fade-out burst for the chosen artifact into the silence
     /// region starting at <paramref name="startFrame"/>. Click variant leaves the buffer's

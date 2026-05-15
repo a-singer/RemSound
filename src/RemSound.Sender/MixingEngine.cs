@@ -111,6 +111,14 @@ internal sealed class MixingEngine : ICaptureBackend
         get { lock (gate) return active.Select(a => a.Source.Name).ToList(); }
     }
 
+    /// <summary>Multi-source pull-mode WASAPI doesn't yet feed the raw-capture probe — each
+    /// <see cref="CaptureSource"/> chain (BufferedWaveProvider → ToSampleProvider →
+    /// resampler → stereo-mixdown) would need a per-source probe to be useful, and during
+    /// the 2026-05-15 instrumentation push the user's tests have all been single-source on
+    /// <see cref="PushModeWasapiBackend"/> instead. Stays at zero here; if a future
+    /// multi-source WASAPI test needs the probe, add it per-source in CaptureSource.</summary>
+    public float TakeMaxRawCaptureStep() => 0f;
+
     /// <summary>
     /// Starts the mix loop with the given initial source set. If already running, the existing
     /// loop is stopped first. After Start, <see cref="UpdateSources"/> can be called to add/remove

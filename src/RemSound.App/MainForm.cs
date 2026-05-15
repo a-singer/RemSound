@@ -37,6 +37,11 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer updateCheckTimer = new();
     private readonly MainFormHotkeyController hotkeyController;
     private readonly MainFormTrayController trayController;
+    private readonly RecordingController recordingController;
+    // Menu items for the Record menu kept as fields so RecordingStateChanged can flip
+    // the visible text + accessibility name between "Start recording" and "Stop recording"
+    // without rebuilding the menu.
+    private ToolStripMenuItem? startStopRecordingMenuItem;
 
     // --- Main form controls ---
     // Two standalone CheckBoxes for the Send / Receive toggles. Modern .NET (.NET 10) raises
@@ -175,6 +180,13 @@ public sealed class MainForm : Form
     // checkbox doing almost the same thing in a less convenient one-shot shape.
     private readonly AccessibleCheckBox continuousTuneBox = new() { Text = "Continuous auto-tune latency", AutoSize = true };
     private readonly ComboBox continuousIntervalBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90, AccessibleName = "Auto-tune latency interval (Alt+I)" };
+    // Label for continuousIntervalBox. Held as a field (rather than a local in
+    // BuildAudioReceiveGroupContents) so UpdateBothIndependentVisibility can rewrite the
+    // text and mnemonic when the user flips audio mode — the interval governs both lanes'
+    // auto-tune ticks in BothIndependent, and the label needs to say so. Initialised in
+    // BuildAudioReceiveGroupContents alongside the other receive-side controls; visibility
+    // is shared with the WASAPI row (always shown when the row is shown).
+    private Label? continuousIntervalLabel;
     // BothIndependent-mode companion controls. Created up front so SelectedIndexChanged
     // handlers can be wired alongside the originals; they live in their own TableLayoutPanel
     // row that toggles Visible=true only when the audio mode is BothIndependent. The labels
@@ -284,6 +296,14 @@ public sealed class MainForm : Form
     private readonly Dictionary<string, PeerHealthState> previousPeerHealthStates = new(StringComparer.OrdinalIgnoreCase);
     private System.Media.SoundPlayer? connectSound;
     private System.Media.SoundPlayer? disconnectSound;
+    // Recording start/stop cues. Played via SoundPlayer to the default Windows output —
+    // same path as connect/disconnect. They don't pass through our recording taps (those
+    // sit on the internal sender mix bus and receiver render path), so they don't appear
+    // in normal recordings. A user who has a WASAPI loopback of the same output device as
+    // a capture source would still get them, but that's their loopback configuration, not
+    // anything the recorder is doing.
+    private System.Media.SoundPlayer? recordStartSound;
+    private System.Media.SoundPlayer? recordStopSound;
     // Labels for the three send/receive device lists, captured at layout time so they can be
     // re-titled when the user toggles between WASAPI mode (Windows devices) and ASIO mode
     // (driver channel pairs). null until BuildLayout has run.
@@ -343,6 +363,30 @@ public sealed class MainForm : Form
     private bool firstCaptureCallbackLogged;
     private bool firstSenderPacketLogged;
     private bool firstReceiverPacketLogged;
+
+    // Previous-tick values for the per-second deltas surfaced in the diag log line. Each is
+    // the receiver-side cumulative counter snapshot at the previous SnapshotLogIfDue tick;
+    // subtracting from the current value gives "how many fired this second". Only read when
+    // DiagnosticsGate.Enabled (i.e. logs on); otherwise SnapshotLogIfDue early-outs before
+    // touching these.
+    private long prevDiagDriftDrops;
+    private long prevDiagDriftReps;
+    private long prevDiagConceal;
+    private long prevDiagShortRead;
+    private long prevDiagTrimFires;
+    // Wire-level packet-sequence tracking deltas. Detects packet reordering, loss, or
+    // duplication on the UDP path between sender and receiver. On a healthy LAN all three
+    // failure counters should stay at zero; any non-zero delta in the diag log is a smoking
+    // gun for transport-layer-induced pops.
+    private long prevDiagWireInOrder;
+    private long prevDiagWireMissed;
+    private long prevDiagWireReordered;
+    private long prevDiagWireDuplicated;
+    // Per-second delta for the sender's hard-clamp clipping counter. A non-zero clipΔ means
+    // the mix bus was producing samples whose magnitude exceeded 1.0 and got clamped. Clipping
+    // itself doesn't create steps but is a signal that the input is hot enough that something
+    // could be saturating.
+    private long prevDiagClippedSamples;
 
     // Profile system (2026-05-02). The active profile (if any) was selected at app start and
     // populated `settings` with its values BEFORE the constructor body runs (see ApplyProfile
@@ -480,6 +524,13 @@ public sealed class MainForm : Form
             () => sendMyAudioCheckbox.Checked = true,
             () => receiveAudioCheckbox.Checked = true,
             Close);
+
+        recordingController = new RecordingController(
+            sender,
+            receiver,
+            settings,
+            msg => logFile.Event($"recorder: {msg}"));
+        recordingController.RecordingStateChanged += UpdateStartStopRecordingMenuLabel;
 
         // --- Set accessibility names ---
         // For these four controls the keyboard shortcut is included explicitly in both the
@@ -694,6 +745,8 @@ public sealed class MainForm : Form
         // Files are deployed alongside the .exe (see RemSound.App.csproj Content rules).
         TryLoadCueSound("connect.wav", out connectSound);
         TryLoadCueSound("disconnect.wav", out disconnectSound);
+        TryLoadCueSound("record start.wav", out recordStartSound);
+        TryLoadCueSound("record stop.wav", out recordStopSound);
 
         LoadAudioDevices();
         // Apply persisted ASIO mode from settings — switches sender/receiver backends so the
@@ -1065,9 +1118,121 @@ public sealed class MainForm : Form
             aboutItem,
         });
 
+        var recordMenu = BuildRecordMenu();
+
         menu.Items.Add(fileMenu);
+        menu.Items.Add(recordMenu);
         menu.Items.Add(helpMenu);
         return menu;
+    }
+
+    /// <summary>Build the Record menu — Start/stop recording (toggling label), recording
+    /// settings dialog, open the configured folder, and change the configured folder.
+    /// Ctrl+R is the global toggle so the user can start/stop without going through the
+    /// menu. Profile-dirty flag is set when the user changes the folder or the settings
+    /// inside the sub-dialog because both live on the profile.</summary>
+    private ToolStripMenuItem BuildRecordMenu()
+    {
+        // Record menu uses Alt+O (Rec&ord) rather than Alt+R. The form's "Receive audio
+        // (Alt+R)" checkbox lives on the main canvas alongside the menu bar and Alt+R was
+        // ambiguous between the two. Alt+O is unused elsewhere on the menu bar (File / Help
+        // / Record) and reads as "Recording" naturally enough for the mnemonic to stick.
+        var recordMenu = new ToolStripMenuItem("Rec&ord") { AccessibleName = "Record menu" };
+
+        startStopRecordingMenuItem = new ToolStripMenuItem("&Start recording")
+        {
+            ShortcutKeys = Keys.Control | Keys.R,
+            AccessibleName = "Start recording",
+        };
+        startStopRecordingMenuItem.Click += (_, _) => ToggleRecording();
+
+        var settingsItem = new ToolStripMenuItem("Recording se&ttings...")
+        {
+            AccessibleName = "Recording settings",
+        };
+        settingsItem.Click += (_, _) => OpenRecordingSettingsDialog();
+
+        var openFolderItem = new ToolStripMenuItem("&Open current recordings folder")
+        {
+            AccessibleName = "Open current recordings folder",
+        };
+        openFolderItem.Click += (_, _) => recordingController.OpenCurrentFolder(this);
+
+        var changeFolderItem = new ToolStripMenuItem("&Change recordings folder...")
+        {
+            AccessibleName = "Change recordings folder",
+        };
+        changeFolderItem.Click += (_, _) =>
+        {
+            if (recordingController.ChangeFolder(this)) MarkProfileDirty();
+        };
+
+        recordMenu.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            startStopRecordingMenuItem,
+            new ToolStripSeparator(),
+            settingsItem,
+            new ToolStripSeparator(),
+            openFolderItem,
+            changeFolderItem,
+        });
+
+        return recordMenu;
+    }
+
+    /// <summary>Toggle the recording state. Single source of truth for both Ctrl+R and the
+    /// menu-item click — both paths route through here so the start/stop transition is
+    /// handled consistently. The state-change event fires UpdateStartStopRecordingMenuLabel
+    /// which rewrites the menu item text.</summary>
+    private void ToggleRecording()
+    {
+        if (recordingController.IsRecording)
+        {
+            // Stop the recorder FIRST, then play the cue. SoundPlayer goes through the
+            // default Windows output device — separate from the internal taps the recorder
+            // listens on — so the cue isn't in the file regardless of ordering, but
+            // stopping first means a user with a WASAPI-loopback-of-default-output capture
+            // source won't catch the tail of the cue either.
+            recordingController.Stop();
+            if (settings.LoadEnableRecordStopCue()) recordStopSound?.Play();
+        }
+        else
+        {
+            // Symmetric: play the start cue BEFORE the recorder turns on, for the same
+            // loopback-courtesy reason. The cue is short (~0.4 s), so any subjective lag
+            // between "I pressed Ctrl+R" and "audio starts being captured" is well under
+            // the cue itself.
+            if (settings.LoadEnableRecordStartCue()) recordStartSound?.Play();
+            recordingController.Start();
+        }
+    }
+
+    /// <summary>Reflect the recording state in the menu item label. NVDA reads the text +
+    /// AccessibleName, both flipped here so users on screen readers hear the new state
+    /// straight away. Marshalled to the UI thread because the recorder's finish callback
+    /// can fire from its writer thread when Stop() is called from there.</summary>
+    private void UpdateStartStopRecordingMenuLabel(bool nowRecording)
+    {
+        void Apply()
+        {
+            if (startStopRecordingMenuItem is null) return;
+            startStopRecordingMenuItem.Text = nowRecording ? "&Stop recording" : "&Start recording";
+            startStopRecordingMenuItem.AccessibleName = nowRecording ? "Stop recording" : "Start recording";
+        }
+        if (InvokeRequired) BeginInvoke(Apply);
+        else Apply();
+    }
+
+    /// <summary>Open the recording settings dialog. On OK, write the settings back through
+    /// <see cref="RemSoundSettingsStore"/> and flag the profile dirty if anything changed.
+    /// The dialog reads its initial state from the same store, so settings persist across
+    /// re-opens until the user explicitly saves the profile.</summary>
+    private void OpenRecordingSettingsDialog()
+    {
+        using var dialog = new RecordingSettingsDialog(settings.LoadRecordingSettings());
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        settings.SaveRecordingSettings(dialog.Result);
+        if (dialog.ChangedAnything) MarkProfileDirty();
     }
 
     /// <summary>Show a file-picker rooted at the profiles folder; on selection, schedule a
@@ -1749,8 +1914,17 @@ public sealed class MainForm : Form
         continuousIntervalBox.Items.Clear();
         continuousIntervalBox.Items.AddRange(new object[] { "3 seconds", "5 seconds", "10 seconds", "15 seconds", "30 seconds" });
         continuousIntervalBox.SelectedIndex = continuousTuneIntervalSec switch { 3 => 0, 5 => 1, 15 => 3, 30 => 4, _ => 2 };
-        continuousIntervalBox.Enabled = continuousTuneEnabled;
-        var continuousIntervalLabel = new Label { Text = "Auto-tune latency interval (Alt+&I)", AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(8, 6, 0, 0) };
+        // Enable the interval combo whenever EITHER lane's auto-tune is on — the single
+        // interval value governs both lanes' tick rates (see comment at row-1 docstring).
+        // Previously this only followed the WASAPI checkbox, which made the combo grey out
+        // in BothIndependent mode when only ASIO auto-tune was ticked, even though the
+        // timer was running and the interval was being honoured for the ASIO lane.
+        continuousIntervalBox.Enabled = AnyAutoTuneEnabled();
+        // Label text is set by UpdateBothIndependentVisibility — it differs between classic
+        // modes (single lane → "Auto-tune latency interval") and BothIndependent
+        // (two lanes → "Auto-tune interval (WASAPI + ASIO)") to make explicit that the same
+        // dropdown drives both lanes' tick cadence in the latter case.
+        continuousIntervalLabel = new Label { AutoSize = true, Anchor = AnchorStyles.Left, Padding = new Padding(8, 6, 0, 0) };
         var delayContainer = new FlowLayoutPanel
         {
             AutoSize = true,
@@ -1769,7 +1943,7 @@ public sealed class MainForm : Form
         {
             continuousTuneEnabled = continuousTuneBox.Checked;
             settings.SaveContinuousAutoTuneEnabled(continuousTuneEnabled);
-            continuousIntervalBox.Enabled = continuousTuneEnabled;
+            continuousIntervalBox.Enabled = AnyAutoTuneEnabled();
             ApplyContinuousTuneTimer();
             MarkProfileDirty();
         };
@@ -2694,6 +2868,11 @@ public sealed class MainForm : Form
         continuousTuneAsioBox.CheckedChanged += (_, _) =>
         {
             settings.SaveContinuousAutoTuneAsioEnabled(continuousTuneAsioBox.Checked);
+            // The interval combo is shared between both lanes — keep it enabled whenever
+            // either lane's auto-tune is on. Without this, ticking ASIO auto-tune (in
+            // BothIndependent) left the interval combo greyed out and made the recheck
+            // cadence invisible to the user even though it was actively in effect.
+            continuousIntervalBox.Enabled = AnyAutoTuneEnabled();
             ApplyContinuousTuneTimer();
             MarkProfileDirty();
         };
@@ -2720,12 +2899,27 @@ public sealed class MainForm : Form
         asioDelayContainer.Visible = inBothIndependent;
         maxLatencyAsioBox.Visible = inBothIndependent;
         continuousTuneAsioBox.Visible = inBothIndependent;
+        // Mode change may have changed which auto-tune flags count toward "any enabled":
+        // leaving BothIndependent drops the ASIO lane's checkbox from consideration, and
+        // entering it brings it back. Re-evaluate so the shared interval combo's Enabled
+        // state tracks reality after every mode flip.
+        continuousIntervalBox.Enabled = AnyAutoTuneEnabled();
         if (inBothIndependent)
         {
             wasapiLatencyLabel.Text = "WASAPI latency in milliseconds (Alt+&W)";
             maxLatencyBox.AccessibleName = "WASAPI latency in milliseconds (Alt+W)";
             continuousTuneBox.Text = "Continuous auto-tune WASAPI latency (Alt+&Y)";
             continuousTuneBox.AccessibleName = "Continuous auto-tune WASAPI latency";
+            // The interval combo drives ticks for BOTH lanes' auto-tunes — each lane
+            // independently lands wherever its own algorithm decides (40 ms WASAPI / 20 ms
+            // ASIO is fine), but the cadence dropdown is shared. Make that explicit in the
+            // label so a user looking at the WASAPI row doesn't assume the interval only
+            // applies there.
+            if (continuousIntervalLabel is not null)
+            {
+                continuousIntervalLabel.Text = "Auto-tune interval — WASAPI and ASIO (Alt+&I)";
+            }
+            continuousIntervalBox.AccessibleName = "Auto-tune interval for WASAPI and ASIO (Alt+I)";
         }
         else
         {
@@ -2733,6 +2927,12 @@ public sealed class MainForm : Form
             maxLatencyBox.AccessibleName = "Audio latency in milliseconds (Alt+L)";
             continuousTuneBox.Text = "Continuous auto-tune latency (Alt+&T)";
             continuousTuneBox.AccessibleName = "Continuous auto-tune latency";
+            // Classic mode — single lane, original label is unambiguous.
+            if (continuousIntervalLabel is not null)
+            {
+                continuousIntervalLabel.Text = "Auto-tune latency interval (Alt+&I)";
+            }
+            continuousIntervalBox.AccessibleName = "Auto-tune latency interval (Alt+I)";
         }
     }
 
@@ -3410,6 +3610,26 @@ public sealed class MainForm : Form
                 //     music; informational only).
                 var driftDrops = receiver.DriftDropFrames;
                 var driftReps = receiver.DriftRepeatFrames;
+                // Per-second deltas for the same counters — easier to read at a glance than
+                // ever-growing cumulative numbers. driftDropΔ + driftRepΔ tell us how fast
+                // the corrector is firing right now. concealΔ tells us how many real underruns
+                // fired this second (audible). shortReadΔ tracks the now-silent partial-read
+                // events for clock-phase diagnostics. Trim fires + delta gives us "is the
+                // click-trim safety net firing".
+                var concealNow = receiver.ConcealmentFires;
+                var shortReadNow = receiver.ShortReadFires;
+                var driftDropDelta = driftDrops - prevDiagDriftDrops; prevDiagDriftDrops = driftDrops;
+                var driftRepDelta = driftReps - prevDiagDriftReps; prevDiagDriftReps = driftReps;
+                var concealDelta = concealNow - prevDiagConceal; prevDiagConceal = concealNow;
+                var shortReadDelta = shortReadNow - prevDiagShortRead; prevDiagShortRead = shortReadNow;
+                var trimDelta = trimFires - prevDiagTrimFires; prevDiagTrimFires = trimFires;
+                // Live state (not deltas) — current LP-filtered drift error and accumulator
+                // value. Both let us see "where the corrector thinks the buffer is" between
+                // explicit drop/repeat events. filtErr negative = buffer running below target
+                // on average; positive = above. driftAcc near 0 = corrector idle; near ±1 =
+                // about to fire.
+                var filteredErrorFrames = receiver.FilteredDriftErrorFrames;
+                var driftAccumulator = receiver.DriftAccumulator;
                 // 2026-05-11 added timing-split metrics:
                 //   emitMs    = sender's worst time-in-OnMixedSamples (encode + scratch + send)
                 //   sndCallMs = sender's worst time-in-udp.Client.SendTo (kernel send only)
@@ -3426,12 +3646,57 @@ public sealed class MainForm : Form
                 // samples that aren't reaching the audio output, i.e. extra perceived latency
                 // not visible in bufAvg. Always 0 in WasapiOnly (no FanOut).
                 var fanCacheMs = receiver.TakeMaxFanOutCacheMs();
+                // Per-stage discontinuity probes. Compare these to localise where in the
+                // pipeline a click is introduced:
+                //   stepPreEnc   = sender's float buffer just before encoding. Non-zero =
+                //                  the input ALREADY has discontinuities (capture-side issue).
+                //   stepPostDec  = receiver's float buffer just after PCM/Opus decode. If this
+                //                  is significantly larger than stepPreEnc, the wire codec
+                //                  roundtrip introduced steps.
+                //   stepPostRing = receiver's float buffer just out of the ring (before
+                //                  resampler). Roughly equal to stepPostDec in steady state;
+                //                  bigger here means the ring buffer is fishy.
+                //   stepPostRsm  = receiver's float buffer just out of the resampler. Bigger
+                //                  here than stepPostRing fingers the resampler integration.
+                //   sampleStepMax= the final output buffer (after volume + limiter), the
+                //                  legacy spot the diag already tracked.
+                // Per-lane pre-encode probes (2026-05-15) — split so BothIndependent mode
+                // can show which lane is producing the discontinuity, free of the cross-
+                // stream artefact that the old shared probe registered when both lanes'
+                // callbacks interleaved into one probe's lastL/R carry.
+                var stepPreEncWas = sender.TakeMaxPreEncodeStepWasapiLane();
+                var stepPreEncAsi = sender.TakeMaxPreEncodeStepAsioLane();
+                var stepPreEnc = stepPreEncWas > stepPreEncAsi ? stepPreEncWas : stepPreEncAsi;
+                var stepRawCap = sender.TakeMaxSenderRawCaptureStep();
+                var clippedNow = sender.ClippedSampleCount;
+                var clippedDelta = clippedNow - prevDiagClippedSamples; prevDiagClippedSamples = clippedNow;
+                var stepPostDec = receiver.TakeMaxPostDecodeStep();
+                var stepPostRing = receiver.TakeMaxPostRingReadStep();
+                var stepPostRsm = receiver.TakeMaxPostResamplerStep();
+                // Wire-level packet-sequence stats. wireInOrderΔ is the count of packets that
+                // arrived with the sequence we expected this second. wireMissΔ / wireReordΔ /
+                // wireDupΔ are the smoking-gun counters — any non-zero value here means the
+                // UDP path between sender and receiver dropped, reordered, or duplicated
+                // packets, and that on the PCM path translates directly into audible pops.
+                var wireInOrderNow = receiver.WireInOrderCount;
+                var wireMissedNow = receiver.WireMissedCount;
+                var wireReorderedNow = receiver.WireReorderedCount;
+                var wireDuplicatedNow = receiver.WireDuplicatedCount;
+                var wireInOrderDelta = wireInOrderNow - prevDiagWireInOrder; prevDiagWireInOrder = wireInOrderNow;
+                var wireMissedDelta = wireMissedNow - prevDiagWireMissed; prevDiagWireMissed = wireMissedNow;
+                var wireReorderedDelta = wireReorderedNow - prevDiagWireReordered; prevDiagWireReordered = wireReorderedNow;
+                var wireDuplicatedDelta = wireDuplicatedNow - prevDiagWireDuplicated; prevDiagWireDuplicated = wireDuplicatedNow;
+
                 logFile.Event($"diag bufAvg={diag.BufferAvgMs}ms bufMin={diag.BufferMinMs}ms bufMax={diag.BufferMaxMs}ms " +
                     $"maxGapMs={diag.MaxArrivalGapMs} sendCbGapMs={sendCbGapMs} renderCbGapMs={diag.MaxRenderCallbackGapMs} maxReadMs={diag.MaxRenderReadMs} reads={diag.RenderReadCount} " +
                     $"emitMs={emitMs} sndCallMs={sendCallMs} rxDispMs={rxDispatchMs} fanCacheMs={fanCacheMs} " +
-                    $"trimB={trimBytes} trimN={trimFires} drainB={drainBytes} ovfB={ovfBytes} pktRej={pktRej} " +
-                    $"driftDrop={driftDrops} driftRep={driftReps} " +
-                    $"sampleStepMax={diag.MaxOutputSampleStep:0.000} spikesN={diag.EnvelopeSpikeCount} " +
+                    $"trimB={trimBytes} trimN={trimFires} trimΔ={trimDelta} drainB={drainBytes} ovfB={ovfBytes} pktRej={pktRej} " +
+                    $"driftDrop={driftDrops} driftDropΔ={driftDropDelta} driftRep={driftReps} driftRepΔ={driftRepDelta} " +
+                    $"concealΔ={concealDelta} shortReadΔ={shortReadDelta} " +
+                    $"filtErr={filteredErrorFrames:0.0}f driftAcc={driftAccumulator:0.000} " +
+                    $"stepRawCap={stepRawCap:0.000} stepPreEnc={stepPreEnc:0.000} stepPreEncWas={stepPreEncWas:0.000} stepPreEncAsi={stepPreEncAsi:0.000} stepPostDec={stepPostDec:0.000} stepPostRing={stepPostRing:0.000} stepPostRsm={stepPostRsm:0.000} " +
+                    $"clipΔ={clippedDelta} sampleStepMax={diag.MaxOutputSampleStep:0.000} spikesN={diag.EnvelopeSpikeCount} " +
+                    $"wireOkΔ={wireInOrderDelta} wireMissΔ={wireMissedDelta} wireReordΔ={wireReorderedDelta} wireDupΔ={wireDuplicatedDelta} " +
                     $"pcmRej={receiver.PcmFrameRejections} pcmDiscard={receiver.PcmFrameDiscardedPartials}");
             }
             else if (sender.IsRunning)
@@ -3440,9 +3705,24 @@ public sealed class MainForm : Form
                 // sendCbGapMs is visible — that's the most important metric on a send-only box,
                 // since it tells us whether THIS machine's capture path is stalling. Without
                 // this branch, send-only sessions logged zero diag info.
+                // stepPreEnc included so the send-only machine's pre-encode discontinuity
+                // probe is visible — needed for the laptop→desktop direction where the laptop
+                // is the source and we want to see if the audio coming OUT of the capture
+                // already has steps before it touches the wire.
                 var emitMs = sender.TakeMaxEmitMs();
                 var sendCallMs = sender.TakeMaxSendCallMs();
-                logFile.Event($"sender-diag sendCbGapMs={sendCbGapMs} emitMs={emitMs} sndCallMs={sendCallMs} packets={sender.PacketsSent} captureCallbacks={sender.CaptureCallbacks}");
+                // Per-lane pre-encode probes — see the full-diag comment above for the
+                // rationale (per-lane fixes the cross-stream artefact in BothIndependent).
+                var stepPreEncWas = sender.TakeMaxPreEncodeStepWasapiLane();
+                var stepPreEncAsi = sender.TakeMaxPreEncodeStepAsioLane();
+                var stepPreEnc = stepPreEncWas > stepPreEncAsi ? stepPreEncWas : stepPreEncAsi;
+                // Raw-capture step: now per-backend (each backend owns its own probe). The
+                // accessor returns max across all backends. PushModeWasapiBackend has been
+                // wired to feed this probe as of 2026-05-15; pull-mode MixingEngine returns 0.
+                var stepRawCap = sender.TakeMaxSenderRawCaptureStep();
+                var clippedNow = sender.ClippedSampleCount;
+                var clippedDelta = clippedNow - prevDiagClippedSamples; prevDiagClippedSamples = clippedNow;
+                logFile.Event($"sender-diag sendCbGapMs={sendCbGapMs} emitMs={emitMs} sndCallMs={sendCallMs} stepPreEnc={stepPreEnc:0.000} stepPreEncWas={stepPreEncWas:0.000} stepPreEncAsi={stepPreEncAsi:0.000} stepRawCap={stepRawCap:0.000} clipΔ={clippedDelta} packets={sender.PacketsSent} captureCallbacks={sender.CaptureCallbacks}");
             }
 
             // Synthesised end-to-end one-way latency estimate. Sums:
@@ -3521,12 +3801,59 @@ public sealed class MainForm : Form
     /// </summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        // No ProcessCmdKey overrides currently — base class handles everything. The previous
-        // Alt+M tab-local gating became unnecessary once the Audio mode listbox was retired
-        // (2026-05-11); minimise to tray is reachable via Alt+F → M (File menu mnemonic) or
-        // the configurable "Show or hide window" global hotkey (default Ctrl+Shift+F10).
+        // Defensive gate for the global menu shortcuts that change state (Ctrl+R = toggle
+        // recording, Ctrl+S = save profile). The default WinForms behaviour fires these
+        // shortcuts any time the form has keyboard focus — which technically includes the
+        // case where another tool (NVDA Remote in send-keys mode, an automation script,
+        // etc.) calls SetForegroundWindow on us and then SendInput a keystroke a few
+        // milliseconds later. The form receives focus + the keystroke arrives + the menu
+        // shortcut fires, all without the user touching anything.
+        //
+        // The gate adds two extra requirements before we let these shortcuts run:
+        //   1. The OS-level foreground window must be us. Same check the base class
+        //      effectively makes, but explicit so the intent is documented.
+        //   2. At least RecentActivationGuardMs must have elapsed since we last became
+        //      activated. Programmatic SetForegroundWindow + SendInput typically runs in
+        //      under 50 ms; a human Alt+Tabbing in then pressing Ctrl+R can't physically
+        //      do it inside 250 ms.
+        // If the gate fails we consume the keystroke (return true) so the menu shortcut
+        // doesn't fire, log a diagnostic, and silently ignore it. The user can still drive
+        // the same actions via the Alt+R / Alt+F menu chord which inherently requires the
+        // multi-step menu-open interaction and isn't vulnerable to drive-by injection.
+        if (keyData == (Keys.Control | Keys.R) || keyData == (Keys.Control | Keys.S))
+        {
+            if (!IsWindowAvailableForGatedShortcut())
+            {
+                logFile.Event($"shortcut ignored (window not in interactive state): {keyData}");
+                return true; // consumed; don't let MenuStrip see it
+            }
+        }
         return base.ProcessCmdKey(ref msg, keyData);
     }
+
+    // UTC time the form last became activated. Compared against UtcNow when a gated
+    // shortcut fires to reject keystrokes that arrive within the RecentActivationGuardMs
+    // window after a window-activation — the signature of a drive-by injection.
+    private DateTime lastActivatedAtUtc = DateTime.MinValue;
+    private const int RecentActivationGuardMs = 250;
+
+    protected override void OnActivated(EventArgs e)
+    {
+        lastActivatedAtUtc = DateTime.UtcNow;
+        base.OnActivated(e);
+    }
+
+    /// <summary>Defensive gate for global menu shortcuts that change state. See the comment
+    /// in <see cref="ProcessCmdKey"/> for the full rationale.</summary>
+    private bool IsWindowAvailableForGatedShortcut()
+    {
+        if (!Visible || WindowState == FormWindowState.Minimized) return false;
+        if ((DateTime.UtcNow - lastActivatedAtUtc).TotalMilliseconds < RecentActivationGuardMs) return false;
+        return GetForegroundWindow() == Handle;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
 
 
     // ===================== Profile system =====================
@@ -3973,13 +4300,13 @@ public sealed class MainForm : Form
             previousPeerHealthStates.TryGetValue(key, out var prior);
             if (ph.State == PeerHealthState.Healthy && prior != PeerHealthState.Healthy)
             {
-                if (!settings.LoadMuteConnectionCues()) connectSound?.Play();
+                if (settings.LoadEnableConnectCue()) connectSound?.Play();
                 logFile.Event($"peer connected cue: {ph.AudioEndpoint} ({prior} → Healthy)");
             }
             else if (ph.State == PeerHealthState.Unreachable
                 && (prior == PeerHealthState.Healthy || prior == PeerHealthState.Stale))
             {
-                if (!settings.LoadMuteConnectionCues()) disconnectSound?.Play();
+                if (settings.LoadEnableDisconnectCue()) disconnectSound?.Play();
                 logFile.Event($"peer disconnected cue: {ph.AudioEndpoint} ({prior} → Unreachable)");
             }
             previousPeerHealthStates[key] = ph.State;
@@ -3991,7 +4318,7 @@ public sealed class MainForm : Form
         {
             if (previousPeerHealthStates[key] == PeerHealthState.Healthy)
             {
-                if (!settings.LoadMuteConnectionCues()) disconnectSound?.Play();
+                if (settings.LoadEnableDisconnectCue()) disconnectSound?.Play();
                 logFile.Event($"peer disconnected cue: {key} (deselected while Healthy)");
             }
             previousPeerHealthStates.Remove(key);
@@ -4229,6 +4556,18 @@ public sealed class MainForm : Form
     /// Mixed flag; in BothIndependent either WASAPI or ASIO being on is enough to keep the
     /// timer running. The per-route filtering inside the tick gates which sliders actually
     /// move.</summary>
+    /// <summary>True if either lane's continuous auto-tune is enabled. Used by the shared
+    /// interval combo's Enabled state — the combo governs both lanes' tick rates, so it
+    /// should be usable as long as at least one lane wants ticking. Reading from the live
+    /// checkbox states keeps this consistent with the lane's checkbox even before the
+    /// CheckedChanged handlers have updated the persisted setting.</summary>
+    private bool AnyAutoTuneEnabled()
+    {
+        var inBothIndependent = settings.LoadAudioMode() == AudioMode.BothIndependent;
+        var asioOn = inBothIndependent && continuousTuneAsioBox.Checked;
+        return continuousTuneEnabled || asioOn;
+    }
+
     private void ApplyContinuousTuneTimer()
     {
         continuousTuneTimer.Stop();
@@ -4703,6 +5042,12 @@ public sealed class MainForm : Form
                 // result == No falls through to a normal close.
             }
         }
+
+        // Stop any active recording before the engines tear down. The recorder will flush
+        // its queue and close the file cleanly. Done here (rather than in Dispose) because
+        // we want the on-disk file finalised before the form closes, so opening the
+        // recordings folder right after exit shows the file at its full size.
+        try { recordingController.Stop(); } catch { /* recording cleanup is best-effort */ }
 
         base.OnFormClosing(e);
     }

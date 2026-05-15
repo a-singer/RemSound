@@ -31,7 +31,7 @@ ul, ol { padding-left: 1.4em; }
 <li><a href="#quick-start">Quick start</a></li>
 <li><a href="#profiles">Profiles</a></li>
 <li><a href="#main-window">The main window: menu bar + three tabs</a></li>
-<li><a href="#menu-bar">Menus (File and Help)</a></li>
+<li><a href="#menu-bar">Menus (File, Record (Alt+O), and Help)</a></li>
 <li><a href="#tab-connectivity">Connectivity tab</a></li>
 <li><a href="#tab-io">Audio inputs and outputs tab</a></li>
 <li><a href="#tab-profile">Audio profile tab</a></li>
@@ -44,6 +44,7 @@ ul, ol { padding-left: 1.4em; }
 <li><a href="#remote-control">Remote control: adjusting a peer's listening volume from your end</a></li>
 <li><a href="#startup">Startup behaviour</a></li>
 <li><a href="#updates">Updating RemSound</a></li>
+<li><a href="#recording">Recording to a file</a></li>
 <li><a href="#logs">Logs and diagnostics</a></li>
 <li><a href="#troubleshooting">Troubleshooting</a></li>
 <li><a href="#glossary">Glossary</a></li>
@@ -169,7 +170,9 @@ ul, ol { padding-left: 1.4em; }
 <tr><td><strong>Audio profile</strong></td><td>Codec, packet size, lock-to-audio-clock, latency, continuous auto-tune, buffer smoothness, artefact sound. Split into <em>Audio send parameters</em> and <em>Audio receive parameters</em> sections so NVDA announces which group you&rsquo;ve entered as you tab through.</td></tr>
 </table>
 
-<h2 id="menu-bar">5. Menus (File and Help)</h2>
+<h2 id="menu-bar">5. Menus (File, Record, and Help)</h2>
+
+<p>Three top-level menus on the main window: <strong>File (Alt+F)</strong>, <strong>Record (Alt+O)</strong>, and <strong>Help (Alt+H)</strong>. The Record menu uses Alt+O rather than Alt+R so it doesn&rsquo;t clash with the <strong>Receive audio (Alt+R)</strong> checkbox on the main form.</p>
 
 <h3>File menu</h3>
 
@@ -183,8 +186,20 @@ ul, ol { padding-left: 1.4em; }
 <tr><td><strong>Rename current profile&hellip;</strong></td><td>Alt+F, R</td><td>Renames the JSON file on disk and updates the window title. No-op on Blank template (no profile to rename).</td></tr>
 <tr><td><strong>Minimise to tray</strong></td><td>Alt+F, M</td><td>Hides the window to the system tray. Reachable via the File menu chain (Alt+F to open the menu, then M for Minimise). To bring the window back, click the tray icon or use the configurable "Show or hide window" global hotkey (Keyboard shortcuts dialog, default Ctrl+Shift+F10).</td></tr>
 <tr><td><strong>Keyboard shortcuts&hellip;</strong></td><td>Ctrl+K</td><td>Opens the global hotkey configuration dialog (mute, volume, tray show/hide, remote-control sends).</td></tr>
-<tr><td><strong>Preferences&hellip;</strong></td><td>Ctrl+P</td><td>Opens the Preferences dialog. Sticky machine-local choices live here: profile folder, mute connect/disconnect sounds, accept remote volume commands, startup behaviour, update-check frequency, manual check-for-updates button, silently install updates, enable logs, write logs now. Esc or the Close button dismisses.</td></tr>
+<tr><td><strong>Preferences&hellip;</strong></td><td>Ctrl+P</td><td>Opens the Preferences dialog. Sticky machine-local choices live here: profile folder, the <strong>Cue sounds (Alt+N)</strong> checklist (one tickable item per cue: connect, disconnect, recording start, recording stop), accept remote volume commands, startup behaviour, update-check frequency, manual check-for-updates button, silently install updates, enable logs, write logs now. Esc or the Close button dismisses.</td></tr>
 <tr><td><strong>Exit</strong></td><td>Alt+F, X (or Alt+F4)</td><td>Closes RemSound. If there are unsaved profile changes you&rsquo;ll be prompted first.</td></tr>
+</table>
+
+<h3>Record menu</h3>
+
+<p>Press <strong>Alt+O</strong> to open the menu, then the underlined letter for the item you want. (Alt+O rather than Alt+R because Alt+R is taken on the main form by the <strong>Receive audio</strong> checkbox.) The recording feature taps the audio path at the right place to capture either what you&rsquo;re sending, what you&rsquo;re receiving, or both, and writes it to disk as a WAV, MP3, OGG-Opus, or FLAC file. See <a href="#recording">Recording to a file</a> for the full chapter; this is the menu summary.</p>
+
+<table>
+<tr><th>Item</th><th>Shortcut</th><th>What it does</th></tr>
+<tr><td><strong>Start recording / Stop recording</strong></td><td>Ctrl+R, or Alt+O, S</td><td>Toggle. The label flips between the two states so NVDA announces whichever action the next press would perform. Each press of Start plays a short cue sound (if enabled in Preferences), then creates a new file in your recordings folder named <code>RemSound-yyyy-MM-dd_HH-mm-ss.&lt;ext&gt;</code>. Stop closes the file then plays the stop cue. Ctrl+R works from anywhere in the main window.</td></tr>
+<tr><td><strong>Recording settings&hellip;</strong></td><td>Alt+O, T</td><td>Opens the Recording settings dialog. Three listboxes side-by-side: <em>Recording source</em> (Alt+S), <em>File format</em> (Alt+F), <em>Audio format attributes</em> (Alt+A). The attributes list repopulates based on the selected format. OK saves to the current profile; Cancel discards.</td></tr>
+<tr><td><strong>Open current recordings folder</strong></td><td>Alt+O, O</td><td>Opens your current recordings folder in Windows Explorer. Creates the folder if it doesn&rsquo;t exist yet (first launch after a fresh install).</td></tr>
+<tr><td><strong>Change recordings folder&hellip;</strong></td><td>Alt+O, C</td><td>Folder picker. Pick a different folder for future recordings. The choice is saved on the current profile, so different profiles can record to different places.</td></tr>
 </table>
 
 <h3>Help menu</h3>
@@ -308,7 +323,7 @@ ul, ol { padding-left: 1.4em; }
 <tr><td><strong>ASIO latency in milliseconds</strong></td><td>Alt+L</td><td>(Only when an ASIO driver is selected.) Spinner. Target receive buffer for the ASIO lane. Default 10 ms. ASIO&rsquo;s native pipeline can sustain very low targets, but values below the platform&rsquo;s real-world jitter floor (typically 15&ndash;25 ms) cause constant micro-corrections that you can hear &mdash; pick 25 ms as a safe floor unless you&rsquo;re on localhost or wired LAN.</td></tr>
 <tr><td><strong>Continuous auto-tune ASIO latency</strong></td><td>Alt+T</td><td>(Only when an ASIO driver is selected.) Checkbox. Nudges the ASIO latency target as ASIO-lane jitter changes. Independent of the WASAPI toggle.</td></tr>
 <tr><td><strong>WASAPI latency in milliseconds</strong> (called just &ldquo;Audio latency&rdquo; with no ASIO driver)</td><td>Alt+W (Alt+L when no ASIO driver)</td><td>Spinner. Target receive buffer for the WASAPI lane (or the only lane in WASAPI-only setups). Smaller = less delay, more clicks. Most people want 20&ndash;80 ms.</td></tr>
-<tr><td><strong>Continuous auto-tune WASAPI latency</strong> (called &ldquo;Continuous auto-tune latency&rdquo; with no ASIO driver)</td><td>Alt+Y (Alt+T when no ASIO driver)</td><td>Checkbox. When on, RemSound nudges the WASAPI lane latency value automatically as the network changes. The accompanying <strong>Auto-tune latency interval (Alt+I)</strong> combo sets how often it re-evaluates: 3, 5, 10, 15, or 30 seconds. The interval is shared between the WASAPI and ASIO lanes &mdash; one tick rate, one combo.</td></tr>
+<tr><td><strong>Continuous auto-tune WASAPI latency</strong> (called &ldquo;Continuous auto-tune latency&rdquo; with no ASIO driver)</td><td>Alt+Y (Alt+T when no ASIO driver)</td><td>Checkbox. When on, RemSound nudges the WASAPI lane latency value automatically as the network changes. The accompanying interval combo (<strong>Alt+I</strong>) sets how often it re-evaluates: 3, 5, 10, 15, or 30 seconds. The combo&rsquo;s label is &ldquo;Auto-tune latency interval&rdquo; in WASAPI-only mode and &ldquo;Auto-tune interval &mdash; WASAPI and ASIO&rdquo; when an ASIO driver is selected, because the single tick rate drives both lanes&rsquo; auto-tunes when ASIO is in play. Each lane still independently lands at whatever target its own algorithm chooses; only the cadence is shared.</td></tr>
 <tr><td><strong>Buffer smoothness</strong></td><td>Alt+B</td><td>Listbox, 1 to 10. Controls how patient the receiver is with late-arriving audio on either lane. Higher = more click protection, longer steady-state delay. Default 3.</td></tr>
 <tr><td><strong>Artefact sound type</strong></td><td>Alt+A</td><td>Listbox. <em>Noise burst</em> (default) replaces an empty-buffer moment with a brief broadband shhh, which blends into music. <em>Click</em> uses raw zero-fill (no concealment) for diagnostic purposes &mdash; you hear an obvious click on every buffer underrun.</td></tr>
 </table>
@@ -585,7 +600,7 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <tr><td>Alt+T</td><td>Toggle continuous auto-tune &mdash; ASIO lane when an ASIO driver is selected, otherwise the single Continuous auto-tune toggle</td></tr>
 <tr><td>Alt+W</td><td>(Only when an ASIO driver is selected.) Focus the WASAPI-lane latency spinner</td></tr>
 <tr><td>Alt+Y</td><td>(Only when an ASIO driver is selected.) Toggle the WASAPI-lane continuous auto-tune</td></tr>
-<tr><td>Alt+I</td><td>Focus Auto-tune latency interval</td></tr>
+<tr><td>Alt+I</td><td>Focus Auto-tune latency interval combo. Drives the tick rate for the WASAPI auto-tune and (when an ASIO driver is selected) the ASIO auto-tune as well &mdash; one combo, both lanes. Each lane still independently lands at whatever latency its own algorithm decides; only the cadence is shared. The label changes from &ldquo;Auto-tune latency interval&rdquo; in WASAPI-only mode to &ldquo;Auto-tune interval &mdash; WASAPI and ASIO&rdquo; once an ASIO driver is in play, to make the dual-lane scope visible.</td></tr>
 <tr><td>Alt+B</td><td>Focus Buffer smoothness</td></tr>
 <tr><td>Alt+A</td><td>Focus Artefact sound type</td></tr>
 </table>
@@ -596,6 +611,11 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <tr><td>Ctrl+S</td><td>Save active profile (or Save as if on Blank template)</td></tr>
 <tr><td>Ctrl+K</td><td>Open Keyboard shortcuts dialog</td></tr>
 <tr><td>Ctrl+P</td><td>Open Preferences dialog</td></tr>
+<tr><td>Ctrl+R</td><td>Start or stop recording (toggles)</td></tr>
+<tr><td>Alt+O, S</td><td>Start or stop recording (via menu &mdash; Record menu is Alt+O, item is S)</td></tr>
+<tr><td>Alt+O, T</td><td>Recording settings dialog</td></tr>
+<tr><td>Alt+O, O</td><td>Open current recordings folder</td></tr>
+<tr><td>Alt+O, C</td><td>Change recordings folder</td></tr>
 <tr><td>Alt+F, O</td><td>Open profile</td></tr>
 <tr><td>Alt+F, A</td><td>Save profile as</td></tr>
 <tr><td>Alt+F, R</td><td>Rename current profile</td></tr>
@@ -750,7 +770,73 @@ Bind whatever key combinations you prefer (e.g. Ctrl+Shift+Up / Ctrl+Shift+Down 
 
 <p>To see what version you&rsquo;re currently on without checking for updates, open <strong>Help &rarr; About RemSound</strong> (Alt+H, A). The dialog shows the version number and the release notes for the build you&rsquo;re running, in a scrollable read-only text box you can tab into and arrow through under NVDA. Close (or Esc) dismisses.</p>
 
-<h2 id="logs">18. Logs and diagnostics</h2>
+<h2 id="recording">18. Recording to a file</h2>
+
+<p>RemSound can write the audio passing through it to a file on disk &mdash; useful for keeping a copy of a music session, capturing a long jam for later editing, or just saving a one-off voice exchange you want to refer back to.</p>
+
+<h3>What gets recorded</h3>
+
+<p>Recording taps the audio path at fully-mixed, fully-processed points: for the received side, after volume / mute / limiter have been applied (so the file mirrors what you hear); for the sent side, the raw captured float audio just before it&rsquo;s encoded for the wire (so the file is independent of which codec you chose). The three source options:</p>
+
+<ul>
+<li><strong>Record all received audio</strong> &mdash; the full mix of everything coming in from connected peers. Default.</li>
+<li><strong>Record all sent audio</strong> &mdash; what your microphones, loopbacks and ASIO inputs are sending out. Useful for confirming what your collaborators are actually hearing from your end.</li>
+<li><strong>Record both sent and received audio</strong> &mdash; a single file containing both directions, soft-mixed and limiter-protected. The right pick for capturing a complete two-way exchange.</li>
+</ul>
+
+<h3>File formats</h3>
+
+<p>All four formats record at 48 kHz &mdash; that&rsquo;s the engine&rsquo;s internal mix rate &mdash; and labels in the attributes list make the rate explicit so it&rsquo;s never ambiguous.</p>
+
+<table>
+<tr><th>Format</th><th>What you get</th><th>When to pick it</th></tr>
+<tr><td><strong>WAV</strong> (default)</td><td>Uncompressed RIFF WAVE. Lossless and large &mdash; about 17 MB / minute at 24-bit stereo. Bit-depth choices: 16-bit PCM, 24-bit PCM (default, matches RemSound&rsquo;s on-wire format with no extra quantisation), or 32-bit IEEE float (no quantisation at all). Plus stereo or mono.</td><td>Archival, editing in a DAW, anything where you might re-master later.</td></tr>
+<tr><td><strong>MP3</strong></td><td>MPEG Layer III at one of four CBR bitrates: 128 / 192 / 256 / 320 kbps. Stereo or mono. Encoder is LAME via the NAudio.Lame package &mdash; the same library every other Windows MP3-encoding app uses, so output should play in everything.</td><td>Long sessions where filesize matters; quick distribution to people who just want a listen-once file.</td></tr>
+<tr><td><strong>OGG-Opus</strong></td><td>OGG container holding Opus-encoded audio at one of four target VBR bitrates: 96 / 128 / 192 / 256 kbps. Stereo or mono. File extension is <code>.opus</code>. Encoder is Concentus &mdash; the same managed Opus implementation the wire path uses, so the encoded result is byte-identical to what you&rsquo;d transmit on a live Opus session at the same bitrate.</td><td>Smaller files than MP3 at comparable quality; broad modern playback support (VLC, mpv, web browsers).</td></tr>
+<tr><td><strong>FLAC</strong></td><td>Free Lossless Audio Codec, integer-PCM only. Bit-depth choices: 16-bit or 24-bit (default, matches RemSound&rsquo;s on-wire format). Stereo or mono. Files are typically ~50% the size of equivalent WAV with zero quality loss. Encoder is pure managed (CUETools FLAKE) &mdash; no native DLL ships with RemSound.</td><td>Lossless archival when you also want a sensible file size. Picks the WAV-vs-MP3 dilemma squarely &mdash; the file plays back bit-identical to WAV but is half the size.</td></tr>
+</table>
+
+<p><strong>Crash resilience.</strong> All four formats are designed to leave a playable file behind even if RemSound crashes mid-recording. WAV re-patches its RIFF / data-chunk size fields every 5 seconds; MP3, OGG-Opus, and FLAC all use stream formats where every frame is self-decoding, so a truncated file is automatically a valid shorter file of the same format. You lose at most ~5 seconds of recently-captured audio on a crash, never the whole session.</p>
+
+<h3>Start / stop sound cues</h3>
+
+<p>RemSound plays a short ding when a recording starts and another when it stops, so you have an audible confirmation that the toggle actually took effect. The cues are <code>record start.wav</code> and <code>record stop.wav</code> in the RemSound install folder &mdash; you can drop your own files in to customise them, as long as they keep the same filenames.</p>
+
+<p>Each cue can be turned off independently via <strong>Preferences &rarr; Cue sounds (Alt+N)</strong>. The same checklist also controls the older connect / disconnect cues. The cues play through the default Windows output device using <code>System.Media.SoundPlayer</code>, which sits outside the recording pipeline &mdash; so a normal RemSound recording does not contain the cue. The exception is if your sender side is using WASAPI loopback of the very same output device the cue plays to as one of its capture sources, in which case the loopback grabs the cue alongside the rest of the device&rsquo;s output; in that case you&rsquo;ll have to live with the start cue appearing in the file unless you disable it.</p>
+
+<h3>Where recordings go</h3>
+
+<p>By default, recordings live in <code>&lt;RemSound install folder&gt;\recordings\&lt;machine name&gt;\</code>. Each recording session creates a new file named <code>RemSound-yyyy-MM-dd_HH-mm-ss.&lt;ext&gt;</code>, so files never collide.</p>
+
+<p>You can change the folder via <strong>Record &rarr; Change recordings folder</strong>. Picking a different folder writes that path to your current profile, so the choice rides along with the rest of your settings &mdash; switching profiles can switch recording destinations too. If a saved profile points at a folder that doesn&rsquo;t exist on the loading machine, the recorder silently falls back to the default location for the current machine.</p>
+
+<p><strong>Record &rarr; Open current recordings folder</strong> launches Windows Explorer on whatever the configured folder currently is, creating it on the fly if a recording hasn&rsquo;t been made there yet.</p>
+
+<h3>Starting and stopping</h3>
+
+<p>Three ways to start or stop a recording:</p>
+<ul>
+<li><strong>Ctrl+R</strong> from anywhere in the main window &mdash; toggle. The menu item text flips between &ldquo;Start recording&rdquo; and &ldquo;Stop recording&rdquo; so NVDA announces the current state when you walk into the menu.</li>
+<li><strong>Record &rarr; Start recording</strong> (or Stop, when one is in progress).</li>
+<li>Closing RemSound while a recording is running cleanly finalises the file &mdash; you don&rsquo;t lose data if you forget to stop manually.</li>
+</ul>
+
+<p>The recorder runs on its own background thread with a generous queue, so neither the audio nor the network path is affected by disk speed. If the disk ever can&rsquo;t keep up with the audio rate, the recorder drops the oldest queued audio (never the newest) and notes it in the log; in practice you&rsquo;ll only see that on a fully-saturated USB stick or a very slow network drive.</p>
+
+<h3>Recording settings dialog</h3>
+
+<p>Reached via <strong>Record &rarr; Recording settings</strong>. Three keyboard-navigable listboxes:</p>
+
+<table>
+<tr><th>List</th><th>Shortcut</th><th>What goes in it</th></tr>
+<tr><td><strong>Recording source</strong></td><td>Alt+S</td><td>Receive only / Send only / Both. See the source explainer above.</td></tr>
+<tr><td><strong>File format</strong></td><td>Alt+F</td><td>WAV / MP3 / Ogg-Opus / FLAC. The attributes list to the right repopulates whenever you change this.</td></tr>
+<tr><td><strong>Audio format attributes</strong></td><td>Alt+A</td><td>Repopulates per format, with the 48 kHz sample rate stated on every row so there&rsquo;s no ambiguity. WAV: six rows pairing bit-depth (16 / 24 / 32-bit float) with channel mode (stereo / mono). MP3: eight rows pairing CBR bitrate (128 / 192 / 256 / 320 kbps) with channel mode. OGG-Opus: eight rows pairing VBR bitrate (96 / 128 / 192 / 256 kbps) with channel mode. FLAC: four rows pairing bit-depth (16 / 24-bit) with channel mode &mdash; FLAC is integer-PCM only, so no 32-bit-float row. Compression level for FLAC is fixed at 5 (the libFLAC reference default).</td></tr>
+</table>
+
+<p>OK saves the choices to the current profile. Cancel (or Esc) discards. Settings persist via the normal profile-save mechanism &mdash; changes here flag the profile as having unsaved changes and you&rsquo;ll be prompted on exit if you haven&rsquo;t saved.</p>
+
+<h2 id="logs">19. Logs and diagnostics</h2>
 
 <p>If logging is enabled (the <strong>Enable logs</strong> checkbox in the Preferences dialog &mdash; File → Preferences, or Ctrl+P &mdash; default on), RemSound writes a tab-separated log file per session into <code>publish\logs\</code> (relative to wherever <code>RemSound.exe</code> lives). One file per launch, named <code>RemSound-&lt;machine&gt;-&lt;PID&gt;-&lt;date&gt;-&lt;time&gt;.log</code>.</p>
 
@@ -774,7 +860,7 @@ Bind whatever key combinations you prefer (e.g. Ctrl+Shift+Up / Ctrl+Shift+Down 
 <li><strong>OpusUnrecoveredGaps</strong> &mdash; running total of multi-packet drops that FEC couldn&rsquo;t repair. Each one corresponds to an audible click. Stays at 0 on a clean line; small numbers are normal on WAN.</li>
 </ul>
 
-<h2 id="troubleshooting">19. Troubleshooting</h2>
+<h2 id="troubleshooting">20. Troubleshooting</h2>
 
 <h3>I don&rsquo;t hear my friend</h3>
 <ol>
@@ -828,7 +914,7 @@ Bind whatever key combinations you prefer (e.g. Ctrl+Shift+Up / Ctrl+Shift+Down 
 <h3>Audio device list shows old devices that are no longer plugged in</h3>
 <p>RemSound refreshes its lists every second. If a device has truly been unplugged it should disappear within a few seconds. If it&rsquo;s lingering, restart RemSound &mdash; Windows&rsquo; device cache occasionally needs poking.</p>
 
-<h2 id="glossary">20. Glossary</h2>
+<h2 id="glossary">21. Glossary</h2>
 
 <table>
 <tr><th>Term</th><th>Meaning</th></tr>

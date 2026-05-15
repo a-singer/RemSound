@@ -1,217 +1,164 @@
-# RemSound UDP Relay — server bundle
+# RemSound UDP Relay — `server-v2.0`
 
-This folder is a self-contained bundle for running the RemSound UDP relay on a Raspberry Pi (or any systemd-based Linux). Drop it on the Pi, run `install.sh`, open one router port, and you have a relay another RemSound peer can dial.
+A small UDP reflector that lets RemSound peers reach each other across the
+internet without Tailscale in the audio path. Two modes in one binary:
 
-## Why this exists
+- **v1 (pairwise)** — the original two-slot reflector. First two endpoints
+  to send a valid RemSound v1 packet claim the slots; their traffic gets
+  mirrored to each other. Used by RemSound clients up to v1.x.
+- **v2 (lobby)** — a multi-peer lobby (default cap: 10) keyed on a
+  per-instance CLIENT_ID. Used by RemSound clients that emit v2 packets.
+  Periodic LobbyRoster packets keep clients informed of who's in.
 
-RemSound is a Windows audio app that moves real-time audio between two PCs over plain UDP. The standard way two RemSound peers reach each other when one of them is behind a router that won't forward inbound UDP is to run Tailscale on both ends — Tailscale's WireGuard tunnel handles the NAT traversal. That works, but it adds encryption overhead and sometimes routes traffic through Tailscale's DERP relay rather than directly.
-
-A relay is a tiny UDP reflector that sits on a publicly-reachable host. Both peers dial it, the relay learns each peer's apparent address from their first packet, and forwards datagrams between matched peers. RemSound peers stay behind their NATs — the relay is the only thing that needs to be reachable from the public internet.
-
-Whether a relay improves perceived latency depends on geography. Running a relay close to one of the peers can give a measurable improvement over Tailscale's DERP fallback; running a relay far from both peers usually makes things worse than direct Tailscale. The relay is most useful when at least one peer is behind a router that won't let inbound UDP through at all (so direct peer-to-peer is impossible) and Tailscale is undesirable for some reason (encryption overhead, account requirement, mobile data plan).
+A single relay instance handles both protocols concurrently on the same UDP
+port. v1 clients keep working unchanged; v2 clients get the lobby model.
+(A v1 client and a v2 client cannot hear each other in the same session;
+that's a deliberate scope cut for this release.)
 
 ## What's in this bundle
 
-```
-remsound-relay.py        — the relay service itself (Python 3, stdlib only)
-remsound-relay.service   — systemd unit
-install.sh               — one-shot installer (copy + enable + start)
-uninstall.sh             — clean uninstaller
-smoke-test.sh            — health check after install
-README.md                — this file
-```
+| File                                  | Purpose                                                                                            |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `remsound-relay.py`                   | the relay itself (dual-protocol)                                                                   |
+| `remsound-relay.service`              | systemd unit for the relay                                                                         |
+| `remsound-relay-update.sh`            | auto-updater. Polls GitHub Releases hourly for newer `server-*` tags and installs them in place    |
+| `remsound-relay-update.service`       | systemd one-shot unit fired by the timer                                                           |
+| `remsound-relay-update.timer`         | the schedule (boot + every hour, with random jitter)                                               |
+| `install.sh`                          | sets up the relay AND the auto-updater                                                             |
+| `uninstall.sh`                        | removes everything this bundle installed                                                           |
+| `smoke-test.sh`                       | post-install sanity check (v1 + v2 paths + updater scaffolding)                                    |
+| `VERSION`                             | the tag this bundle represents (`server-v2.0`)                                                     |
+| `README.md`                           | this file                                                                                          |
 
-No external dependencies. The script uses only the Python 3 standard library.
+## Installing on a fresh host
 
-## What it does
+Tested on Raspberry Pi OS Bookworm and Debian / Ubuntu. Requires `python3`
+and `curl` (both usually preinstalled).
 
-- Listens on UDP port **47830**.
-- Validates the 12-byte RemSound packet header (magic `RMND`, version 1) and silently drops anything else. **Never decodes audio. Never logs payload bytes.**
-- Holds two peer slots. The first two distinct UDP endpoints to send valid RemSound packets claim the slots. Once both slots are filled, every valid packet from one slot is forwarded to the other.
-- Slots that go silent for more than 60 seconds are replaced when a fresh endpoint arrives — so a stale pairing self-heals when one side restarts RemSound.
-- Logs to `/var/log/remsound-relay.log` — startup, peer-joined / peer-paired / peer-dropped events, per-minute throughput stats. No payload bytes, ever.
+```bash
+# 1. Download and extract the latest server tarball.
+curl -L -o /tmp/remsound-server.tar.gz \
+  https://github.com/Ednunp/RemSound/releases/download/server-v2.0/remsound-server-v2.0.tar.gz
+tar xzf /tmp/remsound-server.tar.gz -C /tmp
+cd /tmp/remsound-server-v2.0
 
-## Install
+# 2. Install — sets up the relay AND auto-updates.
+sudo ./install.sh
 
-1. Copy this whole folder onto the Pi. SSH or USB stick are both fine. Example over SSH from your laptop, replacing `pi@your-pi-host` with your actual Pi user@host:
+# 3. Open UDP 47830 in the firewall and / or router port-forward.
+#    On UFW: sudo ufw allow 47830/udp
+#    On UDM / pfSense / etc.: WAN UDP 47830 -> this host's LAN IP.
 
-   ```
-   scp -r server pi@your-pi-host:/home/pi/remsound-relay
-   ```
-
-2. SSH into the Pi:
-
-   ```
-   ssh pi@your-pi-host
-   ```
-
-3. Run the installer:
-
-   ```
-   cd /home/pi/remsound-relay
-   sudo ./install.sh
-   ```
-
-   It copies the script to `/usr/local/sbin/`, installs the systemd unit, enables and starts the service, and prints the status + last few log lines.
-
-4. Optional: run the smoke test to confirm everything works locally:
-
-   ```
-   sudo ./smoke-test.sh
-   ```
-
-   You should see `[ok] remsound-relay.service is active`, `[ok] listening on UDP 47830`, and `[ok] relay logged a peer_joined event for 127.0.0.1 — header validation works`.
-
-## Open one router port
-
-Without this step the relay only works on your LAN. To make it reachable from the internet:
-
-1. Find the Pi's LAN IP (`hostname -I` on the Pi, take the first IPv4 address).
-2. In your router's admin UI, add a port-forward rule:
-   - **Protocol:** UDP
-   - **WAN port:** 47830
-   - **Forward IP:** the Pi's LAN IP (from step 1)
-   - **Forward port:** 47830
-3. Save / apply.
-
-That's the same kind of rule any other "let an outside service reach a device on my LAN" flow needs. Different routers have it under different menus (Settings → NAT, Settings → Port Forwarding, Advanced → Virtual Server, etc.). The protocol must be **UDP**, not TCP.
-
-If your router doesn't allow inbound port-forwards at all, this relay can't be reached from outside your LAN. In that case stay on Tailscale.
-
-## Tell the other peer the address
-
-The other end of RemSound needs to dial **your-public-host:47830**.
-
-If you have a static public IP, your peer types it directly:
-
-```
-123.45.67.89:47830
+# 4. Confirm it's alive.
+sudo ./smoke-test.sh
 ```
 
-If your IP is dynamic (most home connections are), you'll want a Dynamic-DNS hostname. Free options that work well with consumer routers:
+After install, the auto-updater is enabled. Future releases roll out
+automatically — no manual SCP, no manual edit. To pin to the current
+version:
 
-- **Namecheap Dynamic DNS** (if you own a domain there) — set up a host record and run their updater on the Pi or in your router.
-- **DuckDNS** (free, no domain needed) — your hostname looks like `something.duckdns.org`.
-- **No-IP**, **DynDNS**, etc.
-
-Whichever you pick, the result is a hostname like `mypi.example.com` that always points at your current public IP. The other peer dials `mypi.example.com:47830` and it just works.
-
-## Use it from RemSound
-
-In RemSound's "Add peer by IP or hostname" field, both ends type **just the hostname** — no port suffix needed:
-
-```
-your-public-host
+```bash
+sudo systemctl disable --now remsound-relay-update.timer
 ```
 
-RemSound defaults to port **47830** (the relay convention) when you don't type a `:port` suffix. Both ends must type the same address so they meet at the same relay.
+To check for updates manually:
 
-If you do want LAN peer-to-peer (no relay), type the host with an explicit port:
-
-```
-192.168.1.42:47820
+```bash
+sudo systemctl start remsound-relay-update.service
 ```
 
-The build auto-detects relay-vs-LAN from the port: anything ≠ 47820 is treated as a relay endpoint and heartbeat shares the audio sender's UDP socket so both flows traverse the same NAT pinhole. No UI toggle needed.
+To uninstall everything cleanly:
 
-## Verify it's working
-
-Once both ends have dialled the relay, on the Pi you'll see in `/var/log/remsound-relay.log`:
-
-```
-event=peer_joined addr=A.B.C.D:NNNN slots_filled=1
-event=peer_joined addr=W.X.Y.Z:NNNN slots_filled=2
-event=peer_paired a=A.B.C.D:NNNN b=W.X.Y.Z:NNNN
-event=stats forwarded=NNNNN dropped_unpaired=0 rejected_bad_header=0 ...
-```
-
-A live tail from the Pi:
-
-```
-sudo tail -f /var/log/remsound-relay.log
-```
-
-Stats lines come once a minute. `forwarded=N` is the count of packets the relay reflected between peers in that minute. RemSound at 10 ms Opus generates ~100 packets/sec per direction = ~12,000/minute total. PCM with Tight ASIO can be 10× that.
-
-## Operational quick-reference
-
-```
-# Service control
-sudo systemctl status remsound-relay
-sudo systemctl restart remsound-relay
-sudo systemctl stop remsound-relay
-sudo systemctl start remsound-relay
-
-# Logs
-sudo tail -f /var/log/remsound-relay.log
-sudo journalctl -u remsound-relay --since "30 minutes ago" --no-pager
-
-# Listening socket
-sudo ss -lunp | grep 47830
-
-# Health check (re-runnable any time)
-sudo /home/pi/remsound-relay/smoke-test.sh
-```
-
-## Update / re-install
-
-To pick up a newer copy of the bundle, `git pull` (or re-download) the RemSound repo, copy the latest `server/` folder to the Pi, and run `sudo ./install.sh` again. It overwrites the script and restarts the service. No state to migrate.
-
-## Uninstall
-
-```
+```bash
+cd /tmp/remsound-server-v2.0   # or wherever the bundle is
 sudo ./uninstall.sh
 ```
 
-Stops the service, disables it, removes the script and systemd unit. Leaves the log file alone — delete `/var/log/remsound-relay.log` yourself if you don't want it kept. Doesn't touch your router port-forward.
+## Files on disk after install
 
-## Troubleshooting
+| Path                                                | Purpose                                |
+| --------------------------------------------------- | -------------------------------------- |
+| `/usr/local/sbin/remsound-relay.py`                 | the relay                              |
+| `/usr/local/sbin/remsound-relay-update.sh`          | the auto-updater                       |
+| `/etc/systemd/system/remsound-relay.service`        | relay unit                             |
+| `/etc/systemd/system/remsound-relay-update.service` | updater unit                           |
+| `/etc/systemd/system/remsound-relay-update.timer`   | updater schedule                       |
+| `/etc/remsound-relay/version`                       | currently installed tag                |
+| `/etc/remsound-relay/backup/`                       | snapshot for the updater's rollback    |
+| `/var/log/remsound-relay.log`                       | relay event log (`event=...` per line) |
+| `/var/log/remsound-relay-update.log`                | update-check history                   |
 
-**Service won't start.** `sudo systemctl status remsound-relay` will show an error. The most likely cause is something else already bound to UDP 47830 — `sudo ss -lunp | grep 47830` will show what. Pick a different port: edit `DEFAULT_PORT` in `/usr/local/sbin/remsound-relay.py`, restart with `sudo systemctl restart remsound-relay`, and tell the other peer the new port number.
+## Networking
 
-**Relay running but the other peer can't connect.** Almost always the router port-forward. Check:
+- Listens on UDP `47830` (chosen to avoid clashes with RemSound's own
+  defaults — 47820/47821/47822 — plus NetFlow 2055 and NUT 3493).
+- Bound to `0.0.0.0`, so the kernel routes via the default interface.
+  Tailscale must NOT carry this traffic — the whole point of the relay is
+  to remove Tailscale's hops from the audio path.
+- The relay process itself never decodes audio. It validates the
+  RemSound header (magic `RMND`, version 1 or 2) and forwards or drops.
 
-- The rule is **UDP** not TCP.
-- The internal IP matches the Pi's actual LAN IP (run `hostname -I` to confirm).
-- WAN port and forward port are both 47830.
-- Some routers need a reboot after a new rule. Try one if nothing else helps.
+## Log format
 
-To prove the port is open from outside, on a non-LAN machine (a phone on mobile data works) send a test packet:
-
-```
-python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(bytes([0x52,0x4D,0x4E,0x44,1,4,1,0,1,0,0,0]), ('your-public-host', 47830))"
-```
-
-Then on the Pi:
-
-```
-sudo tail -10 /var/log/remsound-relay.log
-```
-
-You should see `event=peer_joined` with the source address.
-
-**Audio plays but is laggy / clicky.** That's not the relay's problem. The relay forwards packets blind — anything fancy belongs at the RemSound endpoints. Check the RemSound diagnostics: codec choice (PCM vs Opus, Opus 10 ms is the lowest-latency Opus), buffer smoothness, and either side's upload bandwidth. PCM with Tight ASIO is bandwidth-heavy (often 10+ Mbps); Opus 10 ms is around 200 kbps.
-
-**Asymmetric packet rate in the stats line.** Like `peers=[X(rx=90000,tx=12000), Y(rx=12000,tx=90000)]`. That just means one side is sending many more packets than the other — usually because one side is on PCM-with-Tight-ASIO and the other is on Opus. Fine in itself, but if the high-rate side's home upload is saturated it'll cause jitter. Switch that side to Opus 10 ms.
-
-## Wire format reference (for anyone reading the relay code)
-
-Header is 12 bytes, little-endian:
+Structured key=value lines. Notable events:
 
 ```
-uint32 magic    'RMND' (0x444E4D52)
-uint8  version  1
-uint8  type     1=Format 2=Audio 3=KeepAlive 4=Heartbeat
-uint16 streamId
-uint32 sequence
+event=startup version_supported=v1,v2 listen=0.0.0.0:47830 max_clients=10
+
+# v1 (pairwise)
+event=peer_joined addr=1.2.3.4:5555 slots_filled=1
+event=peer_paired a=1.2.3.4:5555 b=5.6.7.8:9999
+event=peer_dropped reason=idle addr=1.2.3.4:5555 remaining=1
+event=peer_replaced old=1.2.3.4:5555 new=9.8.7.6:4444
+
+# v2 (lobby)
+event=client_joined client_id=<uuid> addr=1.2.3.4:5555 count=2
+event=client_endpoint_update client_id=<uuid> old=1.2.3.4:5555 new=1.2.3.4:6666
+event=client_named client_id=<uuid> name=Andre
+event=client_left client_id=<uuid> addr=... reason=bye
+event=client_idle_expired client_id=<uuid> addr=...
+event=lobby_full attempted_client_id=<uuid> addr=... count=10 max=10
+
+# once a minute
+event=stats forwarded=N dropped_unpaired=N dropped_lobby_full=N
+            rejected_bad_header=N pair_changes=N lobby_changes=N
+            client_count=N v1_peers=[...] v2_clients=[...]
 ```
 
-The relay validates magic and version, reads the type for logging, and **does not interpret anything past byte 6**. Everything after the header is opaque payload.
+Never logs CLIENT_ID payload bytes beyond the UUID itself. Never logs audio
+payload.
 
-## Security note
+## Tunables
 
-The relay has no authentication and the audio between peers is plaintext UDP. The trade-off is explicit: this is a music-collaboration tool, not a confidential channel. If you really need privacy, the right answer is to run Tailscale on both ends — that gives you WireGuard encryption end-to-end, at the cost of the latency overhead a relay aims to avoid.
+| Setting                  | How to override                                                          |
+| ------------------------ | ------------------------------------------------------------------------ |
+| Listen port (47830)      | `ExecStart=` `--port=N` in the service unit                              |
+| Listen address           | `ExecStart=` `--host=X` in the service unit                              |
+| Lobby capacity (10)      | `--max-clients=N` or env var `REMSOUND_MAX_CLIENTS=N` in the service unit |
+| Idle timeout (60 s)      | edit `IDLE_TIMEOUT_SECONDS` in `remsound-relay.py`                       |
+| Stats interval (60 s)    | edit `STATS_INTERVAL_SECONDS` in `remsound-relay.py`                     |
+| Update check (hourly)    | edit `remsound-relay-update.timer`                                       |
+| Update repo (Ednunp/RemSound) | env var `REMSOUND_UPDATE_REPO` in the updater service unit          |
 
-## Questions and issues
+## Why an auto-updater
 
-Open an issue at <https://github.com/Ednunp/RemSound/issues>.
+The relay is small and (after this release) doesn't change often, but when
+it does we'd rather not chase every operator to re-SCP. The updater polls
+GitHub Releases for tags starting with `server-`, finds the highest version,
+downloads it, swaps the files, restarts the service, and falls back to the
+prior version if startup fails. Logs everything to
+`/var/log/remsound-relay-update.log`.
+
+It only triggers on `server-*` tags, so RemSound client releases (`v1.x`,
+`v2.x` without the `server-` prefix) don't affect the relay.
+
+## Disabling auto-updates
+
+Either disable the timer:
+
+```bash
+sudo systemctl disable --now remsound-relay-update.timer
+```
+
+…or run `uninstall.sh` (removes the updater scaffolding entirely along
+with the relay).

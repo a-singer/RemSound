@@ -136,11 +136,14 @@ public sealed class AudioReceiver : IDisposable
     /// <summary>
     /// Optional callback invoked when the engine produces fully-processed mixed received
     /// audio (volume / mute / limiter all applied). Span is 48 kHz interleaved stereo
-    /// float, lives on the render thread — copy or consume quickly. Used by the recorder
-    /// to capture "what we heard". Setter mirrors directly onto <see cref="PlayoutEngine"/>;
-    /// null clears the tap.
+    /// float, lives on the render thread — copy or consume quickly. The
+    /// <see cref="RenderRoute"/> tag identifies which lane fired the callback (Mixed in
+    /// classic modes; WasapiLane or AsioLane in BothIndependent where each lane Reads
+    /// independently). The recorder uses the tag to keep per-lane streams separate and
+    /// mix them at drain time rather than appending sequentially. Setter mirrors directly
+    /// onto <see cref="PlayoutEngine"/>; null clears the tap.
     /// </summary>
-    public Action<ReadOnlyMemory<float>>? OnReceivedSamples
+    public Action<ReadOnlyMemory<float>, RenderRoute>? OnReceivedSamples
     {
         get => playoutEngine.OnReceivedSamples;
         set => playoutEngine.OnReceivedSamples = value;

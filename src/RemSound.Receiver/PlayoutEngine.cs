@@ -68,6 +68,18 @@ internal sealed class PlayoutEngine : IWaveProvider
     private readonly LaneLatency mixedLatency = new();
     private readonly LaneLatency wasapiLaneLatency = new();
     private readonly LaneLatency asioLaneLatency = new();
+    // Per-lane active flag — true when an output device is ticked for that lane in
+    // BothIndependent mode (i.e. the lane's render backend is actually pulling from the
+    // corresponding LaneOutput). Set by <see cref="SetLaneActive"/> from
+    // CompositeRenderBackend whenever the user changes the output-device tick state.
+    // Used by <see cref="ReadForRoute"/> to fold "orphan" sessions whose announced route
+    // has no active output through whichever lane IS active — so a peer sending on its
+    // WASAPI lane is still audible on a user who only has an ASIO output device ticked.
+    // Both default to true so a fresh PlayoutEngine that hasn't yet been told (e.g. in
+    // unit tests, or before the first SetOutputDevices call) behaves like the old
+    // strict-filter path.
+    private volatile bool wasapiLaneActive = true;
+    private volatile bool asioLaneActive = true;
     private volatile bool muted;
     private volatile float volume = 1f;
     // 1 = stupid aggressive, 10 = perfectly smooth. Read on the audio thread, written from UI.
@@ -81,6 +93,27 @@ internal sealed class PlayoutEngine : IWaveProvider
     private volatile int concealmentArtifactRaw = (int)ConcealmentArtifact.NoiseBurst;
 
     public void SetSmoothness(int value) => smoothness = Math.Clamp(value, 1, 10);
+
+    /// <summary>Signal that a render-side lane's output device set just changed. <c>active</c>
+    /// is true if the lane has at least one output device ticked (its render backend is
+    /// actively pulling from the corresponding LaneOutput), false if no device is ticked.
+    /// Called from CompositeRenderBackend.SetOutputDevices.
+    ///
+    /// Sessions tagged with an inactive lane fall through to whichever lane IS active during
+    /// <see cref="ReadForRoute"/> — so a peer sending WASAPI-lane audio is still audible
+    /// when the receiver only has an ASIO output device ticked, and vice versa. If both
+    /// lanes are inactive (no output device ticked at all) nothing's calling Read in the
+    /// first place; the orphan-fall-through logic is benign in that case.</summary>
+    public void SetLaneActive(RenderRoute lane, bool active)
+    {
+        switch (lane)
+        {
+            case RenderRoute.WasapiLane: wasapiLaneActive = active; break;
+            case RenderRoute.AsioLane: asioLaneActive = active; break;
+            // RenderRoute.Mixed is handled by ReadAllSessions which doesn't filter by lane;
+            // no flag needed.
+        }
+    }
 
     /// <summary>Sets the concealment artifact for every active session and for any future
     /// session created after this call. Live-updates: the next time a session sees an
@@ -169,13 +202,19 @@ internal sealed class PlayoutEngine : IWaveProvider
     /// streams paced at the per-lane render rates) — the recorder consolidates them on its
     /// background thread. In classic modes only the main Read path fires.
     /// </summary>
-    public Action<ReadOnlyMemory<float>>? OnReceivedSamples { get; set; }
+    public Action<ReadOnlyMemory<float>, RenderRoute>? OnReceivedSamples { get; set; }
 
-    private void DispatchReceivedSamples(ReadOnlyMemory<float> samples)
+    /// <summary>Forward a fully-processed mix to the recording tap, tagged with the lane it
+    /// came from so BothIndependent mode (where this method is called from BOTH the WASAPI
+    /// lane Read AND the ASIO lane Read independently) doesn't write doubled audio to the
+    /// recorder. The recorder uses the tag to keep per-lane streams separate and mix them
+    /// at drain time. The classic-mode all-sessions Read passes <see cref="RenderRoute.Mixed"/>;
+    /// per-lane Reads pass their own route.</summary>
+    private void DispatchReceivedSamples(ReadOnlyMemory<float> samples, RenderRoute lane)
     {
         var cb = OnReceivedSamples;
         if (cb is null) return;
-        try { cb(samples); } catch { /* recorder failure isolated from audio path */ }
+        try { cb(samples, lane); } catch { /* recorder failure isolated from audio path */ }
     }
 
     /// <summary>
@@ -539,11 +578,34 @@ internal sealed class PlayoutEngine : IWaveProvider
         var routeTargetMs = routeLatency.TargetMs;
         var routeMaxMs = routeLatency.MaxMs;
 
+        // Session inclusion rule:
+        //   * Match the route directly (session.Route == route) — the normal case.
+        //   * Or this session's announced route has NO active output device — fall through
+        //     onto whichever lane IS being read. This is how a WASAPI-tagged peer becomes
+        //     audible when the receiver only has an ASIO output ticked (and vice versa).
+        // Without the second clause, ticking only one of the two BothIndependent lanes' output
+        // devices stranded any session announced on the other lane in its session ring — heard
+        // as silence by the user, eventually overflowing. 2026-05-15 fix.
+        //
+        // The "other lane is inactive" check is computed once per Read since the active-flag
+        // state can only change via SetLaneActive (UI-thread driven).
+        var otherLaneActive = route switch
+        {
+            RenderRoute.WasapiLane => asioLaneActive,
+            RenderRoute.AsioLane => wasapiLaneActive,
+            _ => true,  // Mixed never reaches this path (uses ReadAllSessions instead)
+        };
         var aggregateBufferedBytes = 0;
         var anyContributed = false;
         foreach (var session in snap)
         {
-            if (session.Route != route) continue;
+            var matchesOwnLane = session.Route == route;
+            // Orphan = session tagged for the OTHER non-Mixed lane, and that lane has no
+            // active output. (Mixed-tagged sessions never appear in BothIndependent.)
+            var isOrphanFromOtherLane = !matchesOwnLane
+                && session.Route != RenderRoute.Mixed
+                && !otherLaneActive;
+            if (!matchesOwnLane && !isOrphanFromOtherLane) continue;
             aggregateBufferedBytes += session.BufferedBytes;
             var produced = session.ReadFloats(sessionBuf.AsSpan(0, outFloats), outFrames, routeTargetMs, routeMaxMs, smoothness);
             if (produced <= 0) continue;
@@ -586,10 +648,11 @@ internal sealed class PlayoutEngine : IWaveProvider
 
         // Recording tap (per-lane). Mix is fully processed at this point — volume, mute and
         // limiter have all been applied — so the recorder sees exactly what the user is
-        // about to hear from this lane. The tap fires regardless of whether the lane has an
-        // attached output device; that way a recording set to "received only" still captures
-        // audio in setups where the user has no WASAPI outputs ticked.
-        DispatchReceivedSamples(mixBuf.AsMemory(0, outFloats));
+        // about to hear from this lane. Tagged with `route` so the recorder can keep WASAPI-
+        // lane and ASIO-lane streams separate (each lane fires this method independently in
+        // BothIndependent; without the tag both ended up in one recorder ring, doubling the
+        // file's effective sample rate).
+        DispatchReceivedSamples(mixBuf.AsMemory(0, outFloats), route);
 
         Buffer.BlockCopy(mixBuf, 0, buffer, offset, outFloats * sizeof(float));
         return count;
@@ -662,9 +725,10 @@ internal sealed class PlayoutEngine : IWaveProvider
 
         // Recording tap (all-sessions path, classic modes / WasapiOnly). Same point in the
         // pipeline as the lane-routed tap above — fully processed mix, just before the
-        // pack-to-bytes step. The recorder gets a clean copy of what the user is about
-        // to hear.
-        DispatchReceivedSamples(mixBuf.AsMemory(0, outFloats));
+        // pack-to-bytes step. Tagged with RenderRoute.Mixed; the recorder maps Mixed to its
+        // wasapi-slot ring (canonical single-lane slot in classic modes), so this fires
+        // exactly once per real-time second.
+        DispatchReceivedSamples(mixBuf.AsMemory(0, outFloats), RenderRoute.Mixed);
 
         Buffer.BlockCopy(mixBuf, 0, buffer, offset, outFloats * sizeof(float));
         return count;

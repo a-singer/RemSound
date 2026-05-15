@@ -158,8 +158,12 @@ internal sealed class SenderLane
         // Recording tap — the recorder gets the float audio about to be encoded. The lane
         // doesn't know whether the recorder is running; the dispatcher early-outs when no
         // callback is wired. Captured here (before encoding) so the recording is bit-clean
-        // float, independent of which codec the wire is using.
-        owner.DispatchSentSamples(stereoFloats);
+        // float, independent of which codec the wire is using. The lane tag is forwarded so
+        // BothIndependent mode (where both WASAPI and ASIO SenderLanes fire on every capture
+        // callback) can be correctly handled by the recorder — each lane writes into its own
+        // ring, and the recorder mixes them rather than appending them sequentially (which
+        // would double the file's effective sample rate). 2026-05-15 fix.
+        owner.DispatchSentSamples(stereoFloats, route);
 
         // Discontinuity probe — what does the audio look like just before we encode it?
         // Compared to the receiver's per-stage probes, this tells us whether artefacts are

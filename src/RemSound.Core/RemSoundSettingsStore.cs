@@ -64,6 +64,16 @@ public sealed class RemSoundSettingsStore
         Save(s);
     }
 
+    public HotkeyInfo LoadToggleRecordingHotkey() =>
+        Try(() => Load()?.ToggleRecordingHotkey?.ToHotkeyInfo()) ?? HotkeyInfo.Unset;
+
+    public void SaveToggleRecordingHotkey(HotkeyInfo hotkey)
+    {
+        var s = Load() ?? new Settings();
+        s.ToggleRecordingHotkey = HotkeySetting.From(hotkey);
+        Save(s);
+    }
+
     public HotkeyInfo LoadRemoteVolumeUpHotkey() =>
         Try(() => Load()?.RemoteVolumeUpHotkey?.ToHotkeyInfo()) ?? HotkeyInfo.Unset;
 
@@ -466,6 +476,7 @@ public sealed class RemSoundSettingsStore
             TrayHotkey = profile.TrayHotkey is null ? null : HotkeySettingFromRecord(profile.TrayHotkey),
             VolumeUpHotkey = profile.VolumeUpHotkey is null ? null : HotkeySettingFromRecord(profile.VolumeUpHotkey),
             VolumeDownHotkey = profile.VolumeDownHotkey is null ? null : HotkeySettingFromRecord(profile.VolumeDownHotkey),
+            ToggleRecordingHotkey = profile.ToggleRecordingHotkey is null ? null : HotkeySettingFromRecord(profile.ToggleRecordingHotkey),
             RemoteVolumeUpHotkey = profile.RemoteVolumeUpHotkey is null ? null : HotkeySettingFromRecord(profile.RemoteVolumeUpHotkey),
             RemoteVolumeDownHotkey = profile.RemoteVolumeDownHotkey is null ? null : HotkeySettingFromRecord(profile.RemoteVolumeDownHotkey),
             RemoteMuteToggleHotkey = profile.RemoteMuteToggleHotkey is null ? null : HotkeySettingFromRecord(profile.RemoteMuteToggleHotkey),
@@ -512,6 +523,7 @@ public sealed class RemSoundSettingsStore
         profile.TrayHotkey = s.TrayHotkey is null ? null : HotkeyRecordFromSetting(s.TrayHotkey);
         profile.VolumeUpHotkey = s.VolumeUpHotkey is null ? null : HotkeyRecordFromSetting(s.VolumeUpHotkey);
         profile.VolumeDownHotkey = s.VolumeDownHotkey is null ? null : HotkeyRecordFromSetting(s.VolumeDownHotkey);
+        profile.ToggleRecordingHotkey = s.ToggleRecordingHotkey is null ? null : HotkeyRecordFromSetting(s.ToggleRecordingHotkey);
         profile.RemoteVolumeUpHotkey = s.RemoteVolumeUpHotkey is null ? null : HotkeyRecordFromSetting(s.RemoteVolumeUpHotkey);
         profile.RemoteVolumeDownHotkey = s.RemoteVolumeDownHotkey is null ? null : HotkeyRecordFromSetting(s.RemoteVolumeDownHotkey);
         profile.RemoteMuteToggleHotkey = s.RemoteMuteToggleHotkey is null ? null : HotkeyRecordFromSetting(s.RemoteMuteToggleHotkey);
@@ -570,6 +582,7 @@ public sealed class RemSoundSettingsStore
         public HotkeySetting? TrayHotkey { get; set; }
         public HotkeySetting? VolumeUpHotkey { get; set; }
         public HotkeySetting? VolumeDownHotkey { get; set; }
+        public HotkeySetting? ToggleRecordingHotkey { get; set; }
         public HotkeySetting? RemoteVolumeUpHotkey { get; set; }
         public HotkeySetting? RemoteVolumeDownHotkey { get; set; }
         public HotkeySetting? RemoteMuteToggleHotkey { get; set; }

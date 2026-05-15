@@ -179,10 +179,12 @@ public sealed class AudioSender : IDisposable
     /// Optional callback invoked every time a SenderLane is about to encode a buffer of
     /// captured float audio. The span is 48 kHz interleaved stereo float, lives on the
     /// audio thread, and must be processed quickly or copied — the buffer is reused on
-    /// the very next callback. The recorder uses this tap to capture "what we sent" with
-    /// zero impact on the wire path (no allocation, no extra encoder pass). Null = no tap.
+    /// the very next callback. The <see cref="RenderRoute"/> tag identifies which
+    /// SenderLane invoked the callback (Mixed in classic modes; WasapiLane or AsioLane in
+    /// BothIndependent) so the recorder can keep per-lane streams separate and mix them
+    /// at drain time rather than appending sequentially. Null = no tap.
     /// </summary>
-    public Action<ReadOnlyMemory<float>>? OnSentSamples { get; set; }
+    public Action<ReadOnlyMemory<float>, RenderRoute>? OnSentSamples { get; set; }
 
     /// <summary>
     /// Internal helper for <see cref="SenderLane"/> to invoke <see cref="OnSentSamples"/>
@@ -190,11 +192,11 @@ public sealed class AudioSender : IDisposable
     /// any exception from the user callback — a misbehaving recorder must not crash the
     /// audio thread.
     /// </summary>
-    internal void DispatchSentSamples(ReadOnlyMemory<float> samples)
+    internal void DispatchSentSamples(ReadOnlyMemory<float> samples, RenderRoute lane)
     {
         var cb = OnSentSamples;
         if (cb is null) return;
-        try { cb(samples); } catch { /* recorder failure isolated from audio path */ }
+        try { cb(samples, lane); } catch { /* recorder failure isolated from audio path */ }
     }
 
     public AudioSender()

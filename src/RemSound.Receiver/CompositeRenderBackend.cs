@@ -1,4 +1,5 @@
 using NAudio.Wave;
+using RemSound.Core;
 
 namespace RemSound.Receiver;
 
@@ -170,6 +171,15 @@ internal sealed class CompositeRenderBackend : IRenderBackend
         // activity / inactivity doesn't affect the other lane's read path. The "skip the
         // pull when no outputs are ticked" behaviour now lives inside MultiOutputPlayout's
         // producer loop, which short-circuits source.Read when outputs.Count == 0.
+
+        // Tell the PlayoutEngine which lanes have an active output device. ReadForRoute
+        // uses this to route "orphan" sessions (those whose announced lane has no active
+        // output) through whichever lane IS being read — so a peer that announced WASAPI
+        // is still audible on a receiver who has only ASIO outputs ticked. Without this
+        // signal those sessions stay stuck in their session ring and the user just hears
+        // silence from that peer. 2026-05-15.
+        source.SetLaneActive(RenderRoute.WasapiLane, wasapiIds.Count > 0);
+        source.SetLaneActive(RenderRoute.AsioLane, asioIds.Count > 0);
     }
 
     public void Dispose()

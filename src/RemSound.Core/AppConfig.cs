@@ -89,6 +89,33 @@ public sealed class AppConfig
     /// only once. Null on a fresh install.</summary>
     public DateTime? LastUpdateCheckUtc { get; set; }
 
+    /// <summary>Most-recently-opened profile paths, newest first, capped at
+    /// <see cref="MaxRecentProfiles"/>. Populated by <see cref="NoteRecentProfile"/> every
+    /// time a profile is loaded, surfaced in the File → Recent profiles submenu. Stored as
+    /// full paths so profiles saved outside the canonical profiles folder are also
+    /// reachable (Save-As to an arbitrary path stays in the recents list).</summary>
+    public List<string> RecentProfiles { get; set; } = new();
+
+    /// <summary>Cap on how many entries we keep in <see cref="RecentProfiles"/>. Five is the
+    /// most that fits comfortably as 1–5 single-digit mnemonics inside a submenu without
+    /// the user needing to read the names to remember which row they want.</summary>
+    public const int MaxRecentProfiles = 5;
+
+    /// <summary>Push a profile path to the front of the recents list. Removes any existing
+    /// entry that matches (case-insensitive) so a recently re-opened profile rises to the
+    /// top instead of being duplicated. Caps the list at <see cref="MaxRecentProfiles"/>.
+    /// Caller must <see cref="Save"/> after mutating.</summary>
+    public void NoteRecentProfile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        RecentProfiles.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+        RecentProfiles.Insert(0, path);
+        while (RecentProfiles.Count > MaxRecentProfiles)
+        {
+            RecentProfiles.RemoveAt(RecentProfiles.Count - 1);
+        }
+    }
+
     private static string ConfigPath => Path.Combine(AppContext.BaseDirectory, "remsound.config.json");
 
     /// <summary>Reads the app config from disk. Always returns a non-null instance — a missing

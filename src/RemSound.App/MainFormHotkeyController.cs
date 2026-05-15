@@ -11,6 +11,11 @@ internal sealed class MainFormHotkeyController : IDisposable
     private readonly Action toggleTray;
     private readonly Action volumeUp;
     private readonly Action volumeDown;
+    // Toggle recording — fires the same ToggleRecording path the Record menu item and the
+    // in-app Ctrl+R shortcut hit. The in-app Ctrl+R only fires when MainForm has focus; this
+    // hotkey works system-wide via RegisterHotKey. Default binding is unset so we don't
+    // collide with anything on a fresh install — users who want it pick their own combo.
+    private readonly Action toggleRecording;
     // Remote control hotkeys: trigger this machine to send a Control packet to its connected
     // peers. The local volume slider on this machine isn't touched — receivers that have opted
     // in handle the change. See Profile.AcceptRemoteVolumeCommands and the RemPacketType.Control
@@ -31,6 +36,7 @@ internal sealed class MainFormHotkeyController : IDisposable
     private HotkeyInfo trayHotkey;
     private HotkeyInfo volumeUpHotkey;
     private HotkeyInfo volumeDownHotkey;
+    private HotkeyInfo toggleRecordingHotkey;
     private HotkeyInfo remoteVolumeUpHotkey;
     private HotkeyInfo remoteVolumeDownHotkey;
     private HotkeyInfo remoteMuteToggleHotkey;
@@ -42,6 +48,7 @@ internal sealed class MainFormHotkeyController : IDisposable
     private GlobalHotkey? trayGlobalHotkey;
     private GlobalHotkey? volumeUpGlobalHotkey;
     private GlobalHotkey? volumeDownGlobalHotkey;
+    private GlobalHotkey? toggleRecordingGlobalHotkey;
     private GlobalHotkey? remoteVolumeUpGlobalHotkey;
     private GlobalHotkey? remoteVolumeDownGlobalHotkey;
     private GlobalHotkey? remoteMuteToggleGlobalHotkey;
@@ -70,6 +77,7 @@ internal sealed class MainFormHotkeyController : IDisposable
         Action toggleTray,
         Action volumeUp,
         Action volumeDown,
+        Action toggleRecording,
         Action sendRemoteVolumeUp,
         Action sendRemoteVolumeDown,
         Action sendRemoteMuteToggle,
@@ -83,6 +91,7 @@ internal sealed class MainFormHotkeyController : IDisposable
         this.toggleTray = toggleTray;
         this.volumeUp = volumeUp;
         this.volumeDown = volumeDown;
+        this.toggleRecording = toggleRecording;
         this.sendRemoteVolumeUp = sendRemoteVolumeUp;
         this.sendRemoteVolumeDown = sendRemoteVolumeDown;
         this.sendRemoteMuteToggle = sendRemoteMuteToggle;
@@ -94,6 +103,7 @@ internal sealed class MainFormHotkeyController : IDisposable
         trayHotkey = settingsStore.LoadTrayHotkey();
         volumeUpHotkey = settingsStore.LoadVolumeUpHotkey();
         volumeDownHotkey = settingsStore.LoadVolumeDownHotkey();
+        toggleRecordingHotkey = settingsStore.LoadToggleRecordingHotkey();
         remoteVolumeUpHotkey = settingsStore.LoadRemoteVolumeUpHotkey();
         remoteVolumeDownHotkey = settingsStore.LoadRemoteVolumeDownHotkey();
         remoteMuteToggleHotkey = settingsStore.LoadRemoteMuteToggleHotkey();
@@ -110,6 +120,7 @@ internal sealed class MainFormHotkeyController : IDisposable
         trayGlobalHotkey = new GlobalHotkey(ownerForm);
         volumeUpGlobalHotkey = new GlobalHotkey(ownerForm);
         volumeDownGlobalHotkey = new GlobalHotkey(ownerForm);
+        toggleRecordingGlobalHotkey = new GlobalHotkey(ownerForm);
         remoteVolumeUpGlobalHotkey = new GlobalHotkey(ownerForm);
         remoteVolumeDownGlobalHotkey = new GlobalHotkey(ownerForm);
         remoteMuteToggleGlobalHotkey = new GlobalHotkey(ownerForm);
@@ -121,6 +132,7 @@ internal sealed class MainFormHotkeyController : IDisposable
         trayGlobalHotkey.Pressed += () => InvokeOnOwner(toggleTray);
         volumeUpGlobalHotkey.Pressed += () => InvokeOnOwner(volumeUp);
         volumeDownGlobalHotkey.Pressed += () => InvokeOnOwner(volumeDown);
+        toggleRecordingGlobalHotkey.Pressed += () => InvokeOnOwner(toggleRecording);
         remoteVolumeUpGlobalHotkey.Pressed += () => InvokeOnOwner(sendRemoteVolumeUp);
         remoteVolumeDownGlobalHotkey.Pressed += () => InvokeOnOwner(sendRemoteVolumeDown);
         remoteMuteToggleGlobalHotkey.Pressed += () => InvokeOnOwner(sendRemoteMuteToggle);
@@ -132,6 +144,7 @@ internal sealed class MainFormHotkeyController : IDisposable
         RegisterTrayHotkey();
         RegisterVolumeUpHotkey();
         RegisterVolumeDownHotkey();
+        RegisterToggleRecordingHotkey();
         RegisterRemoteVolumeUpHotkey();
         RegisterRemoteVolumeDownHotkey();
         RegisterRemoteMuteToggleHotkey();
@@ -229,11 +242,17 @@ internal sealed class MainFormHotkeyController : IDisposable
             var prev = list.SelectedIndex;
             list.BeginUpdate();
             list.Items.Clear();
+            // Order matches the case-block dispatchers in ChangeSelected and UnsetSelected
+            // below. Local-action hotkeys first (rows 0..5: send / receive / tray / volume×2 /
+            // recording), then the remote-app trio (rows 6..8), then the Windows-system trio
+            // (rows 9..11). Toggle recording joined the local group at index 5 in v1.5
+            // (2026-05-15) — natural fit alongside the other "this machine" toggles.
             list.Items.Add($"Toggle sending audio: {sendMuteHotkey}");
             list.Items.Add($"Toggle receiving audio: {receiveMuteHotkey}");
             list.Items.Add($"Show or hide window: {trayHotkey}");
             list.Items.Add($"Volume up for received sound on this machine: {volumeUpHotkey}");
             list.Items.Add($"Volume down for received sound on this machine: {volumeDownHotkey}");
+            list.Items.Add($"Start / Stop recording: {toggleRecordingHotkey}");
             list.Items.Add($"Send remote volume up to peers: {remoteVolumeUpHotkey}");
             list.Items.Add($"Send remote volume down to peers: {remoteVolumeDownHotkey}");
             list.Items.Add($"Send remote receive mute toggle to peers: {remoteMuteToggleHotkey}");
@@ -269,12 +288,13 @@ internal sealed class MainFormHotkeyController : IDisposable
                 case 2: ChangeTrayHotkey(dialog); break;
                 case 3: ChangeVolumeUpHotkey(dialog); break;
                 case 4: ChangeVolumeDownHotkey(dialog); break;
-                case 5: ChangeRemoteVolumeUpHotkey(dialog); break;
-                case 6: ChangeRemoteVolumeDownHotkey(dialog); break;
-                case 7: ChangeRemoteMuteToggleHotkey(dialog); break;
-                case 8: ChangeSystemVolumeUpHotkey(dialog); break;
-                case 9: ChangeSystemVolumeDownHotkey(dialog); break;
-                case 10: ChangeSystemMuteToggleHotkey(dialog); break;
+                case 5: ChangeToggleRecordingHotkey(dialog); break;
+                case 6: ChangeRemoteVolumeUpHotkey(dialog); break;
+                case 7: ChangeRemoteVolumeDownHotkey(dialog); break;
+                case 8: ChangeRemoteMuteToggleHotkey(dialog); break;
+                case 9: ChangeSystemVolumeUpHotkey(dialog); break;
+                case 10: ChangeSystemVolumeDownHotkey(dialog); break;
+                case 11: ChangeSystemMuteToggleHotkey(dialog); break;
                 default: return;
             }
             RefreshList();
@@ -299,12 +319,13 @@ internal sealed class MainFormHotkeyController : IDisposable
                 case 2: ApplyUnset("tray", h => trayHotkey = h, RegisterTrayHotkey, settingsStore.SaveTrayHotkey); break;
                 case 3: ApplyUnset("volume-up", h => volumeUpHotkey = h, RegisterVolumeUpHotkey, settingsStore.SaveVolumeUpHotkey); break;
                 case 4: ApplyUnset("volume-down", h => volumeDownHotkey = h, RegisterVolumeDownHotkey, settingsStore.SaveVolumeDownHotkey); break;
-                case 5: ApplyUnset("send-remote-volume-up", h => remoteVolumeUpHotkey = h, RegisterRemoteVolumeUpHotkey, settingsStore.SaveRemoteVolumeUpHotkey); break;
-                case 6: ApplyUnset("send-remote-volume-down", h => remoteVolumeDownHotkey = h, RegisterRemoteVolumeDownHotkey, settingsStore.SaveRemoteVolumeDownHotkey); break;
-                case 7: ApplyUnset("send-remote-mute-toggle", h => remoteMuteToggleHotkey = h, RegisterRemoteMuteToggleHotkey, settingsStore.SaveRemoteMuteToggleHotkey); break;
-                case 8: ApplyUnset("send-system-volume-up", h => systemVolumeUpHotkey = h, RegisterSystemVolumeUpHotkey, settingsStore.SaveSystemVolumeUpHotkey); break;
-                case 9: ApplyUnset("send-system-volume-down", h => systemVolumeDownHotkey = h, RegisterSystemVolumeDownHotkey, settingsStore.SaveSystemVolumeDownHotkey); break;
-                case 10: ApplyUnset("send-system-mute-toggle", h => systemMuteToggleHotkey = h, RegisterSystemMuteToggleHotkey, settingsStore.SaveSystemMuteToggleHotkey); break;
+                case 5: ApplyUnset("toggle-recording", h => toggleRecordingHotkey = h, RegisterToggleRecordingHotkey, settingsStore.SaveToggleRecordingHotkey); break;
+                case 6: ApplyUnset("send-remote-volume-up", h => remoteVolumeUpHotkey = h, RegisterRemoteVolumeUpHotkey, settingsStore.SaveRemoteVolumeUpHotkey); break;
+                case 7: ApplyUnset("send-remote-volume-down", h => remoteVolumeDownHotkey = h, RegisterRemoteVolumeDownHotkey, settingsStore.SaveRemoteVolumeDownHotkey); break;
+                case 8: ApplyUnset("send-remote-mute-toggle", h => remoteMuteToggleHotkey = h, RegisterRemoteMuteToggleHotkey, settingsStore.SaveRemoteMuteToggleHotkey); break;
+                case 9: ApplyUnset("send-system-volume-up", h => systemVolumeUpHotkey = h, RegisterSystemVolumeUpHotkey, settingsStore.SaveSystemVolumeUpHotkey); break;
+                case 10: ApplyUnset("send-system-volume-down", h => systemVolumeDownHotkey = h, RegisterSystemVolumeDownHotkey, settingsStore.SaveSystemVolumeDownHotkey); break;
+                case 11: ApplyUnset("send-system-mute-toggle", h => systemMuteToggleHotkey = h, RegisterSystemMuteToggleHotkey, settingsStore.SaveSystemMuteToggleHotkey); break;
                 default: return;
             }
             RefreshList();
@@ -377,6 +398,7 @@ internal sealed class MainFormHotkeyController : IDisposable
         trayGlobalHotkey?.Dispose();
         volumeUpGlobalHotkey?.Dispose();
         volumeDownGlobalHotkey?.Dispose();
+        toggleRecordingGlobalHotkey?.Dispose();
         remoteVolumeUpGlobalHotkey?.Dispose();
         remoteVolumeDownGlobalHotkey?.Dispose();
         remoteMuteToggleGlobalHotkey?.Dispose();
@@ -390,6 +412,7 @@ internal sealed class MainFormHotkeyController : IDisposable
     public HotkeyInfo TrayHotkey => trayHotkey;
     public HotkeyInfo VolumeUpHotkey => volumeUpHotkey;
     public HotkeyInfo VolumeDownHotkey => volumeDownHotkey;
+    public HotkeyInfo ToggleRecordingHotkey => toggleRecordingHotkey;
     public HotkeyInfo RemoteVolumeUpHotkey => remoteVolumeUpHotkey;
     public HotkeyInfo RemoteVolumeDownHotkey => remoteVolumeDownHotkey;
     public HotkeyInfo RemoteMuteToggleHotkey => remoteMuteToggleHotkey;
@@ -478,6 +501,13 @@ internal sealed class MainFormHotkeyController : IDisposable
         settingsStore.SaveVolumeDownHotkey(h);
     });
 
+    private void ChangeToggleRecordingHotkey(IWin32Window dialogOwner) => ChangeHotkey(dialogOwner, "toggle-recording", h =>
+    {
+        toggleRecordingHotkey = h;
+        RegisterToggleRecordingHotkey();
+        settingsStore.SaveToggleRecordingHotkey(h);
+    });
+
     private void ChangeRemoteVolumeUpHotkey(IWin32Window dialogOwner) => ChangeHotkey(dialogOwner, "send-remote-volume-up", h =>
     {
         remoteVolumeUpHotkey = h;
@@ -535,6 +565,10 @@ internal sealed class MainFormHotkeyController : IDisposable
     private void RegisterTrayHotkey() => RegisterIfSet(trayGlobalHotkey, trayHotkey, "tray");
     private void RegisterVolumeUpHotkey() => RegisterIfSet(volumeUpGlobalHotkey, volumeUpHotkey, "volume up", allowRepeat: true);
     private void RegisterVolumeDownHotkey() => RegisterIfSet(volumeDownGlobalHotkey, volumeDownHotkey, "volume down", allowRepeat: true);
+    // Toggle recording is a one-shot toggle (press → flip Start/Stop). MOD_NOREPEAT
+    // (allowRepeat: false, the default) prevents a held key from flipping the recording
+    // state on/off/on/off at keyboard auto-repeat rate.
+    private void RegisterToggleRecordingHotkey() => RegisterIfSet(toggleRecordingGlobalHotkey, toggleRecordingHotkey, "toggle recording");
     private void RegisterRemoteVolumeUpHotkey() => RegisterIfSet(remoteVolumeUpGlobalHotkey, remoteVolumeUpHotkey, "send remote volume up", allowRepeat: true);
     private void RegisterRemoteVolumeDownHotkey() => RegisterIfSet(remoteVolumeDownGlobalHotkey, remoteVolumeDownHotkey, "send remote volume down", allowRepeat: true);
     private void RegisterRemoteMuteToggleHotkey() => RegisterIfSet(remoteMuteToggleGlobalHotkey, remoteMuteToggleHotkey, "send remote mute toggle");

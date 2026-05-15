@@ -12,14 +12,16 @@ namespace RemSound.App;
 ///     "Mute connect/disconnect sounds" toggle (2026-05-15) when recording start/stop cues
 ///     were added — a CheckedListBox scales to future cues without dialog re-layout.
 ///   * Accept remote volume commands from peers — opt-in for the remote-control feature.
-///   * Startup behaviour — opens the existing <see cref="StartupBehaviourDialog"/> sub-dialog.
 ///   * Update settings — frequency, manual check, silent-install toggle.
 ///   * Enable logs + Write logs now.
+///
+/// Startup behaviour was previously a button here that opened <see cref="StartupBehaviourDialog"/>;
+/// it's now a top-level Options menu item in its own right (2026-05-15 menu reorg).
 ///
 /// All settings save through <see cref="RemSoundSettingsStore"/> or <see cref="AppConfig"/>
 /// on every change (no OK-to-commit). Esc or Close dismisses.
 ///
-/// Reachable via the File → Preferences menu item or Ctrl+P from the main window.
+/// Reachable via the Options → Preferences menu item or Ctrl+P from the main window.
 /// </summary>
 internal sealed class PreferencesDialog : Form
 {
@@ -64,13 +66,6 @@ internal sealed class PreferencesDialog : Form
     {
         Text = "Accept remote volume commands from peers (Alt+&A)",
         AccessibleName = "Accept remote volume commands from peers",
-        AutoSize = true,
-    };
-
-    private readonly Button startupBehaviourButton = new()
-    {
-        Text = "Startup behaviour... (Alt+&S)",
-        AccessibleName = "Startup behaviour",
         AutoSize = true,
     };
 
@@ -214,14 +209,6 @@ internal sealed class PreferencesDialog : Form
             ChangedAnyProfileSetting = true;
         };
 
-        startupBehaviourButton.Click += (_, _) =>
-        {
-            using var dialog = new StartupBehaviourDialog(profileStore);
-            dialog.ShowDialog(this);
-            // Startup behaviour persists through AppConfig + registry directly, so we
-            // don't need to flag profile-dirty for that.
-        };
-
         // Update settings — wired against AppConfig directly since they're machine-local.
         // The frequency combo's index maps 1:1 to the UpdateCheckFrequency enum so reordering
         // either side stays in lockstep.
@@ -264,25 +251,26 @@ internal sealed class PreferencesDialog : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(12),
             ColumnCount = 1,
-            RowCount = 10,
+            RowCount = 9,
         };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < 9; i++) panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (var i = 0; i < 8; i++) panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        // Tab order top-to-bottom: browse, cue-sound list, accept remote, startup, update
-        // frequency, check-now, silent install, enable logs, write logs now, close. Updates
-        // sit above the log row so a user setting up the app meets them first.
+        // Tab order top-to-bottom: browse, cue-sound list, accept remote, update frequency,
+        // check-now, silent install, enable logs, write logs now, close. Updates sit above
+        // the log row so a user setting up the app meets them first. The Startup behaviour
+        // button used to live here at tab index 3; it moved to the Options menu in the
+        // 2026-05-15 reorg.
         browseProfilesFolderButton.TabIndex = 0;
         cueList.TabIndex = 1;
         acceptRemoteVolumeBox.TabIndex = 2;
-        startupBehaviourButton.TabIndex = 3;
-        updateFrequencyBox.TabIndex = 4;
-        checkForUpdatesNowButton.TabIndex = 5;
-        silentlyInstallUpdatesBox.TabIndex = 6;
-        loggingBox.TabIndex = 7;
-        writeLogsNowButton.TabIndex = 8;
-        closeButton.TabIndex = 9;
+        updateFrequencyBox.TabIndex = 3;
+        checkForUpdatesNowButton.TabIndex = 4;
+        silentlyInstallUpdatesBox.TabIndex = 5;
+        loggingBox.TabIndex = 6;
+        writeLogsNowButton.TabIndex = 7;
+        closeButton.TabIndex = 8;
 
         // Group the frequency label + combo on one FlowLayoutPanel row so the visible label
         // sits inline next to the combo while keeping the combo as the focusable target.
@@ -317,12 +305,11 @@ internal sealed class PreferencesDialog : Form
         panel.Controls.Add(browseProfilesFolderButton, 0, 0);
         panel.Controls.Add(cueGroup, 0, 1);
         panel.Controls.Add(acceptRemoteVolumeBox, 0, 2);
-        panel.Controls.Add(startupBehaviourButton, 0, 3);
-        panel.Controls.Add(freqRow, 0, 4);
-        panel.Controls.Add(checkForUpdatesNowButton, 0, 5);
-        panel.Controls.Add(silentlyInstallUpdatesBox, 0, 6);
-        panel.Controls.Add(loggingBox, 0, 7);
-        panel.Controls.Add(writeLogsNowButton, 0, 8);
+        panel.Controls.Add(freqRow, 0, 3);
+        panel.Controls.Add(checkForUpdatesNowButton, 0, 4);
+        panel.Controls.Add(silentlyInstallUpdatesBox, 0, 5);
+        panel.Controls.Add(loggingBox, 0, 6);
+        panel.Controls.Add(writeLogsNowButton, 0, 7);
 
         var buttons = new FlowLayoutPanel
         {

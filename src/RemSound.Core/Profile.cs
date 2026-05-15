@@ -131,6 +131,12 @@ public sealed class Profile
     public HotkeyRecord? TrayHotkey { get; set; }
     public HotkeyRecord? VolumeUpHotkey { get; set; }
     public HotkeyRecord? VolumeDownHotkey { get; set; }
+    /// <summary>Global hotkey for start / stop recording. Toggles the same action as the
+    /// Record menu's "Start recording / Stop recording" item and the in-app Ctrl+R, but
+    /// works system-wide (RemSound doesn't need keyboard focus). Default unset — recording
+    /// is uncommon enough that we don't claim a default chord that might clash with the
+    /// user's other tools.</summary>
+    public HotkeyRecord? ToggleRecordingHotkey { get; set; }
     /// <summary>Hotkey that sends a "raise volume" command to every connected peer that has
     /// "Accept remote volume commands" enabled. The local volume slider on this machine is
     /// NOT touched. Use case: I'm NVDA-Remote'd into another machine and want to nudge the

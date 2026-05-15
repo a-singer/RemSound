@@ -76,17 +76,41 @@ internal sealed class AudioRecorder : IDisposable
     private readonly Action<string>? onDiagnostic;
     private readonly Action<string, long>? onFinished;
 
-    // === Lock-free SPSC rings, one per direction ===
+    // === Lock-free SPSC rings, per direction × per lane ===
     // Write head is monotonically increasing (NOT wrapped). Ring index = head % capacity.
     // This avoids the ABA problem on wraparound and means the audio thread only needs an
     // atomic add (not a CAS) to publish a write. The writer thread holds the read head
     // (no atomic needed; single consumer).
-    private readonly float[] sentRing = new float[RingCapacityFloats];
-    private readonly float[] receivedRing = new float[RingCapacityFloats];
-    private long sentWriteHead;     // updated atomically from audio thread
-    private long sentReadHead;      // owned by writer thread
-    private long receivedWriteHead; // updated atomically from audio thread
-    private long receivedReadHead;  // owned by writer thread
+    //
+    // Four rings rather than two so the writer can correctly handle BothIndependent mode
+    // where the PlayoutEngine's per-lane Read fires from BOTH the WASAPI lane and the ASIO
+    // lane independently. Pre-2026-05-15 the recorder had a single ring per direction and
+    // both lanes' samples got appended sequentially — the file ended up with twice the
+    // expected audio at half the wall-clock duration, garbled because the two lanes' content
+    // was different.
+    //
+    // Lane mapping:
+    //   * RenderRoute.WasapiLane → wasapi slot
+    //   * RenderRoute.AsioLane   → asio slot
+    //   * RenderRoute.Mixed      → wasapi slot (classic modes have only one tap firing, so
+    //                              the asio slot stays empty — no double-up)
+    //
+    // The writer thread reads from both slots per direction and:
+    //   * mixes them when both have data (BothIndependent mode with both output lanes active),
+    //   * drains whichever solo lane has data when only one is firing (classic modes, or
+    //     BothIndependent with only one lane's output ticked).
+    private readonly float[] sentWasapiRing = new float[RingCapacityFloats];
+    private readonly float[] sentAsioRing = new float[RingCapacityFloats];
+    private readonly float[] receivedWasapiRing = new float[RingCapacityFloats];
+    private readonly float[] receivedAsioRing = new float[RingCapacityFloats];
+    private long sentWasapiWriteHead;
+    private long sentWasapiReadHead;
+    private long sentAsioWriteHead;
+    private long sentAsioReadHead;
+    private long receivedWasapiWriteHead;
+    private long receivedWasapiReadHead;
+    private long receivedAsioWriteHead;
+    private long receivedAsioReadHead;
     private long droppedSampleFrames;
 
     // Wake-up event. Audio threads Set after appending to a ring; writer thread Waits.
@@ -146,23 +170,44 @@ internal sealed class AudioRecorder : IDisposable
     // === Audio-thread side: bounded to a memcpy + atomic add + event-set ===
 
     /// <summary>Tap target for sender-side audio. Discarded silently if this recorder's
-    /// source mode is "received only". Lock-free, allocation-free; safe to call from
-    /// the audio thread.</summary>
-    public void WriteSent(ReadOnlyMemory<float> stereoFloats)
+    /// source mode is "received only". The <paramref name="lane"/> identifies which
+    /// SenderLane the samples came from so the writer thread can keep WASAPI-lane and
+    /// ASIO-lane streams separate (and mix them at drain time). RenderRoute.Mixed (the
+    /// classic-mode case) routes to the WASAPI slot as the canonical "single lane".
+    /// Lock-free, allocation-free; safe to call from the audio thread.</summary>
+    public void WriteSent(ReadOnlyMemory<float> stereoFloats, RenderRoute lane)
     {
         if (stopped) return;
         if (settings.Source == RecordingSource.ReceivedOnly) return;
-        AppendToRing(stereoFloats.Span, sentRing, ref sentWriteHead, ref sentReadHead);
+        if (lane == RenderRoute.AsioLane)
+        {
+            AppendToRing(stereoFloats.Span, sentAsioRing, ref sentAsioWriteHead, ref sentAsioReadHead);
+        }
+        else
+        {
+            // WasapiLane and Mixed both land in the wasapi slot. In classic modes only
+            // this slot fires; in BothIndependent the WASAPI lane fires here and the ASIO
+            // lane fires in the asio slot above.
+            AppendToRing(stereoFloats.Span, sentWasapiRing, ref sentWasapiWriteHead, ref sentWasapiReadHead);
+        }
     }
 
     /// <summary>Tap target for receiver-side audio. Discarded silently if this recorder's
-    /// source mode is "sent only". Lock-free, allocation-free; safe to call from the
-    /// render thread.</summary>
-    public void WriteReceived(ReadOnlyMemory<float> stereoFloats)
+    /// source mode is "sent only". <paramref name="lane"/> tags which PlayoutEngine
+    /// per-lane Read invoked us — same RenderRoute mapping as <see cref="WriteSent"/>.
+    /// Lock-free, allocation-free; safe to call from the render thread.</summary>
+    public void WriteReceived(ReadOnlyMemory<float> stereoFloats, RenderRoute lane)
     {
         if (stopped) return;
         if (settings.Source == RecordingSource.SentOnly) return;
-        AppendToRing(stereoFloats.Span, receivedRing, ref receivedWriteHead, ref receivedReadHead);
+        if (lane == RenderRoute.AsioLane)
+        {
+            AppendToRing(stereoFloats.Span, receivedAsioRing, ref receivedAsioWriteHead, ref receivedAsioReadHead);
+        }
+        else
+        {
+            AppendToRing(stereoFloats.Span, receivedWasapiRing, ref receivedWasapiWriteHead, ref receivedWasapiReadHead);
+        }
     }
 
     /// <summary>Lock-free, allocation-free append to a single-producer-single-consumer
@@ -243,8 +288,15 @@ internal sealed class AudioRecorder : IDisposable
 
     private bool HasEnoughData(int minFrames = DrainChunkFrames)
     {
-        var sentAvail = (Volatile.Read(ref sentWriteHead) - sentReadHead) / MixChannels;
-        var recvAvail = (Volatile.Read(ref receivedWriteHead) - receivedReadHead) / MixChannels;
+        var sentWasapi = (Volatile.Read(ref sentWasapiWriteHead) - sentWasapiReadHead) / MixChannels;
+        var sentAsio = (Volatile.Read(ref sentAsioWriteHead) - sentAsioReadHead) / MixChannels;
+        var recvWasapi = (Volatile.Read(ref receivedWasapiWriteHead) - receivedWasapiReadHead) / MixChannels;
+        var recvAsio = (Volatile.Read(ref receivedAsioWriteHead) - receivedAsioReadHead) / MixChannels;
+        // "Any frame in this direction" check — the per-lane drain helper handles the
+        // mix-vs-solo decision at process time, so for the wakeup heuristic we just need to
+        // know SOMETHING is waiting in the direction(s) we care about.
+        var sentAvail = sentWasapi + sentAsio;
+        var recvAvail = recvWasapi + recvAsio;
         return settings.Source switch
         {
             RecordingSource.SentOnly => sentAvail >= minFrames,
@@ -254,47 +306,114 @@ internal sealed class AudioRecorder : IDisposable
         };
     }
 
+    /// <summary>Drain one direction worth of audio into <paramref name="dst"/>, merging the
+    /// WASAPI-lane and ASIO-lane rings into a single stream. Behaviour:
+    ///   * Both lanes have frames available: drain <c>min(wasapi, asio, maxFrames)</c>,
+    ///     sum-mix with a soft-tanh limiter on the sum (same pattern as the cross-direction
+    ///     "Both" mode mix downstream).
+    ///   * Only one lane has frames: drain it solo into dst (the inactive lane contributes
+    ///     nothing this tick).
+    ///   * Neither lane has frames: return 0; caller skips this direction.
+    /// Returns the number of stereo frames written into dst.
+    ///
+    /// The <paramref name="aux"/> span must be at least dst.Length floats; it's used as the
+    /// staging area for the second lane during a both-lane mix and is otherwise unused.</summary>
+    private static int DrainOneDirection(
+        float[] wasapiRing, ref long wasapiWriteHead, ref long wasapiReadHead,
+        float[] asioRing, ref long asioWriteHead, ref long asioReadHead,
+        Span<float> dst, Span<float> aux, int maxFrames)
+    {
+        var wasapiAvail = (int)((Volatile.Read(ref wasapiWriteHead) - wasapiReadHead) / MixChannels);
+        var asioAvail = (int)((Volatile.Read(ref asioWriteHead) - asioReadHead) / MixChannels);
+
+        if (wasapiAvail > 0 && asioAvail > 0)
+        {
+            var frames = Math.Min(Math.Min(wasapiAvail, asioAvail), maxFrames);
+            if (frames <= 0) return 0;
+            var len = frames * MixChannels;
+            CopyFromRing(wasapiRing, ref wasapiReadHead, dst.Slice(0, len));
+            CopyFromRing(asioRing, ref asioReadHead, aux.Slice(0, len));
+            // Sum + soft-tanh limit. Two BothIndependent lanes routinely carry different
+            // content (each lane is its own peer-stream selection), so summing is the right
+            // mix; the limiter prevents two simultaneously-hot lanes from clipping the file.
+            for (var i = 0; i < len; i++)
+            {
+                var s = dst[i] + aux[i];
+                if (s > 1f) s = 1f - MathF.Tanh(s - 1f);
+                else if (s < -1f) s = -1f + MathF.Tanh(-1f - s);
+                dst[i] = s;
+            }
+            return frames;
+        }
+        if (wasapiAvail > 0)
+        {
+            var frames = Math.Min(wasapiAvail, maxFrames);
+            if (frames <= 0) return 0;
+            CopyFromRing(wasapiRing, ref wasapiReadHead, dst.Slice(0, frames * MixChannels));
+            return frames;
+        }
+        if (asioAvail > 0)
+        {
+            var frames = Math.Min(asioAvail, maxFrames);
+            if (frames <= 0) return 0;
+            CopyFromRing(asioRing, ref asioReadHead, dst.Slice(0, frames * MixChannels));
+            return frames;
+        }
+        return 0;
+    }
+
     private void Process()
     {
-        var sentAvailFrames = (int)((Volatile.Read(ref sentWriteHead) - sentReadHead) / MixChannels);
-        var recvAvailFrames = (int)((Volatile.Read(ref receivedWriteHead) - receivedReadHead) / MixChannels);
-
         int framesThisCall;
         switch (settings.Source)
         {
             case RecordingSource.SentOnly:
-                framesThisCall = Math.Min(sentAvailFrames, DrainChunkMaxFrames);
+                // One-shot scratch sizing — start big enough for the chunk cap so we don't
+                // resize per call. The actual write may be smaller depending on per-lane
+                // availability.
+                EnsureScratchSize(DrainChunkMaxFrames * MixChannels);
+                EnsureSecondaryScratchSize(DrainChunkMaxFrames * MixChannels);
+                framesThisCall = DrainOneDirection(
+                    sentWasapiRing, ref sentWasapiWriteHead, ref sentWasapiReadHead,
+                    sentAsioRing, ref sentAsioWriteHead, ref sentAsioReadHead,
+                    mixScratch, mixScratchAux, DrainChunkMaxFrames);
                 if (framesThisCall <= 0) return;
-                EnsureScratchSize(framesThisCall * MixChannels);
-                CopyFromRing(sentRing, ref sentReadHead, mixScratch.AsSpan(0, framesThisCall * MixChannels));
                 EmitMixBuffer(framesThisCall);
                 break;
 
             case RecordingSource.ReceivedOnly:
-                framesThisCall = Math.Min(recvAvailFrames, DrainChunkMaxFrames);
+                EnsureScratchSize(DrainChunkMaxFrames * MixChannels);
+                EnsureSecondaryScratchSize(DrainChunkMaxFrames * MixChannels);
+                framesThisCall = DrainOneDirection(
+                    receivedWasapiRing, ref receivedWasapiWriteHead, ref receivedWasapiReadHead,
+                    receivedAsioRing, ref receivedAsioWriteHead, ref receivedAsioReadHead,
+                    mixScratch, mixScratchAux, DrainChunkMaxFrames);
                 if (framesThisCall <= 0) return;
-                EnsureScratchSize(framesThisCall * MixChannels);
-                CopyFromRing(receivedRing, ref receivedReadHead, mixScratch.AsSpan(0, framesThisCall * MixChannels));
                 EmitMixBuffer(framesThisCall);
                 break;
 
             case RecordingSource.Both:
-                // Mix the two sides. Drain min(sent, received) frames so both sides
-                // advance together. If one side has zero (e.g. peer disconnected, or
-                // local capture is off), drain the other side alone — treat the silent
-                // side as zero for those frames. This prevents permanent stalls in
-                // "Both" mode when one direction has no traffic.
-                if (sentAvailFrames > 0 && recvAvailFrames > 0)
+                // Two-stage drain. First produce a per-direction stream for each direction
+                // (lane-mixed if both lanes have data), then sum-mix the two directions just
+                // like the pre-2026-05-15 Both path did. The lane mix uses mixScratchAux as
+                // its workspace; the cross-direction mix uses mixScratch (sent) + a per-call
+                // received scratch we'll grow as needed.
+                EnsureScratchSize(DrainChunkMaxFrames * MixChannels);
+                EnsureSecondaryScratchSize(DrainChunkMaxFrames * MixChannels);
+                var sentFrames = DrainOneDirection(
+                    sentWasapiRing, ref sentWasapiWriteHead, ref sentWasapiReadHead,
+                    sentAsioRing, ref sentAsioWriteHead, ref sentAsioReadHead,
+                    mixScratch, mixScratchAux, DrainChunkMaxFrames);
+                EnsureRecvDirectionScratchSize(DrainChunkMaxFrames * MixChannels);
+                var recvFrames = DrainOneDirection(
+                    receivedWasapiRing, ref receivedWasapiWriteHead, ref receivedWasapiReadHead,
+                    receivedAsioRing, ref receivedAsioWriteHead, ref receivedAsioReadHead,
+                    recvDirectionScratch, mixScratchAux, DrainChunkMaxFrames);
+                if (sentFrames > 0 && recvFrames > 0)
                 {
-                    framesThisCall = Math.Min(Math.Min(sentAvailFrames, recvAvailFrames), DrainChunkMaxFrames);
-                    EnsureScratchSize(framesThisCall * MixChannels);
-                    EnsureSecondaryScratchSize(framesThisCall * MixChannels);
+                    framesThisCall = Math.Min(sentFrames, recvFrames);
                     var dst = mixScratch.AsSpan(0, framesThisCall * MixChannels);
-                    var aux = mixScratchAux.AsSpan(0, framesThisCall * MixChannels);
-                    CopyFromRing(sentRing, ref sentReadHead, dst);
-                    CopyFromRing(receivedRing, ref receivedReadHead, aux);
-                    // Sum-mix. Soft-tanh limiter on the sum keeps two simultaneously
-                    // hot inputs from clipping.
+                    var aux = recvDirectionScratch.AsSpan(0, framesThisCall * MixChannels);
                     for (var i = 0; i < dst.Length; i++)
                     {
                         var s = dst[i] + aux[i];
@@ -302,18 +421,22 @@ internal sealed class AudioRecorder : IDisposable
                         else if (s < -1f) s = -1f + MathF.Tanh(-1f - s);
                         dst[i] = s;
                     }
+                    // Any leftover frames in the direction that produced MORE this tick stay
+                    // in their rings for the next iteration — they're not lost, just deferred.
+                    // We can't write them now without un-syncing the two directions.
                 }
-                else if (sentAvailFrames > 0)
+                else if (sentFrames > 0)
                 {
-                    framesThisCall = Math.Min(sentAvailFrames, DrainChunkMaxFrames);
-                    EnsureScratchSize(framesThisCall * MixChannels);
-                    CopyFromRing(sentRing, ref sentReadHead, mixScratch.AsSpan(0, framesThisCall * MixChannels));
+                    framesThisCall = sentFrames;
+                    // mixScratch already contains the sent direction's audio — emit as-is.
                 }
-                else if (recvAvailFrames > 0)
+                else if (recvFrames > 0)
                 {
-                    framesThisCall = Math.Min(recvAvailFrames, DrainChunkMaxFrames);
-                    EnsureScratchSize(framesThisCall * MixChannels);
-                    CopyFromRing(receivedRing, ref receivedReadHead, mixScratch.AsSpan(0, framesThisCall * MixChannels));
+                    framesThisCall = recvFrames;
+                    // The recv-direction audio lives in recvDirectionScratch; copy into
+                    // mixScratch so EmitMixBuffer (which reads from mixScratch) sees it.
+                    var len = framesThisCall * MixChannels;
+                    recvDirectionScratch.AsSpan(0, len).CopyTo(mixScratch.AsSpan(0, len));
                 }
                 else
                 {
@@ -376,6 +499,11 @@ internal sealed class AudioRecorder : IDisposable
         if (mixScratchAux.Length < floats) mixScratchAux = new float[floats];
     }
 
+    private void EnsureRecvDirectionScratchSize(int floats)
+    {
+        if (recvDirectionScratch.Length < floats) recvDirectionScratch = new float[floats];
+    }
+
     private void EnsureMonoScratchSize(int frames)
     {
         if (monoScratch.Length < frames) monoScratch = new float[frames];
@@ -431,6 +559,10 @@ internal sealed class AudioRecorder : IDisposable
     private IFormatWriter? formatWriter;
     private float[] mixScratch = new float[DrainChunkFrames * MixChannels];
     private float[] mixScratchAux = new float[DrainChunkFrames * MixChannels];
+    // Holds the per-direction "received" mix during a Both-source iteration, kept separate
+    // from mixScratch (which holds "sent") so the cross-direction final mix can read both
+    // simultaneously without one stomping the other.
+    private float[] recvDirectionScratch = new float[DrainChunkFrames * MixChannels];
     private float[] monoScratch = new float[DrainChunkFrames];
 
     private static string ExtensionFor(RecordingFileFormat format) => format switch

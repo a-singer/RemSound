@@ -42,6 +42,9 @@ public sealed class MainForm : Form
     // the visible text + accessibility name between "Start recording" and "Stop recording"
     // without rebuilding the menu.
     private ToolStripMenuItem? startStopRecordingMenuItem;
+    // Held so PopulateRecentProfilesMenu can clear + repopulate it on every DropDownOpening
+    // (and once during construction so it's not empty before the first open).
+    private ToolStripMenuItem? recentProfilesMenu;
 
     // --- Main form controls ---
     // Two standalone CheckBoxes for the Send / Receive toggles. Modern .NET (.NET 10) raises
@@ -449,6 +452,19 @@ public sealed class MainForm : Form
         {
             currentProfilePath = profileStore.PathFor(loadedTitle);
         }
+        // Track the loaded profile in the machine-local recents list so the File → Recent
+        // profiles submenu can offer it next time. Skipped for the blank-template case
+        // (currentProfilePath stays null when no profile was loaded). 2026-05-15.
+        if (!string.IsNullOrEmpty(currentProfilePath))
+        {
+            try
+            {
+                var cfg = AppConfig.Load();
+                cfg.NoteRecentProfile(currentProfilePath);
+                cfg.Save();
+            }
+            catch { /* benign — recents tracking is a convenience, not load-critical */ }
+        }
         pendingProfile = profile;
         // Push the profile's settings-shaped fields (codec, hotkeys, smoothness, etc.) into
         // the in-memory settings cache BEFORE the rest of the constructor body reads from it.
@@ -490,6 +506,10 @@ public sealed class MainForm : Form
             ToggleTrayFromHotkey,
             () => NudgeVolume(+5),
             () => NudgeVolume(-5),
+            // Global Start / Stop recording. Same ToggleRecording path the Record menu item
+            // and the in-app Ctrl+R use — the hotkey just makes it work without RemSound
+            // having keyboard focus.
+            ToggleRecording,
             // Three remote-control hotkeys: each one transmits a Control packet to all
             // currently-tracked peers via the audio sender's NAT pinhole. The receiving peer
             // applies the change locally if it has Profile.AcceptRemoteVolumeCommands on.
@@ -1018,9 +1038,23 @@ public sealed class MainForm : Form
 
         var openItem = new ToolStripMenuItem("&Open profile...")
         {
+            ShortcutKeys = Keys.Control | Keys.O,
             AccessibleName = "Open profile",
         };
         openItem.Click += (_, _) => OpenProfileFromPicker();
+
+        // Recent profiles submenu. Populated dynamically on drop-down so the latest list is
+        // always shown — AppConfig.RecentProfiles is the source of truth and gets mutated on
+        // every profile load. Each item gets a 1..5 single-digit mnemonic so the user can
+        // pick a recent without having to read it: Alt+F, R, 1 jumps to the most recent;
+        // Alt+F, R, 2 to the second-most-recent, etc.
+        recentProfilesMenu = new ToolStripMenuItem("&Recent profiles")
+        {
+            AccessibleName = "Recent profiles",
+        };
+        recentProfilesMenu.DropDownOpening += (_, _) => PopulateRecentProfilesMenu();
+        // Seed the submenu so it isn't visibly empty before the first DropDownOpening fires.
+        PopulateRecentProfilesMenu();
 
         var saveItem = new ToolStripMenuItem("&Save")
         {
@@ -1035,35 +1069,23 @@ public sealed class MainForm : Form
         };
         saveAsItem.Click += (_, _) => SaveProfileAs();
 
-        var renameItem = new ToolStripMenuItem("&Rename current profile...")
+        var renameItem = new ToolStripMenuItem("Rena&me current profile...")
         {
             AccessibleName = "Rename current profile",
         };
         renameItem.Click += (_, _) => RenameCurrentProfile();
 
-        var minimiseItem = new ToolStripMenuItem("&Minimise to tray")
+        var minimiseItem = new ToolStripMenuItem("Mi&nimise to tray")
         {
-            // No global ShortcutKeys binding — the in-app menu mnemonic (Alt+F → M) plus the
-            // configurable "Show or hide window" hotkey cover this. Pre-2026-05-11 Alt+M was
-            // gated per-tab via ProcessCmdKey because the Audio I/O tab had an "Audio mode"
-            // listbox that used Alt+M; that listbox is gone now so the gating was retired.
+            // No global ShortcutKeys binding — the in-app menu mnemonic (Alt+F → N now —
+            // moved off M because the Rename item took the M slot in the 2026-05-15 menu
+            // reorg) plus the configurable "Show or hide window" hotkey cover this. Pre-
+            // 2026-05-11 Alt+M was gated per-tab via ProcessCmdKey because the Audio I/O
+            // tab had an "Audio mode" listbox that used Alt+M; that listbox is gone now
+            // so the gating was retired.
             AccessibleName = "Minimise to tray",
         };
         minimiseItem.Click += (_, _) => trayController.Minimize();
-
-        var keyboardItem = new ToolStripMenuItem("&Keyboard shortcuts...")
-        {
-            ShortcutKeys = Keys.Control | Keys.K,
-            AccessibleName = "Keyboard shortcuts",
-        };
-        keyboardItem.Click += (_, _) => hotkeyController.ShowKeyboardShortcutsDialog(this);
-
-        var prefsItem = new ToolStripMenuItem("&Preferences...")
-        {
-            ShortcutKeys = Keys.Control | Keys.P,
-            AccessibleName = "Preferences",
-        };
-        prefsItem.Click += (_, _) => OpenPreferencesDialog();
 
         var exitItem = new ToolStripMenuItem("E&xit")
         {
@@ -1074,15 +1096,67 @@ public sealed class MainForm : Form
         fileMenu.DropDownItems.AddRange(new ToolStripItem[]
         {
             openItem,
+            recentProfilesMenu,
             saveItem,
             saveAsItem,
             renameItem,
             new ToolStripSeparator(),
             minimiseItem,
-            keyboardItem,
-            prefsItem,
             new ToolStripSeparator(),
             exitItem,
+        });
+
+        // === Options menu (new, 2026-05-15) ===
+        // Holds all the "configure the app" entry points that used to be scattered across
+        // the File menu (Keyboard shortcuts, Preferences) and the Record menu (Recording
+        // settings). Startup behaviour is also here as its own top-level item rather than
+        // hiding inside Preferences as it did before. Reads as a natural sequence:
+        // recording-specific → input config → startup → general prefs.
+        //
+        // Mnemonic Alt+O — natural for "Options". Required moving the Record menu off of
+        // Alt+O (it's now Alt+K — see comment in BuildRecordMenu); the trade reads more
+        // naturally for users because "Options" is exactly what's in the menu.
+        var optionsMenu = new ToolStripMenuItem("&Options") { AccessibleName = "Options menu" };
+
+        var recordingSettingsItem = new ToolStripMenuItem("Recording &settings...")
+        {
+            AccessibleName = "Recording settings",
+        };
+        recordingSettingsItem.Click += (_, _) => OpenRecordingSettingsDialog();
+
+        var keyboardItem = new ToolStripMenuItem("&Keyboard shortcuts...")
+        {
+            ShortcutKeys = Keys.Control | Keys.K,
+            AccessibleName = "Keyboard shortcuts",
+        };
+        keyboardItem.Click += (_, _) => hotkeyController.ShowKeyboardShortcutsDialog(this);
+
+        var startupBehaviourItem = new ToolStripMenuItem("S&tartup behaviour...")
+        {
+            AccessibleName = "Startup behaviour",
+        };
+        startupBehaviourItem.Click += (_, _) =>
+        {
+            using var dialog = new StartupBehaviourDialog(profileStore);
+            dialog.ShowDialog(this);
+            // Startup-behaviour state persists through AppConfig / registry directly. No
+            // profile-dirty flag involved here — none of these settings live on Profile.
+        };
+
+        var prefsItem = new ToolStripMenuItem("&Preferences...")
+        {
+            ShortcutKeys = Keys.Control | Keys.P,
+            AccessibleName = "Preferences",
+        };
+        prefsItem.Click += (_, _) => OpenPreferencesDialog();
+
+        optionsMenu.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            recordingSettingsItem,
+            keyboardItem,
+            startupBehaviourItem,
+            new ToolStripSeparator(),
+            prefsItem,
         });
 
         // Help menu — separate from File so users with their hand on Alt + arrow keys can
@@ -1120,10 +1194,89 @@ public sealed class MainForm : Form
 
         var recordMenu = BuildRecordMenu();
 
+        // Order: File / Record / Options / Help. Options sits between Record and Help per
+        // user request — left-to-right reads file-management → recording-tasks → config →
+        // help, which is the natural sequence for someone walking the menu bar with Alt
+        // and the arrow keys.
         menu.Items.Add(fileMenu);
         menu.Items.Add(recordMenu);
+        menu.Items.Add(optionsMenu);
         menu.Items.Add(helpMenu);
         return menu;
+    }
+
+    /// <summary>Rebuild the Recent profiles submenu from <see cref="AppConfig.RecentProfiles"/>.
+    /// Called once during menu construction (so it's not visibly empty before the first
+    /// open) and on every DropDownOpening so the latest list is always shown. Entries that
+    /// reference a profile file that no longer exists on disk are skipped — the path stays
+    /// in the AppConfig list (it might come back, e.g. external drive remount) but doesn't
+    /// clutter the menu.
+    ///
+    /// Mnemonic / numeric-pick convention: each item is prefixed with "&N" where N is 1..5
+    /// for the position. Pressing the digit while the submenu is open selects that item.
+    /// The most-recently-opened profile is &1 (top); oldest in the list is &5 (bottom).</summary>
+    private void PopulateRecentProfilesMenu()
+    {
+        if (recentProfilesMenu is null) return;
+        recentProfilesMenu.DropDownItems.Clear();
+        var cfg = AppConfig.Load();
+        var slot = 1;
+        foreach (var path in cfg.RecentProfiles)
+        {
+            if (string.IsNullOrWhiteSpace(path)) continue;
+            if (!File.Exists(path)) continue; // skip missing files; keep in storage in case they reappear
+            var title = Path.GetFileNameWithoutExtension(path);
+            var item = new ToolStripMenuItem($"&{slot} {title}")
+            {
+                AccessibleName = $"Recent profile {slot}: {title}",
+                // Stash the path on the menu item so the click handler doesn't depend on
+                // closure capture of the loop variable.
+                Tag = path,
+            };
+            item.Click += (s, _) =>
+            {
+                var sender = (ToolStripMenuItem)s!;
+                var profilePath = (string)sender.Tag!;
+                SwitchToRecentProfile(profilePath);
+            };
+            recentProfilesMenu.DropDownItems.Add(item);
+            slot++;
+            if (slot > AppConfig.MaxRecentProfiles) break;
+        }
+        if (recentProfilesMenu.DropDownItems.Count == 0)
+        {
+            recentProfilesMenu.DropDownItems.Add(new ToolStripMenuItem("(No recent profiles)")
+            {
+                Enabled = false,
+                AccessibleName = "No recent profiles",
+            });
+        }
+    }
+
+    /// <summary>Switch to the profile at <paramref name="path"/> via the same close-and-relaunch
+    /// flow OpenProfileFromPicker uses. The active profile gets pushed to the front of the
+    /// recents list by the next MainForm constructor when it sees the loaded path.</summary>
+    private void SwitchToRecentProfile(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        if (string.Equals(path, currentProfilePath, StringComparison.OrdinalIgnoreCase)) return; // already loaded
+        if (!File.Exists(path))
+        {
+            MessageBox.Show(this,
+                $"Profile file no longer exists:\n\n{path}\n\nIt'll be removed from the Recent profiles list.",
+                "Recent profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            // Trim the dead entry out of the recents list so the user doesn't keep seeing it.
+            var cfg = AppConfig.Load();
+            cfg.RecentProfiles.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+            try { cfg.Save(); } catch { /* benign — list will be re-pruned at next attempt */ }
+            return;
+        }
+        var title = Path.GetFileNameWithoutExtension(path);
+        if (string.IsNullOrEmpty(title)) return;
+        NextProfilePathToLoad = path;
+        NextProfileTitleToLoad = title;
+        AppendLogEntry($"profile switch via Recent profiles: \"{title}\" from {path}");
+        Close();
     }
 
     /// <summary>Build the Record menu — Start/stop recording (toggling label), recording
@@ -1133,11 +1286,17 @@ public sealed class MainForm : Form
     /// inside the sub-dialog because both live on the profile.</summary>
     private ToolStripMenuItem BuildRecordMenu()
     {
-        // Record menu uses Alt+O (Rec&ord) rather than Alt+R. The form's "Receive audio
-        // (Alt+R)" checkbox lives on the main canvas alongside the menu bar and Alt+R was
-        // ambiguous between the two. Alt+O is unused elsewhere on the menu bar (File / Help
-        // / Record) and reads as "Recording" naturally enough for the mnemonic to stick.
-        var recordMenu = new ToolStripMenuItem("Rec&ord") { AccessibleName = "Record menu" };
+        // Record menu uses Alt+K. The natural "R" letter is taken on the main form by the
+        // Receive audio checkbox; "O" is now claimed by the Options menu (2026-05-15
+        // reorg). K isn't a letter in "Record", so we surface the mnemonic explicitly in
+        // the title: "Record (Alt+K)" with the K underlined. The visible hint keeps the
+        // chord discoverable for keyboard-only users despite the unusual letter choice.
+        //
+        // This collides with the Lock-to-audio-clock checkbox on the Audio profile tab
+        // which used to take Alt+K — the menu always wins at the form's top level, so the
+        // checkbox loses its mnemonic and stays Tab-reachable only. The (Alt+&K) hint on
+        // that checkbox's text was removed below to avoid a misleading prompt.
+        var recordMenu = new ToolStripMenuItem("Record (Alt+&K)") { AccessibleName = "Record menu" };
 
         // Start/Stop uses Alt+R — matches the Ctrl+R global toggle so the same letter does
         // the same job from either entry point. The "&" position shifts when the label flips
@@ -1149,14 +1308,6 @@ public sealed class MainForm : Form
             AccessibleName = "Start recording",
         };
         startStopRecordingMenuItem.Click += (_, _) => ToggleRecording();
-
-        // Recording settings → Alt+S (was Alt+T). S reads more naturally than T for
-        // "settings", and the slot freed up when Start/Stop moved off Alt+S.
-        var settingsItem = new ToolStripMenuItem("Recording &settings...")
-        {
-            AccessibleName = "Recording settings",
-        };
-        settingsItem.Click += (_, _) => OpenRecordingSettingsDialog();
 
         var openFolderItem = new ToolStripMenuItem("&Open current recordings folder")
         {
@@ -1173,11 +1324,14 @@ public sealed class MainForm : Form
             if (recordingController.ChangeFolder(this)) MarkProfileDirty();
         };
 
+        // Recording settings used to live here as the third item with Alt+S; in the
+        // 2026-05-15 menu reorg it moved out to the Options menu so all of the "configure
+        // the app" affordances live together. The Record menu now only carries the start /
+        // stop toggle plus the two folder operations — actions you perform AT recording
+        // time, not configuration.
         recordMenu.DropDownItems.AddRange(new ToolStripItem[]
         {
             startStopRecordingMenuItem,
-            new ToolStripSeparator(),
-            settingsItem,
             new ToolStripSeparator(),
             openFolderItem,
             changeFolderItem,
@@ -1822,25 +1976,22 @@ public sealed class MainForm : Form
         panel.Controls.Add(codecRowPanel, 1, 0);
 
         // === Row 1: Tight latency (sender-side, mode-dependent label) ===
-        // Mnemonic moved from G to K (2026-05-08). The label varies per current audio mode
-        // but every variant starts with "Lock to audio clock" — putting "&k" in "Loc&k" gives
-        // the user a stable Alt+K regardless of which mode-dependent suffix is shown.
-        // Only WasapiOnly and BothIndependent are reachable through the UI after the
-        // 2026-05-11 cleanup (an ASIO driver is either selected or it isn't); the AsioOnly /
-        // classic-Both branches survive only to make pre-2026-05-11 profile JSONs that hold
-        // those enum values render with sensible labels until the user nudges the driver.
+        // Mnemonic was Alt+K until v1.5 (2026-05-15) when the Record menu took Alt+K at
+        // the menu-bar level. Replaced with Alt+D — the D in "au&dio" is naturally part of
+        // the word, no explicit "(Alt+...)" hint needed. Free on the Audio profile tab
+        // (no other Audio-profile control uses D).
         var currentAudioModeForLabel = settings.LoadAudioMode();
         var tightLatencyText = currentAudioModeForLabel switch
         {
-            AudioMode.WasapiOnly      => "Lock to audio clock, WASAPI sender (Alt+&K)",
-            AudioMode.BothIndependent => "Lock to audio clock, WASAPI + ASIO senders (Alt+&K)",
-            _                         => "Lock to audio clock (Alt+&K)",
+            AudioMode.WasapiOnly      => "Lock to au&dio clock, WASAPI sender",
+            AudioMode.BothIndependent => "Lock to au&dio clock, WASAPI + ASIO senders",
+            _                         => "Lock to au&dio clock",
         };
         var tightLatencyAccessible = currentAudioModeForLabel switch
         {
-            AudioMode.WasapiOnly      => "Lock to audio clock (Alt+K) — sender uses the WASAPI capture event for timing instead of a Stopwatch tick. Tightens delay; brief clicks possible if the link can't keep up.",
-            AudioMode.BothIndependent => "Lock to audio clock (Alt+K) — both lanes tighten independently. WASAPI lane uses push-mode (single source); ASIO lane emits per callback. Brief clicks possible on either if the link can't keep up.",
-            _                         => "Lock to audio clock (Alt+K) — sender-side timing tighten.",
+            AudioMode.WasapiOnly      => "Lock to audio clock (Alt+D) — sender uses the WASAPI capture event for timing instead of a Stopwatch tick. Tightens delay; brief clicks possible if the link can't keep up.",
+            AudioMode.BothIndependent => "Lock to audio clock (Alt+D) — both lanes tighten independently. WASAPI lane uses push-mode (single source); ASIO lane emits per callback. Brief clicks possible on either if the link can't keep up.",
+            _                         => "Lock to audio clock (Alt+D) — sender-side timing tighten.",
         };
         tightLatencyBox.Text = tightLatencyText;
         tightLatencyBox.AccessibleName = tightLatencyAccessible;

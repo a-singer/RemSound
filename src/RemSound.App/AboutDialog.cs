@@ -20,6 +20,57 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v1.5
+
+        Menu reorganisation, multi-peer audio-routing fix, recording
+        fix for BothIndependent mode, and Ctrl+O for Open profile.
+        Wire format and audio pipeline are unchanged — v1.4 and v1.5
+        peers interoperate.
+
+        Bug fixes:
+          * BothIndependent recording: when both WASAPI and ASIO
+            output devices were ticked, recordings came out garbled
+            and twice the expected duration. The recorder taps fired
+            from both lanes' render reads and the writer thread
+            appended both streams into one ring as if they were
+            sequential audio. Recorder now has per-lane rings and
+            mixes them in the writer thread.
+          * A peer announcing audio on the WASAPI lane was inaudible
+            when the receiver only had an ASIO output device ticked
+            (and vice versa). Sessions whose announced lane has no
+            active output now fall through to whichever lane IS
+            being read.
+
+        Menu reorganisation:
+          * New Options menu (Alt+O) holds: Recording settings,
+            Keyboard shortcuts, Startup behaviour, Preferences.
+            These used to be scattered across File menu (Keyboard
+            shortcuts, Preferences), Record menu (Recording settings),
+            and inside the Preferences dialog (Startup behaviour).
+          * Record menu mnemonic moved from Alt+O to Alt+K (rendered
+            as "Record (Alt+K)") so Alt+O could go to Options. K is
+            unusual for "Record" but the Record menu doesn't have a
+            natural free letter — Alt+R is taken by Receive audio.
+          * File menu: new Recent profiles submenu (Alt+F, R). Lists
+            the last five profiles you've opened, most-recent first.
+            Press 1..5 while the submenu is open to jump to a slot.
+            File → Rename current profile moves to Alt+F, M, and
+            Minimise to tray moves to Alt+F, N, to free up R for the
+            new submenu.
+          * Lock to audio clock (Audio profile tab) was Alt+K; now
+            Alt+D (the D in "audio") since the Record menu won Alt+K.
+
+        UX additions:
+          * Ctrl+O opens the Open profile dialog (matches the menu
+            chord). Previously the menu had no global shortcut.
+          * New global hotkey: Start / Stop recording. Pickable from
+            Options - Keyboard shortcuts. Unbound by default. Works
+            system-wide — RemSound doesn't need keyboard focus.
+
+        Recording feature unchanged in this release — the dialog
+        layout, formats (WAV / MP3 / OGG-Opus / FLAC), and tap-points
+        all the same as v1.4.
+
         RemSound v1.4
 
         Recording-settings dialog cleanup and a few mnemonic

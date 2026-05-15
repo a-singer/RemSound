@@ -31,7 +31,7 @@ ul, ol { padding-left: 1.4em; }
 <li><a href="#quick-start">Quick start</a></li>
 <li><a href="#profiles">Profiles</a></li>
 <li><a href="#main-window">The main window: menu bar + three tabs</a></li>
-<li><a href="#menu-bar">Menus (File, Record (Alt+O), and Help)</a></li>
+<li><a href="#menu-bar">Menus (File, Record, Options, Help)</a></li>
 <li><a href="#tab-connectivity">Connectivity tab</a></li>
 <li><a href="#tab-io">Audio inputs and outputs tab</a></li>
 <li><a href="#tab-profile">Audio profile tab</a></li>
@@ -40,7 +40,7 @@ ul, ol { padding-left: 1.4em; }
 <li><a href="#network">How the network works (LAN, WAN, Tailscale)</a></li>
 <li><a href="#latency">Latency and audio quality</a></li>
 <li><a href="#shortcuts">Keyboard shortcuts</a></li>
-<li><a href="#hotkeys">Global hotkeys (mute, volume, tray)</a></li>
+<li><a href="#hotkeys">Global hotkeys (mute, volume, tray, recording)</a></li>
 <li><a href="#remote-control">Remote control: adjusting a peer's listening volume from your end</a></li>
 <li><a href="#startup">Startup behaviour</a></li>
 <li><a href="#updates">Updating RemSound</a></li>
@@ -125,7 +125,7 @@ ul, ol { padding-left: 1.4em; }
 <table>
 <tr><th>Action</th><th>How</th></tr>
 <tr><td><strong>Switch to a different profile</strong></td><td>File &rarr; Open profile (Alt+F, O). Pick a JSON in the file picker. RemSound reloads under that profile.</td></tr>
-<tr><td><strong>Rename the active profile</strong></td><td>File &rarr; Rename current profile (Alt+F, R). Prompts for the new name and renames the JSON on disk; window title updates immediately.</td></tr>
+<tr><td><strong>Rename the active profile</strong></td><td>File &rarr; Rename current profile (Alt+F, M). Prompts for the new name and renames the JSON on disk; window title updates immediately.</td></tr>
 <tr><td><strong>Delete a profile</strong></td><td>File &rarr; Open profile, then right-click the entry in the Windows file picker and choose Delete. Hands the action off to Windows Explorer rather than reimplementing it inside RemSound.</td></tr>
 </table>
 
@@ -170,9 +170,9 @@ ul, ol { padding-left: 1.4em; }
 <tr><td><strong>Audio profile</strong></td><td>Codec, packet size, lock-to-audio-clock, latency, continuous auto-tune, buffer smoothness, artefact sound. Split into <em>Audio send parameters</em> and <em>Audio receive parameters</em> sections so NVDA announces which group you&rsquo;ve entered as you tab through.</td></tr>
 </table>
 
-<h2 id="menu-bar">5. Menus (File, Record, and Help)</h2>
+<h2 id="menu-bar">5. Menus (File, Record, Options, Help)</h2>
 
-<p>Three top-level menus on the main window: <strong>File (Alt+F)</strong>, <strong>Record (Alt+O)</strong>, and <strong>Help (Alt+H)</strong>. The Record menu uses Alt+O rather than Alt+R so it doesn&rsquo;t clash with the <strong>Receive audio (Alt+R)</strong> checkbox on the main form.</p>
+<p>Four top-level menus on the main window: <strong>File (Alt+F)</strong>, <strong>Record (Alt+K)</strong>, <strong>Options (Alt+O)</strong>, and <strong>Help (Alt+H)</strong>. The Record menu's mnemonic is the unusual Alt+K — chosen because Alt+R is taken by the <strong>Receive audio</strong> checkbox on the main form, and Alt+O has the natural fit on the Options menu. The Record menu's title is rendered as &ldquo;Record (Alt+K)&rdquo; so the chord is discoverable despite K not being a letter in the word.</p>
 
 <h3>File menu</h3>
 
@@ -180,26 +180,38 @@ ul, ol { padding-left: 1.4em; }
 
 <table>
 <tr><th>Item</th><th>Shortcut</th><th>What it does</th></tr>
-<tr><td><strong>Open profile&hellip;</strong></td><td>Alt+F, O</td><td>Opens a Windows file picker rooted at the profiles folder. Pick a JSON, RemSound reloads under that profile (window closes and reopens with all its device ticks, peers, and settings restored). To delete a profile from disk, right-click an entry inside the file picker and choose Delete &mdash; that hands the action off to Windows Explorer.</td></tr>
+<tr><td><strong>Open profile&hellip;</strong></td><td>Ctrl+O, or Alt+F, O</td><td>Opens a Windows file picker rooted at the profiles folder. Pick a JSON, RemSound reloads under that profile (window closes and reopens with all its device ticks, peers, and settings restored). To delete a profile from disk, right-click an entry inside the file picker and choose Delete &mdash; that hands the action off to Windows Explorer.</td></tr>
+<tr><td><strong>Recent profiles &rarr;</strong></td><td>Alt+F, R</td><td>Submenu listing the last five profiles you&rsquo;ve opened, most-recent first. Each row carries a single-digit mnemonic: press <strong>1</strong> while the submenu is open to jump to the most recent, <strong>2</strong> for the second most-recent, and so on up to <strong>5</strong>. Or arrow down and press Enter on the row you want. Same close-and-relaunch behaviour as Open profile. If a recent profile&rsquo;s file has been deleted or moved away, it&rsquo;s skipped from the submenu (the entry stays in storage in case the file comes back — e.g. an external drive remount). Empty list shows a disabled &ldquo;(No recent profiles)&rdquo; entry.</td></tr>
 <tr><td><strong>Save</strong></td><td>Ctrl+S</td><td>Overwrites the active profile with the current state. If there&rsquo;s no active profile (you&rsquo;re on Blank template), this falls through to Save as automatically.</td></tr>
 <tr><td><strong>Save as&hellip;</strong></td><td>Alt+F, A</td><td>Prompts for a profile name and saves a copy. Use this to fork the current state under a new name, or to save the first time from Blank template.</td></tr>
-<tr><td><strong>Rename current profile&hellip;</strong></td><td>Alt+F, R</td><td>Renames the JSON file on disk and updates the window title. No-op on Blank template (no profile to rename).</td></tr>
-<tr><td><strong>Minimise to tray</strong></td><td>Alt+F, M</td><td>Hides the window to the system tray. Reachable via the File menu chain (Alt+F to open the menu, then M for Minimise). To bring the window back, click the tray icon or use the configurable "Show or hide window" global hotkey (Keyboard shortcuts dialog, default Ctrl+Shift+F10).</td></tr>
-<tr><td><strong>Keyboard shortcuts&hellip;</strong></td><td>Ctrl+K</td><td>Opens the global hotkey configuration dialog (mute, volume, tray show/hide, remote-control sends).</td></tr>
-<tr><td><strong>Preferences&hellip;</strong></td><td>Ctrl+P</td><td>Opens the Preferences dialog. Sticky machine-local choices live here: profile folder, the <strong>Cue sounds (Alt+N)</strong> checklist (one tickable item per cue: connect, disconnect, recording start, recording stop), accept remote volume commands, startup behaviour, update-check frequency, manual check-for-updates button, silently install updates, enable logs, write logs now. Esc or the Close button dismisses.</td></tr>
+<tr><td><strong>Rename current profile&hellip;</strong></td><td>Alt+F, M</td><td>Renames the JSON file on disk and updates the window title. No-op on Blank template (no profile to rename). Mnemonic is M (Rena<u>m</u>e) — was R until v1.5 when Recent profiles took the R slot.</td></tr>
+<tr><td><strong>Minimise to tray</strong></td><td>Alt+F, N</td><td>Hides the window to the system tray. Mnemonic is N (Mi<u>n</u>imise) — was M until v1.5 when Rename took the M slot. To bring the window back, click the tray icon or use the configurable &ldquo;Show or hide window&rdquo; global hotkey (Keyboard shortcuts dialog, default Ctrl+Shift+F10).</td></tr>
 <tr><td><strong>Exit</strong></td><td>Alt+F, X (or Alt+F4)</td><td>Closes RemSound. If there are unsaved profile changes you&rsquo;ll be prompted first.</td></tr>
 </table>
 
 <h3>Record menu</h3>
 
-<p>Press <strong>Alt+O</strong> to open the menu, then the underlined letter for the item you want. (Alt+O rather than Alt+R because Alt+R is taken on the main form by the <strong>Receive audio</strong> checkbox.) The recording feature taps the audio path at the right place to capture either what you&rsquo;re sending, what you&rsquo;re receiving, or both, and writes it to disk as a WAV, MP3, OGG-Opus, or FLAC file. See <a href="#recording">Recording to a file</a> for the full chapter; this is the menu summary.</p>
+<p>Press <strong>Alt+K</strong> to open the menu, then the underlined letter for the item you want. (Alt+K rather than the natural Alt+R because Alt+R is taken on the main form by the <strong>Receive audio</strong> checkbox; Alt+O moved to the Options menu in v1.5.) The recording feature taps the audio path at the right place to capture either what you&rsquo;re sending, what you&rsquo;re receiving, or both, and writes it to disk as a WAV, MP3, OGG-Opus, or FLAC file. See <a href="#recording">Recording to a file</a> for the full chapter; this is the menu summary.</p>
 
 <table>
 <tr><th>Item</th><th>Shortcut</th><th>What it does</th></tr>
-<tr><td><strong>Start recording / Stop recording</strong></td><td>Ctrl+R, or Alt+O, R</td><td>Toggle. The label flips between &ldquo;Start recording&rdquo; and &ldquo;Stop recording&rdquo; so NVDA announces whichever action the next press would perform. Either label is activated by Alt+R (the underline stays on a letter R in both). Each press of Start plays a short cue sound (if enabled in Preferences), then creates a new file in your recordings folder named <code>RemSound-yyyy-MM-dd_HH-mm-ss.&lt;ext&gt;</code>. Stop closes the file then plays the stop cue. Ctrl+R works from anywhere in the main window.</td></tr>
+<tr><td><strong>Start recording / Stop recording</strong></td><td>Ctrl+R, or Alt+K, R</td><td>Toggle. The label flips between &ldquo;Start recording&rdquo; and &ldquo;Stop recording&rdquo; so NVDA announces whichever action the next press would perform. Either label is activated by Alt+R (the underline stays on a letter R in both). Each press of Start plays a short cue sound (if enabled in Preferences), then creates a new file in your recordings folder named <code>RemSound-yyyy-MM-dd_HH-mm-ss.&lt;ext&gt;</code>. Stop closes the file then plays the stop cue. Ctrl+R works from anywhere in the main window.</td></tr>
+<tr><td><strong>Open current recordings folder</strong></td><td>Alt+K, O</td><td>Opens your current recordings folder in Windows Explorer. Creates the folder if it doesn&rsquo;t exist yet (first launch after a fresh install).</td></tr>
+<tr><td><strong>Change recordings folder&hellip;</strong></td><td>Alt+K, C</td><td>Folder picker. Pick a different folder for future recordings. The choice is saved on the current profile, so different profiles can record to different places.</td></tr>
+</table>
+
+<p><em>Recording settings used to live here as a third menu item; it moved to the Options menu in v1.5.</em></p>
+
+<h3>Options menu</h3>
+
+<p>Press <strong>Alt+O</strong> to open the menu, then the underlined letter for the item you want. The Options menu collects everything you&rsquo;d want to configure about the app — recording settings, keyboard shortcuts, startup behaviour, general preferences. Pre-v1.5 these were scattered across File and Record menus and the Preferences dialog itself.</p>
+
+<table>
+<tr><th>Item</th><th>Shortcut</th><th>What it does</th></tr>
 <tr><td><strong>Recording settings&hellip;</strong></td><td>Alt+O, S</td><td>Opens the Recording settings dialog. Up to five listboxes: <em>Recording source</em> (Alt+S), <em>File format</em> (Alt+F), <em>Audio format attributes</em> (Alt+A), <em>FLAC compression level</em> (Alt+L &mdash; visible only when FLAC is selected), <em>Channels</em> (Alt+C). The attributes list repopulates based on the selected format. OK saves to the current profile; Cancel discards.</td></tr>
-<tr><td><strong>Open current recordings folder</strong></td><td>Alt+O, O</td><td>Opens your current recordings folder in Windows Explorer. Creates the folder if it doesn&rsquo;t exist yet (first launch after a fresh install).</td></tr>
-<tr><td><strong>Change recordings folder&hellip;</strong></td><td>Alt+O, C</td><td>Folder picker. Pick a different folder for future recordings. The choice is saved on the current profile, so different profiles can record to different places.</td></tr>
+<tr><td><strong>Keyboard shortcuts&hellip;</strong></td><td>Ctrl+K, or Alt+O, K</td><td>Opens the global hotkey configuration dialog (mute, volume, tray show/hide, start/stop recording, remote-control sends).</td></tr>
+<tr><td><strong>Startup behaviour&hellip;</strong></td><td>Alt+O, T</td><td>Opens the Startup behaviour dialog directly (in v1.4 and earlier this was a button inside Preferences). Choose whether to auto-launch with Windows, which profile to load by default, and whether to start minimised to tray.</td></tr>
+<tr><td><strong>Preferences&hellip;</strong></td><td>Ctrl+P, or Alt+O, P</td><td>Opens the Preferences dialog. Sticky machine-local choices live here: profile folder, the <strong>Cue sounds (Alt+N)</strong> checklist (one tickable item per cue: connect, disconnect, recording start, recording stop), accept remote volume commands, update-check frequency, manual check-for-updates button, silently install updates, enable logs, write logs now. Esc or the Close button dismisses.</td></tr>
 </table>
 
 <h3>Help menu</h3>
@@ -256,6 +268,8 @@ ul, ol { padding-left: 1.4em; }
 <li>Two physical outputs for left/right room monitoring.</li>
 </ul>
 
+<p><strong>Cross-lane routing</strong> (v1.5+): a peer always announces which lane it&rsquo;s sending from (WASAPI lane or ASIO lane). On the receiving side, if you have only one type of output device ticked, audio from a peer&rsquo;s opposite lane is still routed through whatever output IS ticked. Pre-v1.5 a WASAPI-lane peer was inaudible to a receiver who only had ASIO outputs ticked (and vice versa) &mdash; the session opened but never produced audio. Now a single ticked output is enough to hear everything.</p>
+
 <h3>Sending</h3>
 
 <p>Sending requires <strong>Send my audio</strong> ticked, plus at least one capture source ticked across the three send lists.</p>
@@ -311,7 +325,7 @@ ul, ol { padding-left: 1.4em; }
 <tr><th>Control</th><th>Shortcut</th><th>What it does</th></tr>
 <tr><td><strong>Audio codec</strong></td><td>Alt+C</td><td>PCM 48k 24-bit, Opus high quality (20 ms), or Opus lower quality (10 ms). See <a href="#latency">codec choice</a>.</td></tr>
 <tr><td><strong>Packet size</strong></td><td>Alt+P</td><td><em>Standard</em> (default) or <em>Small</em> (LAN only). Smaller packets save a couple of milliseconds of send-side accumulator latency at the cost of doubling the packet rate.</td></tr>
-<tr><td><strong>Lock to audio clock</strong></td><td>Alt+K</td><td>Sender-side timing tightener. Locks packet emission to the audio device&rsquo;s hardware clock instead of a Stopwatch loop. Saves a few milliseconds of jitter; brief clicks possible if the link can&rsquo;t keep up. The label changes depending on whether ASIO is in the pipeline so it tells you what it actually does in your current setup.</td></tr>
+<tr><td><strong>Lock to audio clock</strong></td><td>Alt+D</td><td>Sender-side timing tightener. Locks packet emission to the audio device&rsquo;s hardware clock instead of a Stopwatch loop. Saves a few milliseconds of jitter; brief clicks possible if the link can&rsquo;t keep up. The label changes depending on whether ASIO is in the pipeline so it tells you what it actually does in your current setup. Mnemonic was Alt+K until v1.5 (Record menu took Alt+K at the menu-bar level) — now Alt+D, the D from &ldquo;au<u>d</u>io&rdquo;.</td></tr>
 </table>
 
 <h3>Audio receive parameters</h3>
@@ -397,7 +411,7 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <p>Even if a peer is sending audio in your direction, you won&rsquo;t hear it until you&rsquo;ve ticked their checkbox. This is deliberate &mdash; connecting is a consent step. A peer&rsquo;s name shows up in Discovered the moment they come online, but they can&rsquo;t make sound on your speakers until you say yes.</p>
 
 <h3>Heartbeat indicator</h3>
-<p>For each connected peer, the status read-out at the bottom of the window shows a small status: their latest round-trip time in milliseconds, or <strong>pending</strong>, <strong>stale</strong>, or <strong>unreachable</strong> if heartbeat replies have stopped. RemSound plays a connect cue (a short sound) when a peer transitions to healthy and a disconnect cue when one becomes unreachable. Both cues can be silenced via <strong>Mute connect/disconnect sounds</strong> in the Preferences dialog (File &rarr; Preferences, or Ctrl+P).</p>
+<p>For each connected peer, the status read-out at the bottom of the window shows a small status: their latest round-trip time in milliseconds, or <strong>pending</strong>, <strong>stale</strong>, or <strong>unreachable</strong> if heartbeat replies have stopped. RemSound plays a connect cue (a short sound) when a peer transitions to healthy and a disconnect cue when one becomes unreachable. Both cues can be silenced via <strong>Mute connect/disconnect sounds</strong> in the Preferences dialog (Options &rarr; Preferences, or Ctrl+P).</p>
 
 <h2 id="network">11. How the network works (LAN, WAN, Tailscale)</h2>
 
@@ -465,7 +479,7 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <li><strong>Audio latency in milliseconds (Alt+L)</strong> &mdash; the headline target buffer size at the receiver.</li>
 <li><strong>Buffer smoothness (Alt+B)</strong> &mdash; how aggressively the receiver protects against jitter spikes.</li>
 <li><strong>Packet size (Alt+P)</strong> &mdash; Standard or Small. Smaller packets shave a couple of milliseconds off send-side delay at the cost of doubling packet rate.</li>
-<li><strong>Lock to audio clock (Alt+K)</strong> &mdash; ties packet emission to the audio device&rsquo;s hardware clock end-to-end, eliminating Windows scheduler jitter.</li>
+<li><strong>Lock to audio clock (Alt+D)</strong> &mdash; ties packet emission to the audio device&rsquo;s hardware clock end-to-end, eliminating Windows scheduler jitter.</li>
 <li><strong>Continuous auto-tune</strong> &mdash; lets the receiver choose the latency target for you, every few seconds.</li>
 </ul>
 
@@ -570,7 +584,7 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <tr><td>Alt+S</td><td>Focus Connection status read-out</td></tr>
 </table>
 
-<p>(Logging controls &mdash; Enable logs and Write logs now &mdash; live in the Preferences dialog; reach them via File &rarr; Preferences or Ctrl+P, then Alt+L / Alt+W within the dialog.)</p>
+<p>(Logging controls &mdash; Enable logs and Write logs now &mdash; live in the Preferences dialog; reach them via Options &rarr; Preferences or Ctrl+P, then Alt+L / Alt+W within the dialog.)</p>
 
 <h3>Audio inputs and outputs tab</h3>
 <table>
@@ -595,7 +609,7 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <tr><td>Alt+U</td><td>Toggle Use CPU and Windows performance settings in high priority mode (for this profile)</td></tr>
 <tr><td>Alt+C</td><td>Focus Audio codec</td></tr>
 <tr><td>Alt+P</td><td>Focus Packet size</td></tr>
-<tr><td>Alt+K</td><td>Toggle Lock to audio clock</td></tr>
+<tr><td>Alt+D</td><td>Toggle Lock to audio clock</td></tr>
 <tr><td>Alt+L</td><td>Focus latency spinner &mdash; ASIO lane when an ASIO driver is selected, otherwise the single Audio latency spinner</td></tr>
 <tr><td>Alt+T</td><td>Toggle continuous auto-tune &mdash; ASIO lane when an ASIO driver is selected, otherwise the single Continuous auto-tune toggle</td></tr>
 <tr><td>Alt+W</td><td>(Only when an ASIO driver is selected.) Focus the WASAPI-lane latency spinner</td></tr>
@@ -612,14 +626,18 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <tr><td>Ctrl+K</td><td>Open Keyboard shortcuts dialog</td></tr>
 <tr><td>Ctrl+P</td><td>Open Preferences dialog</td></tr>
 <tr><td>Ctrl+R</td><td>Start or stop recording (toggles)</td></tr>
-<tr><td>Alt+O, R</td><td>Start or stop recording (via menu &mdash; Record menu is Alt+O, item is R for &ldquo;recording&rdquo;)</td></tr>
-<tr><td>Alt+O, S</td><td>Recording settings dialog</td></tr>
-<tr><td>Alt+O, O</td><td>Open current recordings folder</td></tr>
-<tr><td>Alt+O, C</td><td>Change recordings folder</td></tr>
+<tr><td>Alt+K, R</td><td>Start or stop recording (via menu &mdash; Record menu is Alt+K, item is R for &ldquo;recording&rdquo;)</td></tr>
+<tr><td>Alt+K, O</td><td>Open current recordings folder</td></tr>
+<tr><td>Alt+K, C</td><td>Change recordings folder</td></tr>
 <tr><td>Alt+F, O</td><td>Open profile</td></tr>
+<tr><td>Alt+F, R</td><td>Recent profiles (submenu — then 1..5 for the matching slot)</td></tr>
 <tr><td>Alt+F, A</td><td>Save profile as</td></tr>
-<tr><td>Alt+F, R</td><td>Rename current profile</td></tr>
-<tr><td>Alt+F, M</td><td>Minimise to tray</td></tr>
+<tr><td>Alt+F, M</td><td>Rename current profile</td></tr>
+<tr><td>Alt+F, N</td><td>Minimise to tray</td></tr>
+<tr><td>Alt+O, S</td><td>Recording settings</td></tr>
+<tr><td>Alt+O, K</td><td>Keyboard shortcuts</td></tr>
+<tr><td>Alt+O, T</td><td>Startup behaviour</td></tr>
+<tr><td>Alt+O, P</td><td>Preferences</td></tr>
 <tr><td>Alt+F, X</td><td>Exit</td></tr>
 </table>
 
@@ -636,7 +654,7 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 
 <h2 id="hotkeys">14. Global hotkeys (work even when minimised)</h2>
 
-<p>Configurable in the Keyboard shortcuts dialog (Ctrl+K, or File &rarr; Keyboard shortcuts). The dialog is a single list of every bindable shortcut: arrow up and down to move between rows, press <strong>Enter</strong> to rebind the highlighted row, press <strong>Del</strong> to clear it (back to <em>not set</em>), press <strong>Escape</strong> (or Tab to the Close button) to close. Defaults:</p>
+<p>Configurable in the Keyboard shortcuts dialog (Ctrl+K, or Options &rarr; Keyboard shortcuts). The dialog is a single list of every bindable shortcut: arrow up and down to move between rows, press <strong>Enter</strong> to rebind the highlighted row, press <strong>Del</strong> to clear it (back to <em>not set</em>), press <strong>Escape</strong> (or Tab to the Close button) to close. Defaults:</p>
 
 <table>
 <tr><th>Hotkey</th><th>Action</th><th>Default</th></tr>
@@ -644,6 +662,7 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <tr><td>Send mute</td><td>Mute / unmute outgoing audio (this machine)</td><td>Ctrl+Shift+Alt+S</td></tr>
 <tr><td>Tray toggle</td><td>Show / hide the main window</td><td>Ctrl+Shift+F10</td></tr>
 <tr><td>Volume up / down</td><td>Adjust this machine's received-audio volume</td><td>Unset</td></tr>
+<tr><td>Start / Stop recording</td><td>Start or stop a recording on this machine. Same toggle as the Record menu&rsquo;s start/stop item and the in-app Ctrl+R, but works system-wide (RemSound doesn&rsquo;t need keyboard focus). See <a href="#recording">Recording to a file</a> for what gets captured.</td><td>Unset</td></tr>
 <tr><td>Send remote volume up to peers</td><td>Tell every connected peer to raise their RemSound app volume slider by 5 points (only honoured by peers that have ticked &ldquo;Accept remote volume commands&rdquo;). Doesn't change your own volume. See <a href="#remote-control">Remote control</a>.</td><td>Unset</td></tr>
 <tr><td>Send remote volume down to peers</td><td>Mirror, lower direction.</td><td>Unset</td></tr>
 <tr><td>Send remote receive mute toggle to peers</td><td>Tell every connected peer to toggle their RemSound receive mute.</td><td>Unset</td></tr>
@@ -710,7 +729,7 @@ Bind whatever key combinations you prefer (e.g. Ctrl+Shift+Up / Ctrl+Shift+Down 
 
 <h2 id="startup">16. Startup behaviour</h2>
 
-<p>Open the <strong>Startup behaviour</strong> dialog from File &rarr; Preferences &rarr; Startup behaviour (or Ctrl+P, then Alt+S). It has three independent toggles, plus a profile picker that appears when the third one is on. Tab cycles between the three checkboxes, the profile list (when visible), and the Close button. Esc closes the dialog. Each tick is saved immediately &mdash; there's no OK/Apply button.</p>
+<p>Open the <strong>Startup behaviour</strong> dialog from Options &rarr; Startup behaviour (Alt+O, T). It has three independent toggles, plus a profile picker that appears when the third one is on. Tab cycles between the three checkboxes, the profile list (when visible), and the Close button. Esc closes the dialog. Each tick is saved immediately &mdash; there's no OK/Apply button. (Before v1.5 this dialog was reached by a button inside Preferences; it's now its own top-level Options-menu item.)</p>
 
 <table>
 <tr><th>Toggle</th><th>What it does</th></tr>
@@ -739,7 +758,7 @@ Bind whatever key combinations you prefer (e.g. Ctrl+Shift+Up / Ctrl+Shift+Down 
 
 <h3>Settings in Preferences</h3>
 
-<p>Open <strong>File &rarr; Preferences</strong> (or Ctrl+P). The update settings sit above the logging row:</p>
+<p>Open <strong>Options &rarr; Preferences</strong> (or Ctrl+P). The update settings sit above the logging row:</p>
 
 <table>
 <tr><th>Setting</th><th>Shortcut</th><th>What it does</th></tr>
@@ -818,10 +837,11 @@ Bind whatever key combinations you prefer (e.g. Ctrl+Shift+Up / Ctrl+Shift+Down 
 
 <h3>Starting and stopping</h3>
 
-<p>Three ways to start or stop a recording:</p>
+<p>Four ways to start or stop a recording:</p>
 <ul>
 <li><strong>Ctrl+R</strong> from anywhere in the main window &mdash; toggle. The menu item text flips between &ldquo;Start recording&rdquo; and &ldquo;Stop recording&rdquo; so NVDA announces the current state when you walk into the menu.</li>
 <li><strong>Record &rarr; Start recording</strong> (or Stop, when one is in progress).</li>
+<li>The configurable <strong>Start / Stop recording</strong> global hotkey &mdash; works system-wide, even when RemSound is minimised or doesn&rsquo;t have keyboard focus. Unset by default; bind a combo via the Keyboard shortcuts dialog (Ctrl+K). See <a href="#hotkeys">Global hotkeys</a>.</li>
 <li>Closing RemSound while a recording is running cleanly finalises the file &mdash; you don&rsquo;t lose data if you forget to stop manually.</li>
 </ul>
 

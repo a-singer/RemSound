@@ -20,6 +20,40 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v1.4
+
+        Recording-settings dialog cleanup and a few mnemonic
+        adjustments. No wire-format or audio-pipeline changes — v1.4
+        and v1.3 peers interoperate.
+
+        Recording settings dialog:
+          * Channel mode is now its own dedicated listbox (Alt+C)
+            instead of being folded into every attribute row. WAV
+            shrinks from 6 attribute rows to 3, MP3 and OGG-Opus from
+            8 to 4, FLAC from 4 to 2.
+          * FLAC compression level (0..8) is now selectable in its
+            own listbox (Alt+L). Previously hard-fixed at the libFLAC
+            default of 5. The list is shown only when the file format
+            is FLAC. Friendly tags on the endpoints: "0 — fastest
+            encode, biggest file", "5 — default (libFLAC reference)",
+            "8 — slowest encode, smallest file". All levels produce
+            bit-identical audio — pure encode-time vs file-size
+            tradeoff.
+
+        Record menu mnemonics:
+          * Start / Stop recording is now Alt+O, R (was Alt+O, S).
+            Matches the Ctrl+R global toggle so the same letter does
+            the same job from either entry point.
+          * Recording settings is now Alt+O, S (was Alt+O, T). Reads
+            more naturally now that the R slot is freed.
+          * Open folder (O) and Change folder (C) unchanged.
+
+        Dialog mnemonic adjustment:
+          * Cancel button in the Recording settings dialog moved
+            from Alt+C to Alt+N so the Channels listbox can take
+            Alt+C. Esc still dismisses the dialog the way it always
+            has.
+
         RemSound v1.3
 
         Updater hardening. The v1.2 self-updater silently failed on

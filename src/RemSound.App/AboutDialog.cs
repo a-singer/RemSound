@@ -20,6 +20,36 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v1.3
+
+        Updater hardening. The v1.2 self-updater silently failed on
+        installs inside Dropbox-synced folders because Dropbox held
+        write locks on the existing files during the brief window
+        between the parent exiting and the helper script copying the
+        new files in. Robocopy gave up after 5 seconds and the helper
+        relaunched the old binary anyway — so the user saw the same
+        version they started with after pressing "Yes" on the install
+        prompt.
+
+        What's new:
+          * Helper script retries robocopy for up to 60 seconds per
+            file (was 5). Dropbox lock release happens reliably within
+            that window in practice.
+          * Helper now checks robocopy's exit code. On a true failure
+            (exit code 8 or higher), it writes update-failed.txt next
+            to RemSound.exe with diagnostic detail and does NOT
+            relaunch the old binary. Earlier versions silently
+            relaunched the unmodified old binary, hiding the failure.
+          * Helper writes a step-by-step log to _update-helper.log in
+            the install folder. If a future update goes wrong this is
+            where the trace lives.
+          * Stale failure markers are cleared at the start of every
+            new update attempt, so a successful run leaves the install
+            folder clean.
+
+        Wire format, audio pipeline, and recording feature are
+        unchanged from v1.2.
+
         RemSound v1.2
 
         Recording, sound cues, and receiver-side drift compensation.

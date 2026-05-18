@@ -20,6 +20,23 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v1.7
+
+        Updater fix. No wire-format or audio-pipeline changes —
+        v1.5, v1.6 and v1.7 peers interoperate.
+
+        Bug fix:
+          * Check for updates now reliably finds RemSound
+            releases. RemSound and the relay server share one
+            GitHub repository; the server's releases use
+            "server-" tags. The updater previously looked only
+            at the single newest release of any kind, so a
+            server release could derail it (it would misread
+            the version and report "up to date"). It now scans
+            the release list and considers only RemSound client
+            versions, ignoring server releases, drafts and
+            pre-releases.
+
         RemSound v1.6
 
         Three reliability fixes. No wire-format or audio-pipeline

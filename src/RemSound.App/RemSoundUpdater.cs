@@ -64,7 +64,13 @@ internal sealed class RemSoundUpdater : IDisposable
     {
         try
         {
-            var url = $"https://api.github.com/repos/{RepoOwner}/{RepoName}/releases/latest";
+            // List releases — NOT /releases/latest. The repo also hosts the relay server's
+            // own "server-vX.Y" releases, and /releases/latest is repo-wide: it hands back
+            // whichever release is newest by date, server or client. A server release would
+            // then be fed to ParseTag ("server-v2.3" -> a bogus 0.0.3) and the updater would
+            // wrongly conclude "up to date". We pull the list and consider ONLY releases
+            // whose tag is a RemSound client tag (see IsClientReleaseTag). 2026-05-18.
+            var url = $"https://api.github.com/repos/{RepoOwner}/{RepoName}/releases";
             Log?.Invoke($"updater: GET {url}");
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
@@ -75,14 +81,30 @@ internal sealed class RemSoundUpdater : IDisposable
                 return null;
             }
             await using var stream = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
-            var release = await JsonSerializer.DeserializeAsync<GitHubRelease>(stream, JsonOpts, token).ConfigureAwait(false);
-            if (release?.TagName is null)
+            var releases = await JsonSerializer.DeserializeAsync<List<GitHubRelease>>(stream, JsonOpts, token).ConfigureAwait(false);
+            if (releases is null || releases.Count == 0)
             {
-                Log?.Invoke("updater: response had no tag_name");
+                Log?.Invoke("updater: releases list was empty");
                 return null;
             }
 
-            var latest = ParseTag(release.TagName);
+            // Highest-versioned RemSound client release. Skip drafts, prereleases, and any
+            // tag that isn't a client tag (notably the server-vX.Y relay releases).
+            GitHubRelease? release = null;
+            var latest = new Version(0, 0, 0);
+            foreach (var r in releases)
+            {
+                if (r.TagName is null || r.Draft || r.Prerelease) continue;
+                if (!IsClientReleaseTag(r.TagName)) continue;
+                var v = ParseTag(r.TagName);
+                if (v > latest) { latest = v; release = r; }
+            }
+            if (release?.TagName is null)
+            {
+                Log?.Invoke("updater: no RemSound client release found in the releases list");
+                return null;
+            }
+
             var current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0);
             Log?.Invoke($"updater: current={current.ToString(3)} latest={latest.ToString(3)} ({release.TagName})");
             if (latest <= current) return null;
@@ -259,6 +281,19 @@ internal sealed class RemSoundUpdater : IDisposable
     /// <summary>Parses a release tag like <c>v1.2</c> or <c>1.2.3</c> into a <see cref="Version"/>.
     /// Leading "v" is stripped. Missing minor/build parts get filled with zeros so the result
     /// always compares meaningfully against <see cref="Assembly.GetName"/>.Version.</summary>
+    /// <summary>True if <paramref name="tag"/> is a RemSound client release tag — e.g.
+    /// <c>v1.6</c>, <c>1.6</c>, <c>1.6.0</c> — rather than something else hosted in the same
+    /// GitHub repo, notably the relay server's <c>server-vX.Y</c> releases. Test: after an
+    /// optional leading <c>v</c>, the first character must be a digit. <c>server-v2.3</c>
+    /// starts with 's' and is rejected; <c>v1.6</c> is accepted. The updater must filter on
+    /// this because it lists all repo releases and the server publishes into the same repo.</summary>
+    public static bool IsClientReleaseTag(string? tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag)) return false;
+        var trimmed = tag.TrimStart('v', 'V').Trim();
+        return trimmed.Length > 0 && char.IsDigit(trimmed[0]);
+    }
+
     public static Version ParseTag(string tag)
     {
         if (string.IsNullOrWhiteSpace(tag)) return new Version(0, 0, 0);
@@ -298,6 +333,8 @@ internal sealed class RemSoundUpdater : IDisposable
         [JsonPropertyName("tag_name")] public string? TagName { get; set; }
         [JsonPropertyName("body")] public string? Body { get; set; }
         [JsonPropertyName("html_url")] public string? HtmlUrl { get; set; }
+        [JsonPropertyName("draft")] public bool Draft { get; set; }
+        [JsonPropertyName("prerelease")] public bool Prerelease { get; set; }
         [JsonPropertyName("assets")] public List<GitHubAsset>? Assets { get; set; }
     }
 

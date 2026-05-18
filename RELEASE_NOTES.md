@@ -1,16 +1,16 @@
-# RemSound v1.6
+# RemSound v1.7
 
-Three reliability fixes — peer-address recovery, a reconnect crash, and a long-run memory/CPU leak. Wire format and audio pipeline are unchanged from v1.4 / v1.5 — all three releases interoperate.
+A self-updater fix. Wire format and audio pipeline are unchanged from v1.4 / v1.5 / v1.6 — all releases interoperate.
 
-## Bug fixes
+## Bug fix
 
-- **Peer address recovery.** If the address you connected to stops responding — a peer rebooted onto a new IP, or a computer name resolved (via DNS / a router or Pi-hole record) to a stale address — RemSound now follows the peer to the live address it is still heartbeating from, instead of sending audio to a dead address indefinitely. Recovery is automatic within a few seconds. It only adopts private-network (LAN) addresses, so a relay's public address can never be mistaken for a moved peer.
-- **Reconnect crash fixed.** When a peer reconnected — typically after rebooting — the Connectivity tab's peer list could be read mid-rebuild with a stale list index, throwing an `IndexOutOfRangeException` from the 1-second status timer and bringing the app down with a crash dialog. The list reads are now bounds-checked, and the status tick is wrapped so a transient UI hiccup is logged instead of fatal.
-- **Long-run memory and CPU leak fixed.** A receiver left running for hours could grow to several gigabytes of memory and climbing CPU. Decoder sessions orphaned by peer reconnects (each reconnect creates a fresh stream identity) were not being reliably reclaimed — they piled up, each holding a multi-megabyte playout buffer and costing render-thread time on every audio callback. Idle sessions are now reaped on their own activity timer, with a hard cap on live sessions as a backstop, so memory and CPU stay bounded however long RemSound runs.
+- **Check for updates now reliably finds RemSound releases.** RemSound and the RemSound relay server are published from the same GitHub repository; the relay's releases use `server-` prefixed tags. The updater previously asked GitHub only for the single newest release of *any* kind — so whenever a relay release was the most recent, the updater misread its version and concluded RemSound was already up to date, silently skipping a real client update. The updater now scans the full release list and considers only RemSound client versions, ignoring server releases, drafts and pre-releases.
+
+If your copy is stuck on an older version because of this, install v1.7 once by hand (below) — from v1.7 onward, **Help → Check for updates** works correctly on its own.
 
 ## Install
 
-1. Download `RemSound-v1.6.zip` from this release.
+1. Download `RemSound-v1.7.zip` from this release.
 2. Extract somewhere with write permission (e.g. `C:\RemSound\`, `Documents\RemSound\`). Avoid `Program Files` unless you grant write permission so the self-updater can replace files in place.
 3. Run `RemSound.exe`. Allow on private networks when Windows Firewall prompts.
 4. Press F1 (or use the Help menu) for the user manual.
@@ -19,6 +19,6 @@ Requires the .NET 10 Desktop Runtime. If it's missing, Windows offers to fetch i
 
 ## Upgrading
 
-v1.3 / v1.4 / v1.5 users on any install location can use **Help → Check for updates** — the hardened updater pulls v1.6 cleanly.
+v1.5 / v1.6 users: use **Help → Check for updates** — it pulls v1.7 cleanly (their updater can still see v1.7 as long as it's the newest release at check time). To be certain, the manual install above always works.
 
 If you installed RemSound inside a Dropbox-synced (or other file-sync) folder and your install is v1.0 / v1.1 / v1.2, see the [v1.3 release notes](https://github.com/Ednunp/RemSound/releases/tag/v1.3) for one-time manual install steps. From v1.3 onward Check-for-updates handles Dropbox correctly.

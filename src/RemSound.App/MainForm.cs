@@ -293,6 +293,9 @@ public sealed class MainForm : Form
     private int continuousTuneIntervalSec = 5;
     private long lastObservedUnderrunCount;
     private HeartbeatService? heartbeatService;
+    // Last time TryAdoptLiveHeartbeatAddress re-pointed the sender at a peer's live address.
+    // Gives a fresh endpoint time to prove healthy before another swap can fire (anti-thrash).
+    private DateTime lastAddressAdoptionUtc = DateTime.MinValue;
     // Tracks the most recent PeerHealthState we observed for each peer endpoint, so we can
     // detect transitions and play the appropriate cue. Connect: any state → Healthy.
     // Disconnect: any state → Unreachable. Stale doesn't fire (it's a transient).
@@ -866,13 +869,25 @@ public sealed class MainForm : Form
         // --- Status / health ticker ---
         statusTimer.Tick += (_, _) =>
         {
-            UpdateStatus();
-            SnapshotLogIfDue();
-            EnsureRequestedAudioRunning();
-            // Refresh the Connectivity tab's peer lists from the same 1 Hz tick — replaces
-            // the dialog's old 1.5 s dedicated refresh timer. Each Sync* helper short-circuits
-            // when its signature is unchanged so NVDA isn't spammed with re-announcements.
-            SyncAllPeerLists();
+            // Belt-and-braces: this is a 1 Hz UI tick — a transient WinForms hiccup (e.g. a
+            // stale-index ItemArray throw during a churny peer-list rebuild) must never take
+            // the whole app down with a crash dialog. Log and ride it out; the next tick
+            // recovers. The individual Sync* methods are also hardened (see SafeSelectedItem).
+            try
+            {
+                UpdateStatus();
+                SnapshotLogIfDue();
+                EnsureRequestedAudioRunning();
+                TryAdoptLiveHeartbeatAddress();
+                // Refresh the Connectivity tab's peer lists from the same 1 Hz tick — replaces
+                // the dialog's old 1.5 s dedicated refresh timer. Each Sync* helper short-circuits
+                // when its signature is unchanged so NVDA isn't spammed with re-announcements.
+                SyncAllPeerLists();
+            }
+            catch (Exception ex)
+            {
+                AppendLogEntry($"status tick: {ex.GetType().Name}: {ex.Message}");
+            }
         };
 
         // --- Hot-swap device watcher ---
@@ -2307,6 +2322,20 @@ public sealed class MainForm : Form
         return $"{(int)span.TotalHours} hour{((int)span.TotalHours == 1 ? "" : "s")} {span.Minutes} minute{(span.Minutes == 1 ? "" : "s")}";
     }
 
+    /// <summary>
+    /// Reads <c>list.SelectedItem</c> without the IndexOutOfRangeException WinForms' internal
+    /// ItemArray throws when <c>SelectedIndex</c> is briefly left pointing past the item array.
+    /// That happens during churny peer-list rebuilds (peer reboots, rapid reconnects): the
+    /// 1 Hz Sync* tick read <c>SelectedItem</c> — whose getter blindly does Items[SelectedIndex]
+    /// — and crashed the whole app from a timer callback. Bounds-check the index ourselves,
+    /// the same defensive pattern the ItemCheck handlers already use. 2026-05-15.
+    /// </summary>
+    private static object? SafeSelectedItem(ListBox list)
+    {
+        var i = list.SelectedIndex;
+        return i >= 0 && i < list.Items.Count ? list.Items[i] : null;
+    }
+
     private void SyncConnectedList()
     {
         var desired = new List<(PeerListItem Item, Guid Id)>();
@@ -2332,7 +2361,7 @@ public sealed class MainForm : Form
         if (signature != lastConnectedListSignature)
         {
             lastConnectedListSignature = signature;
-            var selectedId = connectedPeersList.SelectedItem is PeerListItem si ? si.Peer.InstanceId : Guid.Empty;
+            var selectedId = SafeSelectedItem(connectedPeersList) is PeerListItem si ? si.Peer.InstanceId : Guid.Empty;
             suppressConnectedCheck = true;
             try
             {
@@ -2408,7 +2437,7 @@ public sealed class MainForm : Form
         if (signature == lastDiscoveredListSignature) return;
         lastDiscoveredListSignature = signature;
 
-        var selectedId = discoveredPeersList.SelectedItem is PeerListItem si ? si.Peer.InstanceId : Guid.Empty;
+        var selectedId = SafeSelectedItem(discoveredPeersList) is PeerListItem si ? si.Peer.InstanceId : Guid.Empty;
         suppressDiscoveredCheck = true;
         try
         {
@@ -2444,7 +2473,7 @@ public sealed class MainForm : Form
         if (signature == lastRememberedListSignature) return;
         lastRememberedListSignature = signature;
 
-        var selectedEntry = rememberedPeersList.SelectedItem is RememberedPeerItem si ? si.Entry : null;
+        var selectedEntry = SafeSelectedItem(rememberedPeersList) is RememberedPeerItem si ? si.Entry : null;
         suppressRememberedCheck = true;
         try
         {
@@ -3319,6 +3348,71 @@ public sealed class MainForm : Form
     private void PushAllowedReceiveSenders()
     {
         receiver.SetAllowedSenders(SelectedSendEndpoints());
+    }
+
+    /// <summary>
+    /// Stale-address recovery. When exactly one tracked peer has gone Unreachable (its
+    /// resolved address — often a stale DNS answer — has no host behind it) and exactly one
+    /// OTHER address is actively heartbeat-pinging us, that address is almost certainly the
+    /// same peer at its real location. Re-point the audio sender, heartbeat tracking and the
+    /// receiver allow-list at the live address.
+    ///
+    /// Deliberately conservative — it fires only on the unambiguous one-unreachable-and-one-
+    /// live case, only for private-range (RFC1918) live addresses (so a relay's public source
+    /// address can never hijack the sender), and with a 10 s cooldown so it can't thrash. The
+    /// messier multi-peer case is left for the user to sort out by hand. Runs once per second
+    /// from the status ticker. 2026-05-15.
+    /// </summary>
+    private void TryAdoptLiveHeartbeatAddress()
+    {
+        if (heartbeatService is null || !connected) return;
+        // Cooldown: adoption re-points the sender; give a freshly-adopted endpoint time to
+        // prove healthy (or fail) before another swap can fire.
+        if (DateTime.UtcNow - lastAddressAdoptionUtc < TimeSpan.FromSeconds(10)) return;
+
+        var unreachable = heartbeatService.GetAllPeerHealth()
+            .Where(h => h.State == PeerHealthState.Unreachable)
+            .ToList();
+        if (unreachable.Count != 1) return;            // 0 = nothing wrong; 2+ = ambiguous
+
+        var liveSources = heartbeatService.GetUntrackedPingSources();
+        if (liveSources.Count != 1) return;            // 0 = no candidate; 2+ = ambiguous
+
+        var deadEp = unreachable[0].AudioEndpoint;
+        var liveAddr = liveSources[0];
+        if (liveAddr.Equals(deadEp.Address)) return;   // same machine — nothing to adopt
+        if (!IsPrivateLanAddress(liveAddr)) return;    // never adopt a public / relay source
+
+        // Find the selected-peer entry whose endpoint is the dead one.
+        var match = selectedPeerEndpoints
+            .FirstOrDefault(kv => kv.Value.Address.Equals(deadEp.Address) && kv.Value.Port == deadEp.Port);
+        if (match.Key == Guid.Empty) return;
+
+        // Reuse the dead endpoint's port — a peer that moved on the LAN keeps its audio port.
+        var newEp = new IPEndPoint(liveAddr, deadEp.Port);
+        selectedPeerEndpoints[match.Key] = newEp;
+        var label = selectedPeerLabels.GetValueOrDefault(match.Key, deadEp.Address.ToString());
+        logFile.Event($"heartbeat: adopted live address for \"{label}\": {deadEp} unreachable, peer is pinging from {newEp}");
+        lastAddressAdoptionUtc = DateTime.UtcNow;
+
+        // ApplyAudioRuntime re-points BOTH the audio sender (SetReceivers) and heartbeat
+        // tracking (SetTrackedPeers); PushAllowedReceiveSenders re-points the receiver
+        // allow-list; PushDiscoveryUnicastHints feeds the new address to discovery too.
+        ApplyAudioRuntime();
+        PushAllowedReceiveSenders();
+        PushDiscoveryUnicastHints();
+    }
+
+    /// <summary>True if <paramref name="addr"/> is an IPv4 RFC1918 private-range address
+    /// (10/8, 172.16/12, 192.168/16). Gates stale-address adoption so a relay's public
+    /// source address can never be mistaken for a peer that moved on the LAN.</summary>
+    private static bool IsPrivateLanAddress(IPAddress addr)
+    {
+        if (addr.AddressFamily != AddressFamily.InterNetwork) return false;
+        var b = addr.GetAddressBytes();
+        return b[0] == 10
+            || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+            || (b[0] == 192 && b[1] == 168);
     }
 
     /// <summary>

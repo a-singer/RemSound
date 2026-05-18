@@ -44,6 +44,14 @@ public sealed class AudioReceiver : IDisposable
     /// though the mix output is unaffected).</summary>
     public static readonly TimeSpan SessionIdleTimeout = TimeSpan.FromSeconds(4);
 
+    /// <summary>Hard ceiling on concurrently-tracked stream sessions. A backstop for the idle
+    /// prune: even if reconnect churn somehow outpaces the idle sweep, the session table — and
+    /// the multi-MB playout ring each entry owns — can never grow without bound. Far above any
+    /// legitimate scenario (the lobby relay caps peers at 10, and a peer emits at most one
+    /// stream per render lane). When exceeded, <see cref="PruneIdleSessions"/> evicts the
+    /// idlest sessions down to this cap. 2026-05-15.</summary>
+    public const int MaxLiveSessions = 32;
+
     private readonly Stopwatch uptime = new();
     private readonly ReceiverDiagnostics diagnostics = new();
     private readonly PlayoutEngine playoutEngine;
@@ -57,6 +65,10 @@ public sealed class AudioReceiver : IDisposable
     // independent audio mode). For single-lane modes the sender emits one streamId so
     // the dict still has one entry per peer, identical to the pre-refactor behaviour.
     private readonly Dictionary<(IPEndPoint Endpoint, ushort StreamId), StreamSession> sessions = new();
+    // Last live-session count emitted to the diagnostic sink. Lets PruneIdleSessions log
+    // only when the count actually changes, so unbounded growth is visible in the log
+    // without spamming it or needing a Task Manager screenshot to notice.
+    private int lastLoggedSessionCount = -1;
 
     /// <summary>When false (the default), a Format packet arriving with a NEW streamId from
     /// a peer that already has a session under a DIFFERENT streamId triggers immediate
@@ -591,29 +603,53 @@ public sealed class AudioReceiver : IDisposable
     public void PruneIdleSessions()
     {
         var now = DateTime.UtcNow;
-        List<(IPEndPoint Endpoint, ushort StreamId)>? toRemove = null;
         lock (sessionsLock)
         {
+            var toRemove = new HashSet<(IPEndPoint Endpoint, ushort StreamId)>();
+
+            // 1) Idle sweep — reap sessions with no decoded write within SessionIdleTimeout.
+            //    Reaped on the session's OWN last-write time. The previous implementation
+            //    cross-referenced PlayoutEngine.ActiveSessions by (endpoint, streamId) and
+            //    silently skipped — leaking the session forever — whenever that lookup missed.
+            //    A reconnecting peer never reuses an old key: a sender reboot rerolls the
+            //    streamId AND rebinds to a fresh ephemeral source port, so the old session is
+            //    always an orphan the lookup-based prune could strand. Reading the session's
+            //    own LastWriteUtc removes the lookup, the race, and the leak. 2026-05-15.
             foreach (var (key, session) in sessions)
             {
-                // Match SessionPlayout by full key so two streams from the same peer don't
-                // share a single SessionPlayout entry. ActiveSessions iteration is small
-                // (one per active stream).
-                var sp = playoutEngine.ActiveSessions.FirstOrDefault(x =>
-                    x.Endpoint.Equals(key.Endpoint) && x.StreamId == key.StreamId);
-                if (sp is null) continue;
-                if (now - sp.LastWriteUtc <= SessionIdleTimeout) continue;
-                toRemove ??= [];
-                toRemove.Add(key);
+                if (now - session.LastWriteUtc > SessionIdleTimeout) toRemove.Add(key);
             }
-            if (toRemove is not null)
+
+            // 2) Hard-cap backstop. If more than MaxLiveSessions would still remain after the
+            //    idle sweep, evict the idlest extras. Guarantees the session table can never
+            //    grow without bound whatever churn the idle sweep can't keep up with.
+            var survivors = sessions.Count - toRemove.Count;
+            if (survivors > MaxLiveSessions)
             {
-                foreach (var key in toRemove)
+                foreach (var key in sessions
+                             .Where(kv => !toRemove.Contains(kv.Key))
+                             .OrderBy(kv => kv.Value.LastWriteUtc)
+                             .Take(survivors - MaxLiveSessions)
+                             .Select(kv => kv.Key))
                 {
-                    if (sessions.Remove(key, out var session)) session.Dispose();
-                    playoutEngine.RemoveSession(key.Endpoint, key.StreamId);
-                    diagnosticSink?.Invoke($"stream session pruned (idle): {key.Endpoint} stream={key.StreamId}");
+                    toRemove.Add(key);
                 }
+            }
+
+            // 3) Apply removals — drop the StreamSession and its paired SessionPlayout together.
+            foreach (var key in toRemove)
+            {
+                if (sessions.Remove(key, out var session)) session.Dispose();
+                playoutEngine.RemoveSession(key.Endpoint, key.StreamId);
+                diagnosticSink?.Invoke($"stream session pruned: {key.Endpoint} stream={key.StreamId}");
+            }
+
+            // Surface the live-session count whenever it changes, so any accumulation is
+            // visible in the log without summing open/prune events.
+            if (sessions.Count != lastLoggedSessionCount)
+            {
+                lastLoggedSessionCount = sessions.Count;
+                diagnosticSink?.Invoke($"stream sessions live: {sessions.Count}");
             }
         }
     }

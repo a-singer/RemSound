@@ -34,6 +34,13 @@ internal sealed class StreamSession : IDisposable
     public AudioFormatInfo Format { get; }
     public AudioTransportCodec Codec => (AudioTransportCodec)Format.Codec;
 
+    /// <summary>UTC timestamp of the most recent decoded-audio write into this session's
+    /// playout buffer. <see cref="AudioReceiver.PruneIdleSessions"/> reaps on this directly,
+    /// rather than a cross-dictionary lookup into PlayoutEngine that could miss and strand
+    /// the session forever — a reconnecting peer never reuses its old (endpoint, streamId)
+    /// key, so its previous session is always an orphan that must be reaped by idle age.</summary>
+    public DateTime LastWriteUtc => sessionPlayout.LastWriteUtc;
+
     /// <summary>For PCM streams: number of incoming packets the assembler rejected outright.</summary>
     public long PcmFrameRejections => pcmAssembler.RejectionCount;
     /// <summary>For PCM streams: number of partially-assembled frames discarded mid-flight.</summary>

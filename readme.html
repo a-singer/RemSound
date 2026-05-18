@@ -931,6 +931,9 @@ Bind whatever key combinations you prefer (e.g. Ctrl+Shift+Up / Ctrl+Shift+Down 
 <li>Check Windows Firewall isn&rsquo;t blocking RemSound. The first launch usually prompts; if you said no, you&rsquo;ll need to allow it manually.</li>
 </ul>
 
+<h3>A peer rebooted or changed IP and audio didn&rsquo;t come back</h3>
+<p>As of v1.6, RemSound follows a peer to its current address on its own. If the address you connected to stops responding but the same peer is still reaching RemSound from a different address on your network &mdash; because they rebooted onto a new IP, or their computer name resolved to a stale address &mdash; RemSound re-points to the live address within a few seconds and audio resumes without you touching anything. If it doesn&rsquo;t recover, the peer is genuinely unreachable (off, asleep, or a firewall is blocking the new path).</p>
+
 <h3>One side says &ldquo;unreachable&rdquo; even though audio is flowing</h3>
 <p>Heartbeat shares the audio port, so if audio gets through, heartbeat should too. If one side is showing &ldquo;unreachable&rdquo; while audio plays, make sure both machines are running the same RemSound build &mdash; an older version on either end can speak a different heartbeat dialect.</p>
 

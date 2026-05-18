@@ -20,6 +20,31 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v1.6
+
+        Three reliability fixes. No wire-format or audio-pipeline
+        changes — v1.5 and v1.6 peers interoperate.
+
+        Bug fixes:
+          * Peer address recovery. If the address you connected
+            to goes unreachable — a peer rebooted onto a new IP,
+            or a computer name resolved to a stale address —
+            RemSound now follows the peer to the live address it
+            is heartbeating from, instead of sending audio into
+            the void. Recovers on its own within a few seconds.
+            Limited to private-network addresses so a relay can
+            never be mistaken for a moved peer.
+          * Fixed a crash that could happen when a peer
+            reconnected (e.g. after rebooting). The Connectivity
+            peer list could be read mid-rebuild with a stale
+            index and bring the app down from the status timer.
+          * Fixed runaway memory and CPU on a long-running
+            receiver. Decoder sessions orphaned by peer
+            reconnects were not being reclaimed — over hours they
+            piled up, each holding a multi-megabyte buffer and
+            costing render-thread time every callback. They are
+            now reaped once idle, with a hard cap as a backstop.
+
         RemSound v1.5
 
         Menu reorganisation, multi-peer audio-routing fix, recording

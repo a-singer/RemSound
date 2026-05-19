@@ -232,6 +232,15 @@ internal sealed class RemSoundUpdater : IDisposable
         var failureMarker = Path.Combine(installDir, "update-failed.txt");
         var stagingDir = Path.Combine(installDir, "_update");
         var remsoundExe = Path.Combine(installDir, "RemSound.exe");
+        // Robocopy source/destination, with any trailing directory separator stripped.
+        // CRITICAL BUG FIX (2026-05-19): installDir is AppContext.BaseDirectory, which ends
+        // in a backslash. A quoted path that ends in a backslash — "D:\dir\" — is mis-parsed
+        // on the command line: the \" is read as an ESCAPED quote, so robocopy never receives
+        // a valid destination argument and exits immediately with code 16 (no files copied).
+        // That silently broke EVERY auto-update in every release to date. The robocopy line
+        // below MUST use these trimmed forms, never the raw {installDir} / {stagingRoot}.
+        var stagingArg = stagingRoot.TrimEnd('\\', '/');
+        var installArg = installDir.TrimEnd('\\', '/');
         return $"""
         @echo off
         setlocal
@@ -256,7 +265,7 @@ internal sealed class RemSoundUpdater : IDisposable
         rem startup settings) and their data folders (logs / profiles / recordings). An update
         rem replaces APP files only. build-release.ps1 already keeps those out of the release
         rem zip; this is the second line of defence so a bad zip still can't clobber them.
-        robocopy "{stagingRoot}" "{installDir}" /E /IS /IT /NFL /NDL /NJH /NJS /R:60 /W:1 /XF _apply-update.cmd /XF _update-helper.log /XF update-failed.txt /XF remsound.config.json /XD logs profiles recordings _update /LOG+:"%LOG%"
+        robocopy "{stagingArg}" "{installArg}" /E /IS /IT /NFL /NDL /NJH /NJS /R:60 /W:1 /XF _apply-update.cmd /XF _update-helper.log /XF update-failed.txt /XF remsound.config.json /XD logs profiles recordings _update /LOG+:"%LOG%"
         set "ROBO_EXIT=%ERRORLEVEL%"
         echo %DATE% %TIME% robocopy exit=%ROBO_EXIT% >> "%LOG%"
 

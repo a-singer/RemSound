@@ -20,6 +20,28 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v1.9
+
+        Critical auto-updater fix. No wire-format or
+        audio-pipeline changes — v1.5 through v1.9 peers
+        interoperate.
+
+        Bug fix:
+          * The auto-updater now actually installs updates.
+            Every previous version had a fault in the update
+            step: the folder path handed to the file-copy
+            command ended in a backslash, which Windows
+            mis-read, so the copy was rejected and no files
+            were ever replaced. Check for updates would
+            download the new version but never apply it. That
+            copy step is fixed.
+
+        Because the fault was in the OLD version doing the
+        updating, v1.8 and earlier cannot install v1.9 for you
+        — install v1.9 by hand once (download the zip, extract
+        it over your RemSound folder). From v1.9 onward, Check
+        for updates installs every update automatically.
+
         RemSound v1.8
 
         Updater polish and a rewritten user manual. No

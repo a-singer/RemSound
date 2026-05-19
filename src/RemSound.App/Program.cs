@@ -83,7 +83,13 @@ internal static class Program
             string? nextPath = null;
             while (true)
             {
+                // Opening an ASIO driver is slow (1-3 s) and happens synchronously inside
+                // MainForm construction. Show a "Loading audio driver" splash — on its own
+                // thread, so it stays painted while this thread is busy — so startup doesn't
+                // look hung. No-op for WASAPI-only profiles (construction is near-instant).
+                var splash = AsioLoadingSplash.StartIfNeeded(profile);
                 using var form = new MainForm(store, profile, title, nextPath);
+                splash?.Dismiss();
                 Application.Run(form);
 
                 if (form.ReloadFromScratch)

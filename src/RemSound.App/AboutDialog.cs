@@ -20,6 +20,22 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v2.0
+
+        A smoother startup when a profile uses an ASIO driver.
+        No wire-format or audio-pipeline changes — v1.5 through
+        v2.0 peers interoperate.
+
+        Change:
+          * Opening an ASIO driver takes a couple of seconds,
+            and during that time the main window used to look
+            frozen on startup. RemSound now shows a small
+            "Loading audio driver" window while the driver
+            opens, so startup no longer looks hung. The window
+            then opens as normal. Profiles that don't use an
+            ASIO driver are unaffected — they still start
+            instantly, with no extra window.
+
         RemSound v1.9
 
         Critical auto-updater fix. No wire-format or

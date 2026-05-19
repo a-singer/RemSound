@@ -1,0 +1,132 @@
+using System;
+using System.Drawing;
+using System.Threading;
+using System.Windows.Forms;
+using RemSound.Core;
+
+namespace RemSound.App;
+
+/// <summary>
+/// A small "Loading audio driver..." window shown on its OWN dedicated UI thread while the
+/// main thread builds <see cref="MainForm"/>.
+///
+/// Why it exists: opening an ASIO driver is slow — 1-3 seconds on many drivers — and that
+/// happens synchronously during MainForm construction. Without a splash the user sees
+/// nothing, or a blank "Not Responding" window shell, for those seconds, and it looks hung.
+///
+/// Why a SEPARATE thread: the ASIO driver must keep being opened on the main UI thread —
+/// that is the STA, message-pumping thread every ASIO / COM driver is most compatible with,
+/// and moving the driver open off it risks breaking drivers we cannot test. But the main
+/// thread is therefore blocked for the whole open, so a splash shown on it would itself be
+/// frozen. Running the splash on its own STA thread with its own message loop lets it paint
+/// and stay alive while the main thread is busy. No ASIO or driver code is touched — only
+/// this cosmetic window runs on the side thread.
+///
+/// Shown only for profiles that actually use an ASIO driver; a WASAPI-only profile builds
+/// the main window near-instantly and gets no splash (it would just flash).
+/// </summary>
+internal sealed class AsioLoadingSplash
+{
+    private readonly Thread thread;
+    private readonly ManualResetEventSlim shown = new(false);
+    private volatile Form? form;
+
+    private AsioLoadingSplash()
+    {
+        thread = new Thread(RunSplash)
+        {
+            IsBackground = true,
+            Name = "RemSound startup splash",
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        // Wait (briefly, capped) for the window to actually be on screen before the caller
+        // begins the slow ASIO work — so the user sees the splash, not a blank moment. The
+        // cap means a splash hiccup can never stall startup.
+        shown.Wait(TimeSpan.FromSeconds(2));
+    }
+
+    /// <summary>
+    /// Starts the splash only when <paramref name="profile"/> has an ASIO driver selected —
+    /// the only case where MainForm construction is slow. Returns null for WASAPI-only
+    /// profiles. Dismiss the returned handle once the main window has been built.
+    /// </summary>
+    public static AsioLoadingSplash? StartIfNeeded(Profile? profile)
+    {
+        if (string.IsNullOrWhiteSpace(profile?.AsioDriverName)) return null;
+        try
+        {
+            return new AsioLoadingSplash();
+        }
+        catch
+        {
+            // The splash is purely cosmetic — if it can't even be created, let the app
+            // start silently rather than have a splash failure block launch.
+            return null;
+        }
+    }
+
+    private void RunSplash()
+    {
+        try
+        {
+            using var splash = new Form
+            {
+                Text = "RemSound",
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterScreen,
+                ControlBox = false,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowInTaskbar = false,
+                TopMost = true,
+                ClientSize = new Size(380, 96),
+                AccessibleName = "RemSound is starting",
+            };
+            splash.Controls.Add(new Label
+            {
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Text = "Loading audio driver, please wait...",
+                AccessibleName = "Loading audio driver, please wait",
+            });
+            splash.Shown += (_, _) => shown.Set();
+            form = splash;
+            Application.Run(splash);
+        }
+        catch
+        {
+            // Never let a splash failure escape on its own thread.
+        }
+        finally
+        {
+            // Unblock the constructor even if the window never managed to show.
+            shown.Set();
+        }
+    }
+
+    /// <summary>
+    /// Closes the splash. Call from the main thread once <see cref="MainForm"/> has been
+    /// constructed. Fire-and-forget — the splash's own background thread tears itself down.
+    /// </summary>
+    public void Dismiss()
+    {
+        try
+        {
+            shown.Set();
+            var f = form;
+            if (f is not null && f.IsHandleCreated && !f.IsDisposed)
+            {
+                f.BeginInvoke(() =>
+                {
+                    try { f.Close(); }
+                    catch { /* already gone */ }
+                });
+            }
+        }
+        catch
+        {
+            // Cosmetic teardown — never throw into the startup path.
+        }
+    }
+}

@@ -70,7 +70,10 @@ internal sealed class RemSoundUpdater : IDisposable
             // then be fed to ParseTag ("server-v2.3" -> a bogus 0.0.3) and the updater would
             // wrongly conclude "up to date". We pull the list and consider ONLY releases
             // whose tag is a RemSound client tag (see IsClientReleaseTag). 2026-05-18.
-            var url = $"https://api.github.com/repos/{RepoOwner}/{RepoName}/releases";
+            // per_page=100 (vs the API default of 30): the repo holds both client (vX.Y) and
+            // relay-server (server-vX.Y) releases, so a burst of server releases could push the
+            // newest client release off a 30-item first page. 100 keeps it comfortably in view.
+            var url = $"https://api.github.com/repos/{RepoOwner}/{RepoName}/releases?per_page=100";
             Log?.Invoke($"updater: GET {url}");
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
@@ -214,6 +217,14 @@ internal sealed class RemSoundUpdater : IDisposable
     ///     for post-mortem when the copy goes wrong. Robocopy's own output is appended via
     ///     <c>/LOG+:</c>.
     ///
+    /// 2026-05-18 changes:
+    ///   * Robocopy now also excludes <c>remsound.config.json</c> (the user's machine-local
+    ///     config) and the <c>logs</c> / <c>profiles</c> / <c>recordings</c> folders, so an
+    ///     update can never overwrite the user's own state — only app files are replaced.
+    ///   * On SUCCESS the helper now also deletes <c>_update-helper.log</c> and any stale
+    ///     <c>update-failed.txt</c> (the <c>_update</c> folder was already removed), leaving
+    ///     a tidy install folder. The FAILURE branch still keeps all of them for diagnosis.
+    ///
     /// The helper is detached from RemSound at start time, so it survives the parent's exit.</summary>
     private static string BuildInstallScript(string stagingRoot, string installDir)
     {
@@ -240,29 +251,55 @@ internal sealed class RemSoundUpdater : IDisposable
         )
 
         echo %DATE% %TIME% parent exited, starting robocopy (R:60 W:1) >> "%LOG%"
-        robocopy "{stagingRoot}" "{installDir}" /E /IS /IT /NFL /NDL /NJH /NJS /R:60 /W:1 /XF _apply-update.cmd /XF _update-helper.log /XF update-failed.txt /LOG+:"%LOG%"
+        rem /XF + /XD keep the update from ever overwriting the USER's own state: their
+        rem machine-local config (remsound.config.json — holds the profiles-folder choice and
+        rem startup settings) and their data folders (logs / profiles / recordings). An update
+        rem replaces APP files only. build-release.ps1 already keeps those out of the release
+        rem zip; this is the second line of defence so a bad zip still can't clobber them.
+        robocopy "{stagingRoot}" "{installDir}" /E /IS /IT /NFL /NDL /NJH /NJS /R:60 /W:1 /XF _apply-update.cmd /XF _update-helper.log /XF update-failed.txt /XF remsound.config.json /XD logs profiles recordings _update /LOG+:"%LOG%"
         set "ROBO_EXIT=%ERRORLEVEL%"
         echo %DATE% %TIME% robocopy exit=%ROBO_EXIT% >> "%LOG%"
 
         if %ROBO_EXIT% GEQ 8 (
-          echo Update copy FAILED. > "%MARKER%"
-          echo Robocopy exit code = %ROBO_EXIT% ^(anything ^>= 8 is a real failure^). >> "%MARKER%"
-          echo Staged files are intact at: {stagingDir} >> "%MARKER%"
-          echo Helper log: %LOG% >> "%MARKER%"
+          echo RemSound could not finish updating. > "%MARKER%"
           echo. >> "%MARKER%"
-          echo Most common cause: Dropbox or another file-sync app was holding write locks >> "%MARKER%"
-          echo on the existing RemSound binaries during the update window. Close RemSound, >> "%MARKER%"
-          echo wait 30 seconds for the sync to settle, then either: >> "%MARKER%"
-          echo   * Re-launch RemSound and try Help -^> Check for updates again, OR >> "%MARKER%"
-          echo   * Manually copy everything from the staged folder above into this folder. >> "%MARKER%"
-          echo %DATE% %TIME% FAILURE: leaving staging intact, NOT restarting RemSound >> "%LOG%"
+          echo The new version downloaded correctly, but RemSound could not >> "%MARKER%"
+          echo replace its program files with it. Nothing is broken - your >> "%MARKER%"
+          echo current version still works and has been left as it was. >> "%MARKER%"
+          echo. >> "%MARKER%"
+          echo What to do: >> "%MARKER%"
+          echo. >> "%MARKER%"
+          echo   1. Close RemSound completely. >> "%MARKER%"
+          echo   2. Wait about 30 seconds. A file-syncing, backup or antivirus >> "%MARKER%"
+          echo      program may have been using RemSound's files; this gives it >> "%MARKER%"
+          echo      time to finish and let go of them. >> "%MARKER%"
+          echo   3. Start RemSound again, open the Help menu, and choose >> "%MARKER%"
+          echo      Check for updates to try once more. It usually works on the >> "%MARKER%"
+          echo      second attempt. >> "%MARKER%"
+          echo. >> "%MARKER%"
+          echo If it still will not update: the new version's files are ready >> "%MARKER%"
+          echo and waiting in the folder named _update, next to RemSound.exe. >> "%MARKER%"
+          echo You can finish the update yourself by copying everything from >> "%MARKER%"
+          echo inside that _update folder into this folder, replacing the older >> "%MARKER%"
+          echo files when asked. >> "%MARKER%"
+          echo. >> "%MARKER%"
+          echo Once RemSound has updated successfully you can delete this file. >> "%MARKER%"
+          echo Technical details for support are in _update-helper.log in this folder. >> "%MARKER%"
+          echo %DATE% %TIME% FAILURE: robocopy exit=%ROBO_EXIT%, update folder kept, NOT restarting RemSound >> "%LOG%"
           del "%~f0"
           exit /b %ROBO_EXIT%
         )
 
         rmdir /S /Q "{stagingDir}" 2>nul
-        echo %DATE% %TIME% staging removed, restarting RemSound >> "%LOG%"
+        echo %DATE% %TIME% update applied OK, cleaning up and restarting RemSound >> "%LOG%"
+        del "%MARKER%" 2>nul
         start "" "{remsoundExe}"
+        rem Success cleanup: the staged _update folder is already gone (rmdir above). Now drop
+        rem the helper log and the failure marker too, so a clean update leaves the install
+        rem folder tidy with no _update / _update-helper.log / update-failed.txt left behind.
+        rem (The FAILURE branch above deliberately keeps all of these for diagnosis.)
+        rem The helper log is deleted last, after the final line is written to it.
+        del "%LOG%" 2>nul
         del "%~f0"
         """;
     }

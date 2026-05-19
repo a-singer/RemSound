@@ -20,6 +20,28 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v1.8
+
+        Updater polish and a rewritten user manual. No
+        wire-format or audio-pipeline changes — v1.5 through
+        v1.8 peers interoperate.
+
+        Changes:
+          * Check for updates looks further down the release
+            list, so it reliably finds the newest RemSound
+            version.
+          * An update can no longer overwrite your own
+            settings, profiles, logs or recordings — it only
+            replaces program files.
+          * After a successful update the install folder is
+            left tidy: temporary update files, the update log
+            and any old failure note are cleared automatically.
+          * If an update ever fails, the note it leaves
+            (update-failed.txt) is now written in plain
+            language with clear steps to follow.
+          * The user manual (press F1) has been rewritten in
+            plain language throughout.
+
         RemSound v1.7
 
         Updater fix. No wire-format or audio-pipeline changes —

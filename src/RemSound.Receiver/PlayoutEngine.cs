@@ -495,7 +495,9 @@ internal sealed class PlayoutEngine : IWaveProvider
     /// <summary>Worst single-sample step seen out of the ring buffer since the last call.
     /// Compared against the sender's pre-encode probe and the session's post-resampler
     /// probe, this locates where in the pipeline an audio discontinuity was introduced.
-    /// Takes the max across all sessions and resets each.</summary>
+    /// Takes the max across all sessions and resets each. Returns max-of-(cross, within);
+    /// for the split, use the XB/WB variants and do NOT also call this in the same drain
+    /// window.</summary>
     public float TakeMaxPostRingReadStep()
     {
         var snap = sessionsSnapshot;
@@ -508,9 +510,36 @@ internal sealed class PlayoutEngine : IWaveProvider
         return max;
     }
 
+    /// <summary>Cross-buffer (read-boundary) max post-ring-read step across all sessions.</summary>
+    public float TakeMaxPostRingReadStepCrossBuffer()
+    {
+        var snap = sessionsSnapshot;
+        var max = 0f;
+        foreach (var s in snap)
+        {
+            var v = s.TakeMaxPostRingReadStepCrossBuffer();
+            if (v > max) max = v;
+        }
+        return max;
+    }
+
+    /// <summary>Within-buffer max post-ring-read step across all sessions.</summary>
+    public float TakeMaxPostRingReadStepWithinBuffer()
+    {
+        var snap = sessionsSnapshot;
+        var max = 0f;
+        foreach (var s in snap)
+        {
+            var v = s.TakeMaxPostRingReadStepWithinBuffer();
+            if (v > max) max = v;
+        }
+        return max;
+    }
+
     /// <summary>Worst single-sample step in the resampler output since the last call.
     /// Significantly larger than <see cref="TakeMaxPostRingReadStep"/> would point the
-    /// finger at the resampler integration.</summary>
+    /// finger at the resampler integration. Returns max-of-(cross, within); use the XB/WB
+    /// variants for the split.</summary>
     public float TakeMaxPostResamplerStep()
     {
         var snap = sessionsSnapshot;
@@ -518,6 +547,32 @@ internal sealed class PlayoutEngine : IWaveProvider
         foreach (var s in snap)
         {
             var v = s.TakeMaxPostResamplerStep();
+            if (v > max) max = v;
+        }
+        return max;
+    }
+
+    /// <summary>Cross-buffer max post-resampler step across all sessions.</summary>
+    public float TakeMaxPostResamplerStepCrossBuffer()
+    {
+        var snap = sessionsSnapshot;
+        var max = 0f;
+        foreach (var s in snap)
+        {
+            var v = s.TakeMaxPostResamplerStepCrossBuffer();
+            if (v > max) max = v;
+        }
+        return max;
+    }
+
+    /// <summary>Within-buffer max post-resampler step across all sessions.</summary>
+    public float TakeMaxPostResamplerStepWithinBuffer()
+    {
+        var snap = sessionsSnapshot;
+        var max = 0f;
+        foreach (var s in snap)
+        {
+            var v = s.TakeMaxPostResamplerStepWithinBuffer();
             if (v > max) max = v;
         }
         return max;

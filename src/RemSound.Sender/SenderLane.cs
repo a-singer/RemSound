@@ -62,6 +62,8 @@ internal sealed class SenderLane
     // that without changing what the probe measures.
     private readonly AudioStepProbe preEncodeStepProbe = new();
     public float TakeMaxPreEncodeStep() => preEncodeStepProbe.TakeMax();
+    public float TakeMaxPreEncodeStepCrossBuffer() => preEncodeStepProbe.TakeMaxCrossBuffer();
+    public float TakeMaxPreEncodeStepWithinBuffer() => preEncodeStepProbe.TakeMaxWithinBuffer();
 
     // Which render route this lane announces in its format packets. The receiver reads the
     // Lane byte on the wire and tags the matching SessionPlayout, which makes PlayoutEngine

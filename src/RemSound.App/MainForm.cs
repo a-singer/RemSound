@@ -38,6 +38,17 @@ public sealed class MainForm : Form
     private readonly MainFormHotkeyController hotkeyController;
     private readonly MainFormTrayController trayController;
     private readonly RecordingController recordingController;
+    // Hook into Windows sleep/resume so the audio backend gets rebuilt after wake. USB
+    // audio devices (ASIO / WASAPI) commonly come back in a degraded post-resume state
+    // where the pipeline runs but no sound actually comes out of the interface — restarting
+    // the backend on resume clears it. Subscribed in the constructor, disposed in FormClosing.
+    private readonly PowerResumeHandler powerResumeHandler;
+    // Optional UPnP / NAT-PMP / PCP router-port opener (Mono.Nat under the hood). Off by
+    // default; the user opts in via the "Automatically open my router for incoming
+    // connections" tick in Preferences (AppConfig.UpnpEnabled). Started lazily in Shown
+    // when the flag is on, restarted from OnSystemResume so a sleep-drop on the router's
+    // NAT table is recovered automatically, and stopped in FormClosing.
+    private readonly RouterPortMapper routerPortMapper;
     // Menu items for the Record menu kept as fields so RecordingStateChanged can flip
     // the visible text + accessibility name between "Start recording" and "Stop recording"
     // without rebuilding the menu.
@@ -393,6 +404,14 @@ public sealed class MainForm : Form
     // itself doesn't create steps but is a signal that the input is hot enough that something
     // could be saturating.
     private long prevDiagClippedSamples;
+    // Per-second GC delta. .NET tracks cumulative collection counts per generation; we
+    // remember the previous tick's values and emit gen-0 / gen-1 / gen-2 deltas in the diag
+    // log so a click-event correlation analysis can spot when a GC pause coincided with a
+    // receive-side arrival-gap spike. Gen-2 in particular implies a multi-millisecond stall
+    // that's a plausible click source. 2026-05-21.
+    private int prevDiagGc0Count;
+    private int prevDiagGc1Count;
+    private int prevDiagGc2Count;
 
     // Profile system (2026-05-02). The active profile (if any) was selected at app start and
     // populated `settings` with its values BEFORE the constructor body runs (see ApplyProfile
@@ -403,6 +422,27 @@ public sealed class MainForm : Form
     // re-launch the form under that profile."
     private ProfileStore? profileStore;
     private string? currentProfileTitle;
+    // True when the active profile has its ReadOnly flag set. Drives three behaviours:
+    //   * The window title gets a " (read-only)" suffix so NVDA / sighted users see
+    //     immediately that changes won't persist.
+    //   * Ctrl+S / File → Save politely refuses (with a "use Save As instead" message).
+    //   * OnFormClosing skips the unsaved-changes prompt entirely — that's the whole
+    //     point of read-only mode, so a profile you live in and toggle send/receive
+    //     on doesn't block shutdown with a dialog you can't reach (NVDA crashed, remote
+    //     session dropped, machine hibernating).
+    // 2026-05-22 — Andre's request: he toggles send/receive on his default profile and
+    // it shouldn't block shutdown when his screen reader can't reach the dirty-prompt.
+    // Toggled via File → Lock profile (read-only) and persisted on the profile JSON.
+    private bool currentProfileReadOnly;
+    // The actual menu item — kept as a field so profile-load (or read-only toggle) can
+    // sync .Checked without rebuilding the menu. CheckOnClick lets the menu item flip
+    // itself on every click; the CheckedChanged handler reads the new value and runs
+    // OnLockProfileToggled.
+    private ToolStripMenuItem? lockProfileMenuItem;
+    // Guards CheckedChanged on lockProfileMenuItem against the programmatic sync that
+    // happens on profile-load — without it, loading a profile that's read-only would
+    // re-fire the toggle handler and re-persist the flag pointlessly.
+    private bool suppressLockProfileToggleHandler;
     /// <summary>Full filesystem path of the active profile's JSON file. Tracked separately
     /// from <see cref="currentProfileTitle"/> because Save As (2026-05-10) lets the user
     /// write a profile to an arbitrary path outside <see cref="ProfileStore.BaseDirectory"/>.
@@ -469,6 +509,10 @@ public sealed class MainForm : Form
             catch { /* benign — recents tracking is a convenience, not load-critical */ }
         }
         pendingProfile = profile;
+        // Carry the profile's ReadOnly flag through to the in-memory tracking field. Blank
+        // template (profile == null) implicitly starts as not-read-only; users still have
+        // the menu toggle available if they want to lock the working state mid-session.
+        currentProfileReadOnly = profile?.ReadOnly ?? false;
         // Push the profile's settings-shaped fields (codec, hotkeys, smoothness, etc.) into
         // the in-memory settings cache BEFORE the rest of the constructor body reads from it.
         // Control states (device ticks, checkboxes, volume) come later in OnShown.
@@ -901,6 +945,17 @@ public sealed class MainForm : Form
         PushDiscoveryUnicastHints();
         hotkeyController.Initialize(this);
 
+        // Hook system sleep/resume so we can rebuild the audio backend after wake (USB
+        // audio devices often come back wedged). The handler routes back through
+        // OnSystemResume on a background thread; that marshals to the UI thread.
+        powerResumeHandler = new PowerResumeHandler(OnSystemResume, msg => logFile.Event($"power: {msg}"));
+
+        // Build the UPnP router-port opener up-front but don't start it — Shown decides
+        // whether to invoke Start() based on AppConfig.UpnpEnabled. Constructing the field
+        // here (rather than lazily on tick) keeps the field non-null so the Preferences
+        // dialog can subscribe to StatusChanged without us juggling instance lifetimes.
+        routerPortMapper = new RouterPortMapper(msg => logFile.Event($"upnp: {msg}"));
+
         FormClosing += (_, _) =>
         {
             statusTimer.Stop();
@@ -908,6 +963,8 @@ public sealed class MainForm : Form
             continuousTuneTimer.Stop();
             updateCheckTimer.Stop();
             asioDriverChangeDebounce.Stop();
+            try { powerResumeHandler?.Dispose(); } catch { }
+            try { routerPortMapper?.Dispose(); } catch { }
             // Reverse every Win32 lever PerformanceMode applied. The kernel would clean
             // these up on process exit anyway, but doing it explicitly releases the power
             // request handle and matches our timeBeginPeriod with a timeEndPeriod.
@@ -970,6 +1027,41 @@ public sealed class MainForm : Form
             if (AppConfig.Load().StartMinimised)
             {
                 BeginInvoke(() => trayController.Minimize());
+            }
+
+            // Kick off UPnP discovery if the user has the box ticked. Off by default; the
+            // mapper itself coalesces redundant Start() calls so a re-enter via Shown after
+            // a sleep cycle is harmless.
+            var startupCfg = AppConfig.Load();
+            if (startupCfg.UpnpEnabled)
+            {
+                try { routerPortMapper.Start(); }
+                catch (Exception ex) { logFile.Event($"upnp: start failed: {ex.GetType().Name}: {ex.Message}"); }
+            }
+
+            // Startup update check — separate from the periodic timer because users who
+            // launch RemSound, find an update, and stay running for less than the timer
+            // interval would otherwise miss the release entirely. Default on. The
+            // background-poll path handles both silent install and the user-prompt flow.
+            if (startupCfg.CheckForUpdatesOnStartup)
+            {
+                // Defer a few seconds so the network stack, audio engine, and any device
+                // hot-swap has settled before we touch GitHub. The visible cue (silent-
+                // install notice dialog) appears inside the check path, so a small delay
+                // is invisible to the user.
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(4)).ConfigureAwait(false);
+                        if (IsDisposed) return;
+                        BeginInvoke(new Action(CheckForUpdatesOnStartup));
+                    }
+                    catch (Exception ex)
+                    {
+                        logFile.Event($"updater: startup check scheduling failed: {ex.GetType().Name}: {ex.Message}");
+                    }
+                });
             }
         };
 
@@ -1090,6 +1182,30 @@ public sealed class MainForm : Form
         };
         renameItem.Click += (_, _) => RenameCurrentProfile();
 
+        // Lock profile (read-only). When checked, the active profile is loaded for use but
+        // never written back: Save / Ctrl+S politely refuses (with a "use Save As" message)
+        // and FormClosing skips the unsaved-changes prompt entirely. Andre's request — he
+        // toggles send/receive on his default profile and doesn't want a save prompt
+        // blocking shutdown when his screen reader can't reach it. Off by default; the
+        // flag is per-profile (stored in the profile JSON) so different profiles can
+        // independently choose lock vs editable.
+        //
+        // CheckOnClick = true makes WinForms flip the .Checked state on every click and
+        // NVDA reads "Lock profile read-only, checked / not checked". The mnemonic Alt+F, L
+        // doesn't collide with any existing File-menu letter (O / R / S / A / M / N / X
+        // are in use).
+        lockProfileMenuItem = new ToolStripMenuItem("&Lock profile (read-only)")
+        {
+            AccessibleName = "Lock profile read-only",
+            CheckOnClick = true,
+            Checked = currentProfileReadOnly,
+        };
+        lockProfileMenuItem.CheckedChanged += (_, _) =>
+        {
+            if (suppressLockProfileToggleHandler) return;
+            OnLockProfileToggled(lockProfileMenuItem.Checked);
+        };
+
         var minimiseItem = new ToolStripMenuItem("Mi&nimise to tray")
         {
             // No global ShortcutKeys binding — the in-app menu mnemonic (Alt+F → N now —
@@ -1115,6 +1231,7 @@ public sealed class MainForm : Form
             saveItem,
             saveAsItem,
             renameItem,
+            lockProfileMenuItem,
             new ToolStripSeparator(),
             minimiseItem,
             new ToolStripSeparator(),
@@ -1441,11 +1558,51 @@ public sealed class MainForm : Form
     }
 
     /// <summary>Ctrl+S / File → Save behaviour: if a profile is currently loaded, overwrite
-    /// it; if we're on the blank template (no current profile), fall through to Save as.</summary>
+    /// it; if we're on the blank template (no current profile), fall through to Save as.
+    /// Read-only profiles refuse here with a hint pointing at Save As — that's the whole
+    /// point of read-only mode, so silently ignoring Ctrl+S would be more confusing than
+    /// a one-time message explaining why nothing happened. The message is suppressible
+    /// via the "Do not show again" tick (same pattern as the Save-success popup).</summary>
     private void SaveOrSaveAs()
     {
+        if (currentProfileReadOnly)
+        {
+            if (!AppConfig.Load().SaveOnReadOnlyMessageSuppressed)
+            {
+                ShowSaveBlockedByReadOnlyDialog();
+            }
+            return;
+        }
         if (string.IsNullOrEmpty(currentProfileTitle)) SaveProfileAs();
         else UpdateExistingProfile();
+    }
+
+    /// <summary>Native TaskDialog explaining why Ctrl+S / File → Save did nothing on a
+    /// read-only profile. Verification checkbox lets the user suppress future occurrences;
+    /// same shape as <see cref="ShowSaveConfirmationDialog"/>. NVDA reads the heading +
+    /// body + checkbox as part of the normal tab order. 2026-05-22.</summary>
+    private void ShowSaveBlockedByReadOnlyDialog()
+    {
+        var verification = new TaskDialogVerificationCheckBox("Do not show me this message again");
+        var page = new TaskDialogPage
+        {
+            Caption = AppName,
+            Heading = "This profile is read-only",
+            Text = "This profile is locked, so Save was skipped. Use File → Save as... to save your changes to a new profile, or untick File → Lock profile (read-only) to unlock this one.",
+            Icon = TaskDialogIcon.Information,
+            Verification = verification,
+            Buttons = { TaskDialogButton.OK },
+            DefaultButton = TaskDialogButton.OK,
+            AllowCancel = true,
+        };
+        TaskDialog.ShowDialog(this, page);
+        if (verification.Checked)
+        {
+            var cfg = AppConfig.Load();
+            cfg.SaveOnReadOnlyMessageSuppressed = true;
+            try { cfg.Save(); } catch { /* harmless — preference just won't persist */ }
+            AppendLogEntry("save-blocked-by-read-only message suppressed by user");
+        }
     }
 
     /// <summary>Rename the currently-active profile JSON on disk. No-op on the blank
@@ -1550,7 +1707,26 @@ public sealed class MainForm : Form
             },
             writeLogsNow: () => logFile.Event("user requested write logs now"),
             checkForUpdatesNow: () => CheckForUpdatesManually(),
-            onUpdateFrequencyChanged: ApplyUpdateCheckTimer);
+            onUpdateFrequencyChanged: ApplyUpdateCheckTimer,
+            applyUpnpEnabled: enabled =>
+            {
+                // The persist already happened in the dialog; this callback only flips the
+                // live RouterPortMapper. Start kicks off discovery; Stop politely removes any
+                // existing mapping.
+                if (enabled)
+                {
+                    try { routerPortMapper.Start(); }
+                    catch (Exception ex) { logFile.Event($"upnp: start from prefs failed: {ex.GetType().Name}: {ex.Message}"); }
+                }
+                else
+                {
+                    try { routerPortMapper.Stop(); }
+                    catch (Exception ex) { logFile.Event($"upnp: stop from prefs failed: {ex.GetType().Name}: {ex.Message}"); }
+                }
+            },
+            getUpnpSnapshot: () => (routerPortMapper.Status, routerPortMapper.ExternalEndpoint, routerPortMapper.LastError),
+            subscribeUpnpStatusChanged: handler => routerPortMapper.StatusChanged += handler,
+            unsubscribeUpnpStatusChanged: handler => routerPortMapper.StatusChanged -= handler);
         dialog.ShowDialog(this);
         if (dialog.ChangedAnyProfileSetting) MarkProfileDirty();
     }
@@ -1596,6 +1772,9 @@ public sealed class MainForm : Form
         if (info is null) return;
         if (AppConfig.Load().SilentlyInstallUpdates)
         {
+            // Notice the user before the app vanishes and the helper takes over. Hidden from
+            // the periodic-poll path on the assumption the user knows they ticked "silently
+            // install"; the startup path is the noisy one (see CheckForUpdatesOnStartup).
             await InstallUpdateAsync(info).ConfigureAwait(true);
             return;
         }
@@ -1605,6 +1784,79 @@ public sealed class MainForm : Form
         var choice = MessageBox.Show(this, summary, "Update available",
             MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
         if (choice == DialogResult.Yes) await InstallUpdateAsync(info).ConfigureAwait(true);
+    }
+
+    /// <summary>Startup-poll path. Fired ~4 s after the main window finishes loading when
+    /// <see cref="AppConfig.CheckForUpdatesOnStartup"/> is true. Distinct from
+    /// <see cref="CheckForUpdatesInBackground"/> because the startup case is where the
+    /// "you launched the app and it's already installing an update" surprise is loudest —
+    /// silent install here is preceded by a brief notice dialog so the user sees the version
+    /// number and understands why the app is about to vanish. The non-silent path uses the
+    /// same MessageBox flow as the background and manual paths so the user-visible question
+    /// stays consistent.</summary>
+    private async void CheckForUpdatesOnStartup()
+    {
+        UpdateInfo? info;
+        try
+        {
+            info = await updater.CheckForUpdateAsync().ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            logFile.Event($"updater: startup check failed: {ex.GetType().Name}: {ex.Message}");
+            return;
+        }
+        try
+        {
+            var cfg = AppConfig.Load();
+            cfg.LastUpdateCheckUtc = DateTime.UtcNow;
+            cfg.Save();
+        }
+        catch { /* harmless */ }
+        if (info is null)
+        {
+            logFile.Event($"updater: startup check — up to date (v{updater.CurrentVersion})");
+            return;
+        }
+        logFile.Event($"updater: startup check found {info.Tag}");
+        if (AppConfig.Load().SilentlyInstallUpdates)
+        {
+            // Heads-up the user before we exit and the helper takes over. The notice is its
+            // own dialog so NVDA reads "RemSound is installing version X" before focus moves;
+            // a MessageBox would force the user to dismiss it, which defeats the point of
+            // "silent" install. UpdateInstallNoticeDialog auto-dismisses after a short
+            // countdown but lets the user pick Install now / Skip / Postpone before then.
+            using var notice = new UpdateInstallNoticeDialog(info);
+            var choice = notice.ShowDialog(this);
+            switch (choice)
+            {
+                case DialogResult.OK:
+                    // "Install now" — same as the countdown elapsing.
+                    await InstallUpdateAsync(info).ConfigureAwait(true);
+                    break;
+                case DialogResult.Ignore:
+                    // "Skip this version" — log and leave the user be; the next startup
+                    // check will probably find the same version and ask again. We don't
+                    // persist a skip list because release tempo is low enough that the
+                    // user can dismiss once or twice without resenting it.
+                    logFile.Event($"updater: user skipped {info.Tag} from startup notice");
+                    break;
+                case DialogResult.Cancel:
+                default:
+                    // "Postpone" / closed dialog — silent install at the next opportunity
+                    // (timer tick or next launch).
+                    logFile.Event($"updater: user postponed {info.Tag} from startup notice");
+                    break;
+            }
+            return;
+        }
+        // Non-silent: same prompt the background poll uses.
+        var summary = string.IsNullOrWhiteSpace(info.ReleaseNotes)
+            ? $"RemSound {info.Tag} is available. Install now?"
+            : $"RemSound {info.Tag} is available.\n\n{TruncateForDialog(info.ReleaseNotes)}\n\nInstall now?";
+        var pick = MessageBox.Show(this, summary, "Update available",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
+        if (pick == DialogResult.Yes) await InstallUpdateAsync(info).ConfigureAwait(true);
     }
 
     /// <summary>Download the new release, stage it, spawn the install helper and exit. On
@@ -2816,6 +3068,20 @@ public sealed class MainForm : Form
         IReadOnlyList<AudioDeviceChoice> wasapiInputs;
         IReadOnlyList<AudioDeviceChoice> asioInputChoices = [];
         IReadOnlyList<AudioDeviceChoice> asioOutputChoices = [];
+        // True if ASIO mode is on AND a driver is configured AND probing it just failed this
+        // tick. Used to skip the asio list sync below — without this guard, a transient probe
+        // failure (most commonly during hibernate entry or resume, when the USB stack is being
+        // torn down or rebuilt) silently clears the user's ASIO tick, and on the next refresh
+        // when the probe succeeds the list re-populates EMPTY of checks because the tick state
+        // was lost in the previous clear. Net symptom: receiver-side audio falls silent after
+        // resume even though all "audio backend re-initialised" log lines look fine.
+        // 2026-05-22 — traced to a real overnight repro: SNAP at 23:37:33 had ReceiveDevice
+        // = "ASIO 1/2"; SNAP at 23:37:34 (one second later, mid-hibernate-entry) had "(none)";
+        // resume at 06:32:06 then opened the audio backend but the asio receive list was empty
+        // so AsioRenderBackend.SetOutputDevices got an empty pairs list and silently returned
+        // without opening the AsioOut — the AsioLane sessions queued packets into a ring with
+        // no consumer (bufMs grew to 970+ ms, TrimDropBytes climbed into the millions).
+        var asioProbeAttemptedAndFailed = false;
         try
         {
             wasapiOutputs = AudioDeviceCatalog.LoadOutputs();
@@ -2831,6 +3097,17 @@ public sealed class MainForm : Form
                     asioInputChoices = BuildAsioChannelPairChoices(asioDriver, info.InputChannelNames);
                     asioOutputChoices = BuildAsioChannelPairChoices(asioDriver, info.OutputChannelNames);
                 }
+                else
+                {
+                    // Probe came back -1/-1 — driver is configured but can't enumerate right
+                    // now. Treat as transient; preserve current list state and try again on
+                    // the next tick. The legitimate "driver is genuinely gone" cases (user
+                    // selected "(none)", or settings.LoadAsioDriverName() returned null/empty)
+                    // take the outer-if's else branch and correctly produce an empty list
+                    // that DOES sync (clearing the UI), so removing a driver from the system
+                    // still wipes the ticks as expected.
+                    asioProbeAttemptedAndFailed = true;
+                }
             }
         }
         catch (Exception ex)
@@ -2842,8 +3119,22 @@ public sealed class MainForm : Form
         var sendOutputChanged = MaybeSyncList(sendOutputDevicesList, wasapiOutputs, ref sendOutputDevicesSignature);
         var sendInputChanged = MaybeSyncList(sendInputDevicesList, wasapiInputs, ref sendInputDevicesSignature);
         var receiveOutputChanged = MaybeSyncList(receiveOutputDevicesList, wasapiOutputs, ref receiveOutputDevicesSignature);
-        var asioSendChanged = MaybeSyncList(asioSendDevicesList, asioInputChoices, ref asioSendDevicesSignature);
-        var asioReceiveChanged = MaybeSyncList(asioReceiveOutputDevicesList, asioOutputChoices, ref asioReceiveOutputDevicesSignature);
+        bool asioSendChanged;
+        bool asioReceiveChanged;
+        if (asioProbeAttemptedAndFailed)
+        {
+            // Skip both asio list syncs. Crucially do NOT update the signature fields — leaving
+            // them unchanged means the NEXT successful probe will still see "signature differs"
+            // and re-sync the lists with the freshly-probed channel pairs, restoring tick state
+            // by DeviceId from whatever was preserved in the UI.
+            asioSendChanged = false;
+            asioReceiveChanged = false;
+        }
+        else
+        {
+            asioSendChanged = MaybeSyncList(asioSendDevicesList, asioInputChoices, ref asioSendDevicesSignature);
+            asioReceiveChanged = MaybeSyncList(asioReceiveOutputDevicesList, asioOutputChoices, ref asioReceiveOutputDevicesSignature);
+        }
 
         if (sendOutputChanged || sendInputChanged || asioSendChanged)
         {
@@ -3234,6 +3525,81 @@ public sealed class MainForm : Form
         ApplyAudioRuntime();
         ApplyReceiveDevices();
         if (wipedSomething) logFile.Event($"audio mode change wiped now-hidden device ticks");
+    }
+
+    /// <summary>
+    /// Called by <see cref="PowerResumeHandler"/> on a background thread after the system has
+    /// woken from sleep / hibernate (plus a short USB-settle delay). Marshals onto the UI
+    /// thread and runs the audio-backend re-init. Swallows the form-already-torn-down race —
+    /// the handler can fire just as the app is being closed.
+    /// </summary>
+    private void OnSystemResume()
+    {
+        try
+        {
+            if (IsDisposed) return;
+            BeginInvoke(ReinitAudioBackendsForResume);
+        }
+        catch (ObjectDisposedException) { /* form torn down — nothing to do */ }
+        catch (InvalidOperationException) { /* handle not created yet — same */ }
+    }
+
+    /// <summary>
+    /// Runs on the UI thread. Closes and reopens the audio backend on both sides (receiver
+    /// render and sender capture) so any post-sleep wedged state in the USB audio drivers is
+    /// cleared. Shows the audio-driver splash on its own thread while the reset happens, so
+    /// the user sees "Reconnecting to audio driver…" instead of a frozen window.
+    ///
+    /// Implementation note: the receiver's <see cref="RemSound.Receiver.AudioReceiver.SetAudioMode"/>
+    /// always tears down and rebuilds its render backend, which is exactly the reset we
+    /// want. The sender's <see cref="RemSound.Sender.AudioSender.SetAudioMode"/> persists
+    /// its ASIO driver across same-driver calls (to avoid an expensive reopen on every
+    /// device-tick change) — so we explicitly bounce the sender through <c>WasapiOnly</c>
+    /// first to force the ASIO driver to be disposed, then <see cref="ApplyAsioMode"/>
+    /// puts both sides back to the real configuration. The net effect is a full close-and-
+    /// reopen on both sides; same code path as a manual driver re-pick from the picker.
+    /// </summary>
+    private void ReinitAudioBackendsForResume()
+    {
+        if (IsDisposed) return;
+        var mode = settings.LoadAudioMode();
+        var driver = settings.LoadAsioDriverName();
+        logFile.Event($"power: re-initialising audio backend after system resume (mode={mode}, driver={driver ?? "(none)"})");
+
+        var splash = AsioLoadingSplash.StartIfAsioDriverName(driver, "Reconnecting to audio driver, please wait...");
+        try
+        {
+            // Force the sender's persistent ASIO driver to be disposed by bouncing through
+            // WasapiOnly. Skipped when there's no ASIO in the current mode — nothing to dispose.
+            if (mode != AudioMode.WasapiOnly && !string.IsNullOrWhiteSpace(driver))
+            {
+                try { sender.SetAudioMode(AudioMode.WasapiOnly, null); }
+                catch (Exception ex) { logFile.Event($"power: sender WasapiOnly bounce failed: {ex.GetType().Name}: {ex.Message}"); }
+            }
+            // ApplyAsioMode re-applies sender + receiver mode, refreshes device lists, and
+            // re-pushes the audio-runtime + receive-device configuration. The receiver's
+            // SetAudioMode call inside it does an unconditional render-backend rebuild; the
+            // sender's, post-bounce, recreates its persistent ASIO from scratch.
+            ApplyAsioMode();
+            logFile.Event("power: audio backend re-initialised");
+
+            // Re-poke the router. UPnP/NAT-PMP mappings often survive a sleep, but cheap
+            // routers and ISP-supplied combo boxes sometimes drop their NAT table — easier
+            // to just rediscover than to guess. Refresh() is a no-op if UPnP is off.
+            if (AppConfig.Load().UpnpEnabled)
+            {
+                try { routerPortMapper.Refresh(); }
+                catch (Exception ex) { logFile.Event($"upnp: refresh-on-resume failed: {ex.GetType().Name}: {ex.Message}"); }
+            }
+        }
+        catch (Exception ex)
+        {
+            logFile.Event($"power: audio backend re-init failed: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            splash?.Dismiss();
+        }
     }
 
     // ===================== Peers =====================
@@ -3896,11 +4262,32 @@ public sealed class MainForm : Form
                 var emitMs = sender.TakeMaxEmitMs();
                 var sendCallMs = sender.TakeMaxSendCallMs();
                 var rxDispatchMs = receiver.TakeMaxOnPacketMs();
+                // rxNetGapMs = worst inter-packet arrival gap at the user-space UDP socket.
+                // Distinct from maxGapMs (which is measured at the per-stream-session level
+                // after decode + assembly): this one is the raw "did ReceiveFrom return on
+                // time" timing, with no per-session bookkeeping in between. A spike here
+                // when the sender's sendCbGapMs is small fingers the OS/network path between
+                // sender and receiver — NIC IRQ servicing, scheduler not waking the receive
+                // thread, kernel batching, GC pause — rather than the sender stalling or
+                // RemSound's own decode/dispatch chain. 2026-05-21.
+                var rxNetGapMs = receiver.TakeMaxInterPacketGapMs();
                 // fanCacheMs = worst BothIndependent FanOut cache occupancy this tick. Single
                 // active render lane should sit at ~0; non-zero says the FanOut is sitting on
                 // samples that aren't reaching the audio output, i.e. extra perceived latency
                 // not visible in bufAvg. Always 0 in WasapiOnly (no FanOut).
                 var fanCacheMs = receiver.TakeMaxFanOutCacheMs();
+                // GC pressure delta. .NET's GC.CollectionCount is cumulative; subtracting the
+                // previous tick gives the per-second collection count per generation. Gen-0
+                // collections are cheap (microseconds); Gen-1 takes longer; Gen-2 / LOH can
+                // pause the runtime for many milliseconds, which is enough to explain a
+                // 30–50 ms rxNetGapMs spike in isolation. Read directly here — GC.CollectionCount
+                // is essentially free, no need to gate further. 2026-05-21.
+                var gc0Now = GC.CollectionCount(0);
+                var gc1Now = GC.CollectionCount(1);
+                var gc2Now = GC.CollectionCount(2);
+                var gc0Delta = gc0Now - prevDiagGc0Count; prevDiagGc0Count = gc0Now;
+                var gc1Delta = gc1Now - prevDiagGc1Count; prevDiagGc1Count = gc1Now;
+                var gc2Delta = gc2Now - prevDiagGc2Count; prevDiagGc2Count = gc2Now;
                 // Per-stage discontinuity probes. Compare these to localise where in the
                 // pipeline a click is introduced:
                 //   stepPreEnc   = sender's float buffer just before encoding. Non-zero =
@@ -3919,15 +4306,37 @@ public sealed class MainForm : Form
                 // can show which lane is producing the discontinuity, free of the cross-
                 // stream artefact that the old shared probe registered when both lanes'
                 // callbacks interleaved into one probe's lastL/R carry.
-                var stepPreEncWas = sender.TakeMaxPreEncodeStepWasapiLane();
-                var stepPreEncAsi = sender.TakeMaxPreEncodeStepAsioLane();
+                //
+                // 2026-05-21 — also surface the cross-buffer (boundary) vs within-buffer
+                // (content) split for every probe. A non-zero combined step combined with a
+                // near-zero within-buffer reading means the click is at a buffer / packet
+                // boundary (lost or duplicated sample, pipeline glitch); a non-zero
+                // within-buffer reading with a near-zero cross-buffer reading means it's a
+                // sharp transient inside one buffer (real audio content, system sound). All
+                // probe drains here go through the XB/WB pair and recompute the combined
+                // max from the split values — calling Take*Step() AND the split methods on
+                // the same probe in the same drain window would double-drain.
+                var stepPreEncWasXB = sender.TakeMaxPreEncodeStepWasapiLaneCrossBuffer();
+                var stepPreEncWasWB = sender.TakeMaxPreEncodeStepWasapiLaneWithinBuffer();
+                var stepPreEncWas = stepPreEncWasXB > stepPreEncWasWB ? stepPreEncWasXB : stepPreEncWasWB;
+                var stepPreEncAsiXB = sender.TakeMaxPreEncodeStepAsioLaneCrossBuffer();
+                var stepPreEncAsiWB = sender.TakeMaxPreEncodeStepAsioLaneWithinBuffer();
+                var stepPreEncAsi = stepPreEncAsiXB > stepPreEncAsiWB ? stepPreEncAsiXB : stepPreEncAsiWB;
                 var stepPreEnc = stepPreEncWas > stepPreEncAsi ? stepPreEncWas : stepPreEncAsi;
-                var stepRawCap = sender.TakeMaxSenderRawCaptureStep();
+                var stepRawCapXB = sender.TakeMaxSenderRawCaptureStepCrossBuffer();
+                var stepRawCapWB = sender.TakeMaxSenderRawCaptureStepWithinBuffer();
+                var stepRawCap = stepRawCapXB > stepRawCapWB ? stepRawCapXB : stepRawCapWB;
                 var clippedNow = sender.ClippedSampleCount;
                 var clippedDelta = clippedNow - prevDiagClippedSamples; prevDiagClippedSamples = clippedNow;
-                var stepPostDec = receiver.TakeMaxPostDecodeStep();
-                var stepPostRing = receiver.TakeMaxPostRingReadStep();
-                var stepPostRsm = receiver.TakeMaxPostResamplerStep();
+                var stepPostDecXB = receiver.TakeMaxPostDecodeStepCrossBuffer();
+                var stepPostDecWB = receiver.TakeMaxPostDecodeStepWithinBuffer();
+                var stepPostDec = stepPostDecXB > stepPostDecWB ? stepPostDecXB : stepPostDecWB;
+                var stepPostRingXB = receiver.TakeMaxPostRingReadStepCrossBuffer();
+                var stepPostRingWB = receiver.TakeMaxPostRingReadStepWithinBuffer();
+                var stepPostRing = stepPostRingXB > stepPostRingWB ? stepPostRingXB : stepPostRingWB;
+                var stepPostRsmXB = receiver.TakeMaxPostResamplerStepCrossBuffer();
+                var stepPostRsmWB = receiver.TakeMaxPostResamplerStepWithinBuffer();
+                var stepPostRsm = stepPostRsmXB > stepPostRsmWB ? stepPostRsmXB : stepPostRsmWB;
                 // Wire-level packet-sequence stats. wireInOrderΔ is the count of packets that
                 // arrived with the sequence we expected this second. wireMissΔ / wireReordΔ /
                 // wireDupΔ are the smoking-gun counters — any non-zero value here means the
@@ -3944,12 +4353,19 @@ public sealed class MainForm : Form
 
                 logFile.Event($"diag bufAvg={diag.BufferAvgMs}ms bufMin={diag.BufferMinMs}ms bufMax={diag.BufferMaxMs}ms " +
                     $"maxGapMs={diag.MaxArrivalGapMs} sendCbGapMs={sendCbGapMs} renderCbGapMs={diag.MaxRenderCallbackGapMs} maxReadMs={diag.MaxRenderReadMs} reads={diag.RenderReadCount} " +
-                    $"emitMs={emitMs} sndCallMs={sendCallMs} rxDispMs={rxDispatchMs} fanCacheMs={fanCacheMs} " +
+                    $"emitMs={emitMs} sndCallMs={sendCallMs} rxDispMs={rxDispatchMs} rxNetGapMs={rxNetGapMs} fanCacheMs={fanCacheMs} " +
+                    $"gc0Δ={gc0Delta} gc1Δ={gc1Delta} gc2Δ={gc2Delta} " +
                     $"trimB={trimBytes} trimN={trimFires} trimΔ={trimDelta} drainB={drainBytes} ovfB={ovfBytes} pktRej={pktRej} " +
                     $"driftDrop={driftDrops} driftDropΔ={driftDropDelta} driftRep={driftReps} driftRepΔ={driftRepDelta} " +
                     $"concealΔ={concealDelta} shortReadΔ={shortReadDelta} " +
                     $"filtErr={filteredErrorFrames:0.0}f driftAcc={driftAccumulator:0.000} " +
                     $"stepRawCap={stepRawCap:0.000} stepPreEnc={stepPreEnc:0.000} stepPreEncWas={stepPreEncWas:0.000} stepPreEncAsi={stepPreEncAsi:0.000} stepPostDec={stepPostDec:0.000} stepPostRing={stepPostRing:0.000} stepPostRsm={stepPostRsm:0.000} " +
+                    $"stepRawCapXB={stepRawCapXB:0.000} stepRawCapWB={stepRawCapWB:0.000} " +
+                    $"stepPreEncWasXB={stepPreEncWasXB:0.000} stepPreEncWasWB={stepPreEncWasWB:0.000} " +
+                    $"stepPreEncAsiXB={stepPreEncAsiXB:0.000} stepPreEncAsiWB={stepPreEncAsiWB:0.000} " +
+                    $"stepPostDecXB={stepPostDecXB:0.000} stepPostDecWB={stepPostDecWB:0.000} " +
+                    $"stepPostRingXB={stepPostRingXB:0.000} stepPostRingWB={stepPostRingWB:0.000} " +
+                    $"stepPostRsmXB={stepPostRsmXB:0.000} stepPostRsmWB={stepPostRsmWB:0.000} " +
                     $"clipΔ={clippedDelta} sampleStepMax={diag.MaxOutputSampleStep:0.000} spikesN={diag.EnvelopeSpikeCount} " +
                     $"wireOkΔ={wireInOrderDelta} wireMissΔ={wireMissedDelta} wireReordΔ={wireReorderedDelta} wireDupΔ={wireDuplicatedDelta} " +
                     $"pcmRej={receiver.PcmFrameRejections} pcmDiscard={receiver.PcmFrameDiscardedPartials}");
@@ -3968,16 +4384,42 @@ public sealed class MainForm : Form
                 var sendCallMs = sender.TakeMaxSendCallMs();
                 // Per-lane pre-encode probes — see the full-diag comment above for the
                 // rationale (per-lane fixes the cross-stream artefact in BothIndependent).
-                var stepPreEncWas = sender.TakeMaxPreEncodeStepWasapiLane();
-                var stepPreEncAsi = sender.TakeMaxPreEncodeStepAsioLane();
+                // 2026-05-21: drain XB / WB separately so we can localise click events at
+                // the buffer boundary (cross-buffer) vs within-buffer (real content). The
+                // combined step is just the larger of the two for back-compat readers.
+                var stepPreEncWasXB = sender.TakeMaxPreEncodeStepWasapiLaneCrossBuffer();
+                var stepPreEncWasWB = sender.TakeMaxPreEncodeStepWasapiLaneWithinBuffer();
+                var stepPreEncWas = stepPreEncWasXB > stepPreEncWasWB ? stepPreEncWasXB : stepPreEncWasWB;
+                var stepPreEncAsiXB = sender.TakeMaxPreEncodeStepAsioLaneCrossBuffer();
+                var stepPreEncAsiWB = sender.TakeMaxPreEncodeStepAsioLaneWithinBuffer();
+                var stepPreEncAsi = stepPreEncAsiXB > stepPreEncAsiWB ? stepPreEncAsiXB : stepPreEncAsiWB;
                 var stepPreEnc = stepPreEncWas > stepPreEncAsi ? stepPreEncWas : stepPreEncAsi;
                 // Raw-capture step: now per-backend (each backend owns its own probe). The
                 // accessor returns max across all backends. PushModeWasapiBackend has been
                 // wired to feed this probe as of 2026-05-15; pull-mode MixingEngine returns 0.
-                var stepRawCap = sender.TakeMaxSenderRawCaptureStep();
+                var stepRawCapXB = sender.TakeMaxSenderRawCaptureStepCrossBuffer();
+                var stepRawCapWB = sender.TakeMaxSenderRawCaptureStepWithinBuffer();
+                var stepRawCap = stepRawCapXB > stepRawCapWB ? stepRawCapXB : stepRawCapWB;
                 var clippedNow = sender.ClippedSampleCount;
                 var clippedDelta = clippedNow - prevDiagClippedSamples; prevDiagClippedSamples = clippedNow;
-                logFile.Event($"sender-diag sendCbGapMs={sendCbGapMs} emitMs={emitMs} sndCallMs={sendCallMs} stepPreEnc={stepPreEnc:0.000} stepPreEncWas={stepPreEncWas:0.000} stepPreEncAsi={stepPreEncAsi:0.000} stepRawCap={stepRawCap:0.000} clipΔ={clippedDelta} packets={sender.PacketsSent} captureCallbacks={sender.CaptureCallbacks}");
+                // Per-second GC delta on the send-only side too. A send stall caused by a
+                // gen-2 pause on the SENDER would have a different signature in the SNAP
+                // log than one caused by a receive-side pause — they'd show up here even
+                // though no receiver activity is happening on this machine.
+                var gc0Now = GC.CollectionCount(0);
+                var gc1Now = GC.CollectionCount(1);
+                var gc2Now = GC.CollectionCount(2);
+                var gc0Delta = gc0Now - prevDiagGc0Count; prevDiagGc0Count = gc0Now;
+                var gc1Delta = gc1Now - prevDiagGc1Count; prevDiagGc1Count = gc1Now;
+                var gc2Delta = gc2Now - prevDiagGc2Count; prevDiagGc2Count = gc2Now;
+                logFile.Event(
+                    $"sender-diag sendCbGapMs={sendCbGapMs} emitMs={emitMs} sndCallMs={sendCallMs} " +
+                    $"stepPreEnc={stepPreEnc:0.000} stepPreEncWas={stepPreEncWas:0.000} stepPreEncAsi={stepPreEncAsi:0.000} stepRawCap={stepRawCap:0.000} " +
+                    $"stepRawCapXB={stepRawCapXB:0.000} stepRawCapWB={stepRawCapWB:0.000} " +
+                    $"stepPreEncWasXB={stepPreEncWasXB:0.000} stepPreEncWasWB={stepPreEncWasWB:0.000} " +
+                    $"stepPreEncAsiXB={stepPreEncAsiXB:0.000} stepPreEncAsiWB={stepPreEncAsiWB:0.000} " +
+                    $"gc0Δ={gc0Delta} gc1Δ={gc1Delta} gc2Δ={gc2Delta} " +
+                    $"clipΔ={clippedDelta} packets={sender.PacketsSent} captureCallbacks={sender.CaptureCallbacks}");
             }
 
             // Synthesised end-to-end one-way latency estimate. Sums:
@@ -4183,11 +4625,16 @@ public sealed class MainForm : Form
 
     /// <summary>Window title shows the active profile name explicitly so the user knows what
     /// they're editing. Format: "RemSound — Active profile: My profile name" (loaded) or
-    /// just "RemSound" (blank template).</summary>
-    private static string FormatWindowTitle(string? loadedTitle) =>
-        string.IsNullOrEmpty(loadedTitle)
-            ? AppName
-            : $"{AppName} — Active profile: {loadedTitle}";
+    /// just "RemSound" (blank template). Read-only profiles get a " (read-only)" suffix so
+    /// NVDA announces the lock state on every title change and sighted users see it at a
+    /// glance — important context that "anything I change here won't be saved".</summary>
+    private string FormatWindowTitle(string? loadedTitle)
+    {
+        var readOnlySuffix = currentProfileReadOnly ? " (read-only)" : "";
+        return string.IsNullOrEmpty(loadedTitle)
+            ? $"{AppName}{readOnlySuffix}"
+            : $"{AppName} — Active profile: {loadedTitle}{readOnlySuffix}";
+    }
 
     /// <summary>Show/hide the Update button based on whether a profile is currently loaded.
     /// Update only makes sense when there's an existing profile to overwrite; Save-as is
@@ -4261,6 +4708,18 @@ public sealed class MainForm : Form
 
             currentProfileTitle = title;
             currentProfilePath = path;
+            // Save As always produces an editable copy — even if the source profile was
+            // read-only. Anything else would be surprising: the user picked Save As
+            // specifically to fork, and they reasonably expect the fork to be editable
+            // without having to hunt for the menu toggle. The original (locked) profile on
+            // disk is untouched; this is purely about the new file and the in-memory state.
+            currentProfileReadOnly = false;
+            if (lockProfileMenuItem is not null)
+            {
+                suppressLockProfileToggleHandler = true;
+                try { lockProfileMenuItem.Checked = false; }
+                finally { suppressLockProfileToggleHandler = false; }
+            }
             Text = FormatWindowTitle(title);
             AccessibleName = Text;
             UpdateProfileButtonsVisibility();
@@ -4376,6 +4835,74 @@ public sealed class MainForm : Form
         if (applyingProfile) return;
         unsavedChanges = true;
     }
+
+    /// <summary>Handle the user ticking / unticking File → Lock profile (read-only). Updates
+    /// the in-memory flag, refreshes the window title's "(read-only)" suffix, and persists
+    /// the new value to the profile JSON on disk via <see cref="PersistReadOnlyFlagOnly"/>.
+    /// We MUST persist immediately because the very next user action might be the close
+    /// (the whole point of the feature is that close is unattended); waiting for an explicit
+    /// Save would defeat the point. 2026-05-22 — Andre's request.</summary>
+    private void OnLockProfileToggled(bool readOnly)
+    {
+        currentProfileReadOnly = readOnly;
+        Text = FormatWindowTitle(currentProfileTitle);
+        AccessibleName = Text;
+        PersistReadOnlyFlagOnly(readOnly);
+        AppendLogEntry($"profile read-only flag set to {readOnly} for \"{currentProfileTitle ?? "(blank template)"}\"");
+    }
+
+    /// <summary>Write JUST the ReadOnly flag back to the profile file on disk, without
+    /// touching any of the user's in-session edits. Used by <see cref="OnLockProfileToggled"/>
+    /// so toggling lock-state writes the flag immediately but leaves every other unsaved
+    /// change exactly as-is — without this carve-out, unlocking a profile that has unsaved
+    /// edits would either have to ignore them (losing user intent) or flush them (defeating
+    /// "the lock writes the lock, nothing else"). Approach: read the profile JSON, deserialise,
+    /// flip ONE field, re-serialise, write back. Blank-template case (no path) is a silent
+    /// no-op — there's no file to update, and the user's lock state lives in memory until
+    /// they Save As, at which point Save As builds a fresh Profile and writes whatever
+    /// flag the in-memory state has.</summary>
+    private void PersistReadOnlyFlagOnly(bool readOnly)
+    {
+        if (string.IsNullOrEmpty(currentProfilePath)) return;
+        if (!File.Exists(currentProfilePath)) return;
+        try
+        {
+            var json = File.ReadAllText(currentProfilePath);
+            var profile = JsonSerializer.Deserialize<Profile>(json);
+            if (profile is null) return;
+            if (profile.ReadOnly == readOnly) return;  // no change, skip the rewrite
+            profile.ReadOnly = readOnly;
+            var newJson = JsonSerializer.Serialize(profile, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(currentProfilePath, newJson);
+            // Refresh the unsaved-changes baseline so any user edits made BEFORE the toggle
+            // remain "unsaved" (still pending a real Save) — the baseline tracks the saved
+            // profile JSON, and we just rewrote it on disk, so the diff has to be against
+            // the new file contents not the old ones. Without this, toggling lock on a
+            // dirty profile would suddenly "clean" the dirty flag from the close path's
+            // POV, even though the user's other edits still aren't persisted. The new
+            // baseline reflects the on-disk truth; the in-memory state still differs by
+            // those other edits, so unsavedChanges-style tracking still works.
+            try { baselineProfileJson = SerializeProfileForDirtyDiff(profile); }
+            catch { /* baseline refresh is best-effort */ }
+        }
+        catch (Exception ex)
+        {
+            // Don't bother the user with a MessageBox for a flag-write failure — they'd just
+            // see "couldn't persist the lock flag" with no actionable detail. Log and move
+            // on; the in-memory state already reflects the toggle, so the current session
+            // works correctly. Next launch the file's flag wins, but a single failed write
+            // is rare enough that it's not worth a dialog.
+            AppendLogEntry($"failed to persist read-only flag: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Serialise an arbitrary <see cref="Profile"/> in the same shape
+    /// <see cref="SerializeCurrentStateAsProfile"/> uses for the dirty-diff. Lives here so
+    /// the lock-flag persistence path can refresh the baseline against the rewritten file
+    /// contents (a partial overwrite of the profile file) without flushing the user's
+    /// in-session edits. 2026-05-22.</summary>
+    private static string SerializeProfileForDirtyDiff(Profile profile) =>
+        JsonSerializer.Serialize(profile, new JsonSerializerOptions { WriteIndented = true });
 
     /// <summary>Serializes the current control state as if the user had just clicked Save.
     /// Used for the unsaved-changes-on-close diff. Mirrors <see cref="SaveCurrentStateToProfileFile"/>
@@ -5250,7 +5777,16 @@ public sealed class MainForm : Form
         // controlled close paths where the user has already confirmed their intent via the
         // management dialog, and the MainForm gets reconstructed under the new profile
         // immediately afterwards.
-        var skipPrompt = !string.IsNullOrEmpty(NextProfileTitleToLoad) || ReloadFromScratch;
+        //
+        // Also skip the prompt when the active profile is read-only — the whole point of
+        // read-only mode (Andre's request, 2026-05-22) is that the user has explicitly
+        // declared "anything I changed this session is throwaway, don't save it and don't
+        // ask me about it". Without this branch the dirty-prompt would block shutdown on
+        // a profile where the user wants exactly the opposite: silent exit. Crucially this
+        // is what unblocks NVDA-less or remote-session-dropped shutdowns from deadlocking
+        // on a dialog the user can't reach.
+        var skipPrompt = !string.IsNullOrEmpty(NextProfileTitleToLoad) || ReloadFromScratch
+            || currentProfileReadOnly;
 
         if (!skipPrompt && profileStore is not null && unsavedChanges)
         {

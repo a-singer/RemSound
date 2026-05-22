@@ -67,6 +67,29 @@ public sealed class ProfileStore
         }
     }
 
+    /// <summary>Returns whether the profile with the given title has its ReadOnly flag set
+    /// on disk, without doing a full <see cref="Load"/>. Used by the startup profile picker
+    /// to label locked profiles in the list ("Title (read-only)") so the user knows what
+    /// they're picking. Returns false on any error — the picker treats unreadable profiles
+    /// as not-read-only, which is the safer default (the worst case is the user gets the
+    /// normal save-prompt behaviour on close, which is what they're already used to).</summary>
+    public bool IsProfileReadOnly(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return false;
+        var path = PathFor(title);
+        if (!File.Exists(path)) return false;
+        try
+        {
+            var json = File.ReadAllText(path);
+            var profile = JsonSerializer.Deserialize<Profile>(json);
+            return profile?.ReadOnly ?? false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>Loads a profile by title. Returns null if the file is missing or
     /// unreadable. Malformed JSON is treated as "not found" rather than throwing —
     /// the caller can surface a diagnostic and fall back to a blank template.</summary>

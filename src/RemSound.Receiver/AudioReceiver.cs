@@ -241,6 +241,13 @@ public sealed class AudioReceiver : IDisposable
     /// contributions. Resets on read.</summary>
     public int TakeMaxOnPacketMs() => listener.TakeMaxOnPacketMs();
 
+    /// <summary>Worst inter-packet arrival gap (ms) at the user-space UDP socket since the
+    /// last call. Resets on read. Compared with the sender's per-callback gap on the other
+    /// machine, this localises a stall: if the sender's send-callback gap is small but this
+    /// is large, the OS/network between sender and receiver delayed delivery (NIC IRQ
+    /// servicing, scheduler not waking our receive thread, kernel batching). 2026-05-21.</summary>
+    public int TakeMaxInterPacketGapMs() => listener.TakeMaxInterPacketGapMs();
+
     /// <summary>Worst FanOutSource cache-occupancy seen since the last call, expressed in
     /// milliseconds at the mix rate (48 kHz stereo float). With one active render lane the
     /// FanOut should drain to ~0 after every consumer Read; sustained non-zero means a
@@ -299,7 +306,8 @@ public sealed class AudioReceiver : IDisposable
     /// <summary>Take the worst post-decode single-sample step magnitude across all active
     /// stream sessions since the last call, resetting each session's probe. Used by the
     /// diag log to pinpoint where in the pipeline audio discontinuities are being
-    /// introduced.</summary>
+    /// introduced. Returns max-of-(cross, within); for the split values use the XB/WB
+    /// methods below and do NOT also call this in the same drain window.</summary>
     public float TakeMaxPostDecodeStep()
     {
         lock (sessionsLock)
@@ -308,6 +316,38 @@ public sealed class AudioReceiver : IDisposable
             foreach (var s in sessions.Values)
             {
                 var v = s.TakeMaxPostDecodeStep();
+                if (v > max) max = v;
+            }
+            return max;
+        }
+    }
+
+    /// <summary>Cross-buffer (packet-boundary) max post-decode step across all sessions.
+    /// Drains each session's cross-buffer counter. 2026-05-21 addition for the click hunt.</summary>
+    public float TakeMaxPostDecodeStepCrossBuffer()
+    {
+        lock (sessionsLock)
+        {
+            var max = 0f;
+            foreach (var s in sessions.Values)
+            {
+                var v = s.TakeMaxPostDecodeStepCrossBuffer();
+                if (v > max) max = v;
+            }
+            return max;
+        }
+    }
+
+    /// <summary>Within-buffer (in-packet content) max post-decode step across all sessions.
+    /// Drains each session's within-buffer counter. 2026-05-21 addition for the click hunt.</summary>
+    public float TakeMaxPostDecodeStepWithinBuffer()
+    {
+        lock (sessionsLock)
+        {
+            var max = 0f;
+            foreach (var s in sessions.Values)
+            {
+                var v = s.TakeMaxPostDecodeStepWithinBuffer();
                 if (v > max) max = v;
             }
             return max;
@@ -395,8 +435,12 @@ public sealed class AudioReceiver : IDisposable
     /// <summary>Take the worst single-sample step out of the ring buffer (after decode +
     /// SessionPlayout.Write, before resampler) since the last call.</summary>
     public float TakeMaxPostRingReadStep() => playoutEngine.TakeMaxPostRingReadStep();
+    public float TakeMaxPostRingReadStepCrossBuffer() => playoutEngine.TakeMaxPostRingReadStepCrossBuffer();
+    public float TakeMaxPostRingReadStepWithinBuffer() => playoutEngine.TakeMaxPostRingReadStepWithinBuffer();
     /// <summary>Take the worst single-sample step out of the resampler since the last call.</summary>
     public float TakeMaxPostResamplerStep() => playoutEngine.TakeMaxPostResamplerStep();
+    public float TakeMaxPostResamplerStepCrossBuffer() => playoutEngine.TakeMaxPostResamplerStepCrossBuffer();
+    public float TakeMaxPostResamplerStepWithinBuffer() => playoutEngine.TakeMaxPostResamplerStepWithinBuffer();
     /// <summary>RingbufferOverflowDropBytes = AggregateDrops minus the deliberate trim+drain
     /// causes. Whatever's left was the producer-side overflow (Write into a full buffer) or
     /// the catastrophic-cap trim from NoteFramesQueued. Both indicate "we genuinely couldn't

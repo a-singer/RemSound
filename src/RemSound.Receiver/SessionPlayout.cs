@@ -226,6 +226,10 @@ internal sealed class SessionPlayout : IDisposable
     private readonly AudioStepProbe postResamplerStepProbe = new();
     public float TakeMaxPostRingReadStep() => postRingReadStepProbe.TakeMax();
     public float TakeMaxPostResamplerStep() => postResamplerStepProbe.TakeMax();
+    public float TakeMaxPostRingReadStepCrossBuffer() => postRingReadStepProbe.TakeMaxCrossBuffer();
+    public float TakeMaxPostRingReadStepWithinBuffer() => postRingReadStepProbe.TakeMaxWithinBuffer();
+    public float TakeMaxPostResamplerStepCrossBuffer() => postResamplerStepProbe.TakeMaxCrossBuffer();
+    public float TakeMaxPostResamplerStepWithinBuffer() => postResamplerStepProbe.TakeMaxWithinBuffer();
 
     // Concealment vs partial-read counters split from the legacy "Underruns" — that one
     // increments on ANY short read at the AudioRingBuffer level (whether framesRead==0

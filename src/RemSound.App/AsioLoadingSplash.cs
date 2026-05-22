@@ -27,16 +27,21 @@ namespace RemSound.App;
 /// </summary>
 internal sealed class AsioLoadingSplash
 {
+    /// <summary>Default message used by <see cref="StartIfNeeded"/> on first launch.</summary>
+    public const string DefaultMessage = "Loading audio driver, please wait...";
+
     private readonly Thread thread;
     private readonly ManualResetEventSlim shown = new(false);
+    private readonly string message;
     private volatile Form? form;
 
-    private AsioLoadingSplash()
+    private AsioLoadingSplash(string message)
     {
+        this.message = message;
         thread = new Thread(RunSplash)
         {
             IsBackground = true,
-            Name = "RemSound startup splash",
+            Name = "RemSound audio-driver splash",
         };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
@@ -51,12 +56,20 @@ internal sealed class AsioLoadingSplash
     /// the only case where MainForm construction is slow. Returns null for WASAPI-only
     /// profiles. Dismiss the returned handle once the main window has been built.
     /// </summary>
-    public static AsioLoadingSplash? StartIfNeeded(Profile? profile)
+    public static AsioLoadingSplash? StartIfNeeded(Profile? profile) =>
+        StartIfAsioDriverName(profile?.AsioDriverName, DefaultMessage);
+
+    /// <summary>
+    /// Generic version of <see cref="StartIfNeeded"/>: starts the splash when an ASIO driver
+    /// name is configured, with a caller-supplied message. Used by the system-resume handler
+    /// to show "Reconnecting to audio driver…" while the audio backend is rebuilt after wake.
+    /// </summary>
+    public static AsioLoadingSplash? StartIfAsioDriverName(string? asioDriverName, string? message = null)
     {
-        if (string.IsNullOrWhiteSpace(profile?.AsioDriverName)) return null;
+        if (string.IsNullOrWhiteSpace(asioDriverName)) return null;
         try
         {
-            return new AsioLoadingSplash();
+            return new AsioLoadingSplash(message ?? DefaultMessage);
         }
         catch
         {
@@ -87,8 +100,8 @@ internal sealed class AsioLoadingSplash
             {
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Text = "Loading audio driver, please wait...",
-                AccessibleName = "Loading audio driver, please wait",
+                Text = message,
+                AccessibleName = message.TrimEnd('.', ' '),
             });
             splash.Shown += (_, _) => shown.Set();
             form = splash;

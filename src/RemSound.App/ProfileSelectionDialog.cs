@@ -118,21 +118,65 @@ internal sealed class ProfileSelectionDialog : Form
 
     private void RefreshList()
     {
-        var prevSelected = listBox.SelectedItem as string;
+        // Remember the previously-selected title (NOT the displayed text — that includes any
+        // " (read-only)" suffix, which would prevent matching across a refresh).
+        var prevSelectedTitle = GetSelectedTitle();
         listBox.BeginUpdate();
         listBox.Items.Clear();
         listBox.Items.Add(BlankTemplateLabel);
         foreach (var t in store.ListProfileTitles())
         {
-            listBox.Items.Add(t);
+            // Wrap each title in a ProfileListItem so the displayed text can carry a
+            // "(read-only)" suffix while the underlying title stays clean for store lookups.
+            // ListBox.ToString() is what NVDA reads and what's shown visually; the inner
+            // .Title is what code paths key off. Locked profiles get the suffix so users
+            // know what they're picking before they hit Enter. 2026-05-22.
+            listBox.Items.Add(new ProfileListItem(t, store.IsProfileReadOnly(t)));
         }
-        // Try to restore selection; fall back to first item.
-        var idx = prevSelected is null ? 0 : Math.Max(0, listBox.Items.IndexOf(prevSelected));
-        listBox.SelectedIndex = Math.Min(idx, listBox.Items.Count - 1);
+        // Try to restore selection by title; fall back to first item.
+        var newIdx = 0;
+        if (!string.IsNullOrEmpty(prevSelectedTitle))
+        {
+            for (var i = 0; i < listBox.Items.Count; i++)
+            {
+                if (string.Equals(TitleOfItem(listBox.Items[i]), prevSelectedTitle, StringComparison.Ordinal))
+                {
+                    newIdx = i;
+                    break;
+                }
+            }
+        }
+        listBox.SelectedIndex = Math.Min(newIdx, listBox.Items.Count - 1);
         listBox.EndUpdate();
         // Keep the folder label in sync so it always reflects what the listbox is reading.
         folderLabel.Text = "Profiles folder: " + store.BaseDirectory;
         folderLabel.AccessibleName = folderLabel.Text;
+    }
+
+    /// <summary>Returns the currently-selected profile title (or the BlankTemplateLabel
+    /// constant for the blank template), unwrapping the ProfileListItem if needed. Returns
+    /// null when nothing is selected. Used by accept / delete to key into the store.</summary>
+    private string? GetSelectedTitle()
+    {
+        var item = listBox.SelectedItem;
+        return TitleOfItem(item);
+    }
+
+    private static string? TitleOfItem(object? item) => item switch
+    {
+        null => null,
+        string s => s,
+        ProfileListItem p => p.Title,
+        _ => item.ToString(),
+    };
+
+    /// <summary>Listbox wrapper for a saved profile. The displayed text (which NVDA reads
+    /// and which appears visually) decorates the title with "(read-only)" when the profile
+    /// JSON has the lock flag set; the Title property stays clean so store lookups by title
+    /// keep working. 2026-05-22.</summary>
+    private sealed record ProfileListItem(string Title, bool ReadOnly)
+    {
+        public override string ToString() => ReadOnly ? $"{Title} (read-only)" : Title;
     }
 
     private void OnListKeyDown(object? sender, KeyEventArgs e)
@@ -153,7 +197,7 @@ internal sealed class ProfileSelectionDialog : Form
 
     private void Accept()
     {
-        var selected = listBox.SelectedItem as string;
+        var selected = GetSelectedTitle();
         if (string.IsNullOrEmpty(selected)) return;
         if (selected == BlankTemplateLabel)
         {
@@ -178,7 +222,7 @@ internal sealed class ProfileSelectionDialog : Form
 
     private void DeleteSelected()
     {
-        var selected = listBox.SelectedItem as string;
+        var selected = GetSelectedTitle();
         if (string.IsNullOrEmpty(selected) || selected == BlankTemplateLabel) return;
         var result = MessageBox.Show(this,
             $"Delete profile \"{selected}\"? This cannot be undone.",

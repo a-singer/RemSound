@@ -1,3 +1,4 @@
+using System.Net;
 using RemSound.Core;
 
 namespace RemSound.App;
@@ -7,12 +8,19 @@ namespace RemSound.App;
 /// right:
 ///   * Browse for RemSound profiles folder — picks the directory the profile picker scans
 ///     next launch.
-///   * Cue sounds — per-cue enable list (connect, disconnect, recording start/stop). One
-///     CheckedListBox; ticked items play, unticked are silent. Replaced the old single
+///   * Audio cue sounds — per-cue enable list (connect, disconnect, recording start/stop).
+///     One CheckedListBox; ticked items play, unticked are silent. Replaced the old single
 ///     "Mute connect/disconnect sounds" toggle (2026-05-15) when recording start/stop cues
-///     were added — a CheckedListBox scales to future cues without dialog re-layout.
+///     were added — a CheckedListBox scales to future cues without dialog re-layout. Label
+///     gained the "Audio" prefix on 2026-05-21 to disambiguate from the underlying engine's
+///     "buffer cues" and "ASIO cues" diagnostic terms, which look the same in writing.
 ///   * Accept remote volume commands from peers — opt-in for the remote-control feature.
-///   * Update settings — frequency, manual check, silent-install toggle.
+///   * Update settings — startup-check toggle, frequency, manual check, silent-install
+///     toggle. Layout deliberately reads top-to-bottom as the question the user is
+///     answering: "Check for updates on startup? (yes/no) Then, in the background, every?
+///     (interval) When one's found? (silent install / ask first)".
+///   * UPnP — optional automatic router port-forwarding via Mono.Nat. Off by default; when
+///     ticked, we kick off discovery and surface the result + external address inline.
 ///   * Enable logs + Write logs now.
 ///
 /// Startup behaviour was previously a button here that opened <see cref="StartupBehaviourDialog"/>;
@@ -39,8 +47,8 @@ internal sealed class PreferencesDialog : Form
     // the CueIndex enum below so the ItemCheck handler can dispatch by index.
     private readonly Label cueListLabel = new()
     {
-        Text = "Cue sou&nds (Alt+N):",
-        AccessibleName = "Cue sounds",
+        Text = "Audio cue sou&nds (Alt+N):",
+        AccessibleName = "Audio cue sounds",
         AutoSize = true,
         Padding = new Padding(0, 6, 0, 4),
     };
@@ -51,7 +59,7 @@ internal sealed class PreferencesDialog : Form
         IntegralHeight = false,
         Height = 100,
         Width = 360,
-        AccessibleName = "Cue sounds",
+        AccessibleName = "Audio cue sounds",
     };
 
     private enum CueIndex
@@ -69,14 +77,24 @@ internal sealed class PreferencesDialog : Form
         AutoSize = true,
     };
 
-    // Update settings — frequency dropdown, manual check button, silent-install checkbox.
-    // Sits above the logging row so users meet it during setup; the canonical order in the
-    // dialog is "things related to the program staying current" before "things related to
-    // diagnosing how it's running".
+    // Update settings — startup-check checkbox, frequency dropdown, manual check button,
+    // silent-install checkbox. Sits above the logging row so users meet it during setup; the
+    // canonical order in the dialog is "things related to the program staying current" before
+    // "things related to diagnosing how it's running".
+    private readonly AccessibleCheckBox checkForUpdatesOnStartupBox = new()
+    {
+        Text = "Check for updates on &startup",
+        AccessibleName = "Check for updates on startup",
+        AutoSize = true,
+    };
+
     private readonly Label updateFrequencyLabel = new()
     {
-        Text = "Check for updates (Alt+&U):",
-        AccessibleName = "Check for updates frequency",
+        // "Then check every" — reads as a continuation of the startup-check checkbox above,
+        // so the user understands the dropdown controls the *background* poll cadence, not
+        // the launch behaviour.
+        Text = "Then check every (Alt+&U):",
+        AccessibleName = "Then check every",
         AutoSize = true,
     };
 
@@ -84,7 +102,7 @@ internal sealed class PreferencesDialog : Form
     {
         DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 200,
-        AccessibleName = "Check for updates (Alt+U)",
+        AccessibleName = "Then check every (Alt+U)",
     };
 
     private readonly Button checkForUpdatesNowButton = new()
@@ -99,6 +117,24 @@ internal sealed class PreferencesDialog : Form
         Text = "Silently &install updates when available",
         AccessibleName = "Silently install updates when available",
         AutoSize = true,
+    };
+
+    // UPnP — automatic router port-forwarding via Mono.Nat. Off by default. The status label
+    // is updated live from the RouterPortMapper.StatusChanged event so the user sees the
+    // discovery result inline without having to close and reopen the dialog.
+    private readonly AccessibleCheckBox upnpEnabledBox = new()
+    {
+        Text = "Automatically open my router for incoming connections (UPnP) (Alt+&O)",
+        AccessibleName = "Automatically open my router for incoming connections via UPnP",
+        AutoSize = true,
+    };
+
+    private readonly Label upnpStatusLabel = new()
+    {
+        Text = "",
+        AccessibleName = "UPnP status",
+        AutoSize = true,
+        Padding = new Padding(20, 0, 0, 4),
     };
 
     private readonly AccessibleCheckBox loggingBox = new()
@@ -127,6 +163,9 @@ internal sealed class PreferencesDialog : Form
     /// closes (since both settings live on Profile and need to flag a save-pending state).</summary>
     public bool ChangedAnyProfileSetting { get; private set; }
 
+    private readonly Func<(RouterMappingStatus Status, IPEndPoint? External, string LastError)> getUpnpSnapshot;
+    private EventHandler? upnpStatusSubscription;
+
     public PreferencesDialog(
         RemSoundSettingsStore settings,
         ProfileStore? profileStore,
@@ -134,8 +173,14 @@ internal sealed class PreferencesDialog : Form
         Action<bool> applyLoggingEnabled,
         Action writeLogsNow,
         Action checkForUpdatesNow,
-        Action onUpdateFrequencyChanged)
+        Action onUpdateFrequencyChanged,
+        Action<bool> applyUpnpEnabled,
+        Func<(RouterMappingStatus Status, IPEndPoint? External, string LastError)> getUpnpSnapshot,
+        Action<EventHandler> subscribeUpnpStatusChanged,
+        Action<EventHandler> unsubscribeUpnpStatusChanged)
     {
+        this.getUpnpSnapshot = getUpnpSnapshot;
+
         Text = "Preferences";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MinimizeBox = false;
@@ -143,7 +188,7 @@ internal sealed class PreferencesDialog : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterParent;
         KeyPreview = true;
-        ClientSize = new Size(560, 540);
+        ClientSize = new Size(580, 640);
 
         // 1st row — Browse for profiles folder. Same FolderBrowserDialog the startup
         // ProfileSelectionDialog uses; the choice is persisted to AppConfig.ProfilesDirectory
@@ -214,8 +259,17 @@ internal sealed class PreferencesDialog : Form
         // either side stays in lockstep.
         updateFrequencyBox.Items.AddRange(new object[] { "Never", "Every hour", "Every 6 hours", "Every 24 hours" });
         var cfgForLoad = AppConfig.Load();
+        checkForUpdatesOnStartupBox.Checked = cfgForLoad.CheckForUpdatesOnStartup;
         updateFrequencyBox.SelectedIndex = (int)cfgForLoad.UpdateCheckFrequency;
         silentlyInstallUpdatesBox.Checked = cfgForLoad.SilentlyInstallUpdates;
+        upnpEnabledBox.Checked = cfgForLoad.UpnpEnabled;
+
+        checkForUpdatesOnStartupBox.CheckedChanged += (_, _) =>
+        {
+            var cfg = AppConfig.Load();
+            cfg.CheckForUpdatesOnStartup = checkForUpdatesOnStartupBox.Checked;
+            try { cfg.Save(); } catch { /* harmless — choice just won't survive a restart */ }
+        };
         updateFrequencyBox.SelectedIndexChanged += (_, _) =>
         {
             var cfg = AppConfig.Load();
@@ -230,6 +284,39 @@ internal sealed class PreferencesDialog : Form
             try { cfg.Save(); } catch { /* harmless */ }
         };
         checkForUpdatesNowButton.Click += (_, _) => checkForUpdatesNow();
+
+        // UPnP toggle — persists immediately and tells MainForm to start / stop the mapper.
+        // Status label refresh wires up below.
+        upnpEnabledBox.CheckedChanged += (_, _) =>
+        {
+            var cfg = AppConfig.Load();
+            cfg.UpnpEnabled = upnpEnabledBox.Checked;
+            try { cfg.Save(); } catch { /* harmless */ }
+            applyUpnpEnabled(upnpEnabledBox.Checked);
+            RefreshUpnpStatusLabel();
+        };
+
+        // Live UPnP status — the RouterPortMapper raises StatusChanged from a thread-pool
+        // thread, so marshal back onto the UI thread before touching the label. Subscribe
+        // on show and unsubscribe on close to avoid leaking the handler past the dialog.
+        upnpStatusSubscription = (_, _) =>
+        {
+            if (IsDisposed) return;
+            try { BeginInvoke(new Action(RefreshUpnpStatusLabel)); }
+            catch (ObjectDisposedException) { /* dialog already gone — ignore */ }
+            catch (InvalidOperationException) { /* handle not created — ignore */ }
+        };
+        subscribeUpnpStatusChanged(upnpStatusSubscription);
+        FormClosed += (_, _) =>
+        {
+            if (upnpStatusSubscription is not null)
+            {
+                try { unsubscribeUpnpStatusChanged(upnpStatusSubscription); }
+                catch { /* shutdown — ignore */ }
+                upnpStatusSubscription = null;
+            }
+        };
+        RefreshUpnpStatusLabel();
 
         loggingBox.Checked = getLoggingEnabled();
         loggingBox.CheckedChanged += (_, _) =>
@@ -251,26 +338,28 @@ internal sealed class PreferencesDialog : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(12),
             ColumnCount = 1,
-            RowCount = 9,
+            RowCount = 13,
         };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < 8; i++) panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (var i = 0; i < 12; i++) panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        // Tab order top-to-bottom: browse, cue-sound list, accept remote, update frequency,
-        // check-now, silent install, enable logs, write logs now, close. Updates sit above
-        // the log row so a user setting up the app meets them first. The Startup behaviour
-        // button used to live here at tab index 3; it moved to the Options menu in the
-        // 2026-05-15 reorg.
+        // Tab order top-to-bottom: browse, cue-sound list, accept remote, check-on-startup,
+        // frequency, check-now, silent install, UPnP, enable logs, write logs now, close.
+        // Updates sit above the log row so a user setting up the app meets them first. The
+        // Startup behaviour button used to live here at tab index 3; it moved to the Options
+        // menu in the 2026-05-15 reorg.
         browseProfilesFolderButton.TabIndex = 0;
         cueList.TabIndex = 1;
         acceptRemoteVolumeBox.TabIndex = 2;
-        updateFrequencyBox.TabIndex = 3;
-        checkForUpdatesNowButton.TabIndex = 4;
-        silentlyInstallUpdatesBox.TabIndex = 5;
-        loggingBox.TabIndex = 6;
-        writeLogsNowButton.TabIndex = 7;
-        closeButton.TabIndex = 8;
+        checkForUpdatesOnStartupBox.TabIndex = 3;
+        updateFrequencyBox.TabIndex = 4;
+        checkForUpdatesNowButton.TabIndex = 5;
+        silentlyInstallUpdatesBox.TabIndex = 6;
+        upnpEnabledBox.TabIndex = 7;
+        loggingBox.TabIndex = 8;
+        writeLogsNowButton.TabIndex = 9;
+        closeButton.TabIndex = 10;
 
         // Group the frequency label + combo on one FlowLayoutPanel row so the visible label
         // sits inline next to the combo while keeping the combo as the focusable target.
@@ -305,11 +394,14 @@ internal sealed class PreferencesDialog : Form
         panel.Controls.Add(browseProfilesFolderButton, 0, 0);
         panel.Controls.Add(cueGroup, 0, 1);
         panel.Controls.Add(acceptRemoteVolumeBox, 0, 2);
-        panel.Controls.Add(freqRow, 0, 3);
-        panel.Controls.Add(checkForUpdatesNowButton, 0, 4);
-        panel.Controls.Add(silentlyInstallUpdatesBox, 0, 5);
-        panel.Controls.Add(loggingBox, 0, 6);
-        panel.Controls.Add(writeLogsNowButton, 0, 7);
+        panel.Controls.Add(checkForUpdatesOnStartupBox, 0, 3);
+        panel.Controls.Add(freqRow, 0, 4);
+        panel.Controls.Add(checkForUpdatesNowButton, 0, 5);
+        panel.Controls.Add(silentlyInstallUpdatesBox, 0, 6);
+        panel.Controls.Add(upnpEnabledBox, 0, 7);
+        panel.Controls.Add(upnpStatusLabel, 0, 8);
+        panel.Controls.Add(loggingBox, 0, 9);
+        panel.Controls.Add(writeLogsNowButton, 0, 10);
 
         var buttons = new FlowLayoutPanel
         {
@@ -335,5 +427,40 @@ internal sealed class PreferencesDialog : Form
                 e.Handled = true;
             }
         };
+    }
+
+    /// <summary>Pull the latest UPnP snapshot and update the inline status label. Always
+    /// called on the UI thread (either inline from a change handler or marshaled in from
+    /// the StatusChanged subscription).</summary>
+    private void RefreshUpnpStatusLabel()
+    {
+        var (status, external, lastError) = getUpnpSnapshot();
+        // Skip the label entirely while UPnP is off — keeps the dialog quiet for users who
+        // don't care, and stops the "Disabled" string from showing up next to an unticked
+        // box (which would just read as redundant noise to NVDA).
+        if (!upnpEnabledBox.Checked)
+        {
+            upnpStatusLabel.Text = "";
+            upnpStatusLabel.AccessibleName = "UPnP status";
+            return;
+        }
+        var text = status switch
+        {
+            RouterMappingStatus.Disabled => "Status: not yet started.",
+            RouterMappingStatus.Searching => "Status: searching for a router that supports UPnP / NAT-PMP / PCP...",
+            RouterMappingStatus.Mapped => external is not null
+                ? $"Status: router port opened. Peers can reach you at {external.Address}:{external.Port}."
+                : "Status: router port opened.",
+            RouterMappingStatus.NoRouterFound => "Status: no router with UPnP / NAT-PMP / PCP found. Check that the feature is enabled on your router, or forward UDP 47830 manually.",
+            RouterMappingStatus.CgnatDetected => external is not null
+                ? $"Status: the router opened the port, but the external address ({external.Address}) is on a carrier-grade NAT — peers on the public internet will not be able to reach you. Consider Tailscale or the relay instead."
+                : "Status: the router opened the port, but you are behind a carrier-grade NAT — peers on the public internet will not be able to reach you. Consider Tailscale or the relay instead.",
+            RouterMappingStatus.MappingFailed => string.IsNullOrEmpty(lastError)
+                ? "Status: the router rejected the port-mapping request."
+                : $"Status: the router rejected the port-mapping request — {lastError}",
+            _ => "",
+        };
+        upnpStatusLabel.Text = text;
+        upnpStatusLabel.AccessibleName = string.IsNullOrEmpty(text) ? "UPnP status" : text;
     }
 }

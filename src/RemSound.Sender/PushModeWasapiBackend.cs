@@ -109,6 +109,8 @@ internal sealed class PushModeWasapiBackend : ICaptureBackend
     public int TakeMaxCallbackGapMs() => 0;
 
     public float TakeMaxRawCaptureStep() => rawCaptureStepProbe.TakeMax();
+    public float TakeMaxRawCaptureStepCrossBuffer() => rawCaptureStepProbe.TakeMaxCrossBuffer();
+    public float TakeMaxRawCaptureStepWithinBuffer() => rawCaptureStepProbe.TakeMaxWithinBuffer();
 
     public void Start(IReadOnlyList<CaptureSourceSpec> specs)
     {

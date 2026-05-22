@@ -23,6 +23,19 @@ public sealed class Profile
     /// <summary>Display title and filename stem (sanitised). Required.</summary>
     public string Title { get; set; } = "";
 
+    /// <summary>If true, this profile is loaded for use but the app never writes the user's
+    /// in-session changes back to disk: Ctrl+S / File → Save politely refuses (with a "use
+    /// Save As instead" message), and FormClosing skips its usual "save changes?" prompt
+    /// entirely. Whatever the user fiddled with this session is kept in memory until the
+    /// app closes and then discarded; the file on disk stays exactly as it was. Off by
+    /// default. Toggled per-profile via File → Lock profile (read-only). Use case: a
+    /// "default" profile you want to live in and toggle send/receive on without the close
+    /// prompt blocking shutdown — important for users who can't reach the prompt because
+    /// they're remote, or because the screen reader has crashed, or because the laptop is
+    /// hibernating. The flag is the *only* property the lock-toggle writes back to disk;
+    /// any other in-session edits stay session-only. 2026-05-22.</summary>
+    public bool ReadOnly { get; set; }
+
     // === Main form: send / receive ===
     public bool ReceiveAudioOn { get; set; }
     public bool SendAudioOn { get; set; }

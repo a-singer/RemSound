@@ -20,6 +20,87 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v2.1
+
+        Automatic router setup for internet streaming, a small
+        notice before background updates install, a "lock this
+        profile" option for users who don't want close prompts,
+        and a fix for the "no sound after the laptop wakes up"
+        problem. No wire-format or audio-pipeline changes —
+        v1.5 through v2.1 peers interoperate.
+
+        What's new:
+          * Automatic router port opening (UPnP). RemSound can
+            now ask your router to let peers on the internet
+            reach you, so you don't have to set up port
+            forwarding by hand. Off by default. Tick the new
+            "Automatically open my router for incoming
+            connections (UPnP)" box in Preferences to turn it
+            on. A status line right below the tick tells you
+            what happened — found your router and opened the
+            port, found your router but the port couldn't be
+            opened, or no router found that supports this
+            feature. If your internet provider puts you behind
+            a second layer of NAT (common on mobile broadband
+            and some cable connections), the status line will
+            say so and suggest using Tailscale or the relay
+            instead.
+          * Check for updates on startup. New checkbox in
+            Preferences, on by default. Shortly after RemSound
+            launches it has a quiet look for a new release.
+            Combined with "Silently install updates", this
+            means leaving RemSound to keep itself up to date
+            without you ever needing to think about it.
+          * Brief notice before a silent update installs. When
+            RemSound finds an update at startup and is set to
+            install silently, it now shows a small window with
+            the version it's about to install and an 8-second
+            countdown. Press Enter (or wait) to install now,
+            "Skip this version" to leave the update for
+            another day, or "Postpone" to try again at the
+            next check. Without this notice, the app could
+            silently close on you a few seconds after launch
+            and you'd have no idea why.
+          * Lock profile (read-only). New tickable item in the
+            File menu (Alt+F, L). When ticked, anything you
+            change while RemSound is running stays in this
+            session and is forgotten on close — your saved
+            profile is left untouched, and there's NO "save
+            changes?" prompt on exit. Useful when you have a
+            default profile you want to keep clean even if you
+            toggle send/receive or volume during the day, and
+            essential if a save prompt could block shutdown
+            when you can't reach it (screen reader gone,
+            remote session dropped, machine hibernating).
+            Saved per profile, off by default, toggle as often
+            as you like. Save As on a locked profile produces
+            an unlocked copy you can edit normally.
+          * "Cue sounds" in Preferences is now labelled "Audio
+            cue sounds" for clarity.
+
+        Bug fixes:
+          * No sound after the computer wakes from sleep. On
+            many setups (especially USB audio interfaces),
+            waking the computer left RemSound's audio engine
+            in a state where it looked like it was running but
+            no sound actually came out — you'd have to quit
+            and reopen RemSound to get audio back. RemSound
+            now notices when the system has woken up, waits a
+            moment for the USB devices to settle, and rebuilds
+            its audio engine automatically. The "Loading audio
+            driver" window briefly appears during the rebuild
+            so you can see it's happening.
+          * Receiver audio silent after waking from hibernate.
+            A follow-up to the wake-from-sleep fix above: on
+            hibernate (rather than ordinary sleep) the ASIO
+            receive output's tick selection could be silently
+            wiped during hibernation entry, leaving the
+            receiver running silent on resume even though
+            everything looked normal in the logs. Fixed by
+            recognising the transient driver-disappeared state
+            and preserving the user's tick until the driver
+            comes back.
+
         RemSound v2.0
 
         A smoother startup when a profile uses an ASIO driver.

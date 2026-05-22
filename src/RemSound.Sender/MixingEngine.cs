@@ -118,6 +118,8 @@ internal sealed class MixingEngine : ICaptureBackend
     /// <see cref="PushModeWasapiBackend"/> instead. Stays at zero here; if a future
     /// multi-source WASAPI test needs the probe, add it per-source in CaptureSource.</summary>
     public float TakeMaxRawCaptureStep() => 0f;
+    public float TakeMaxRawCaptureStepCrossBuffer() => 0f;
+    public float TakeMaxRawCaptureStepWithinBuffer() => 0f;
 
     /// <summary>
     /// Starts the mix loop with the given initial source set. If already running, the existing

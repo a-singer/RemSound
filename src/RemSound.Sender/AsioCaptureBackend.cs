@@ -88,6 +88,8 @@ internal sealed class AsioCaptureBackend : ICaptureBackend
         onMixedSamples = callback;
 
     public float TakeMaxRawCaptureStep() => rawCaptureStepProbe.TakeMax();
+    public float TakeMaxRawCaptureStepCrossBuffer() => rawCaptureStepProbe.TakeMaxCrossBuffer();
+    public float TakeMaxRawCaptureStepWithinBuffer() => rawCaptureStepProbe.TakeMaxWithinBuffer();
 
     public bool IsRunning => asio is not null;
     public long TotalCaptureCallbacks => Interlocked.Read(ref callbackCount);

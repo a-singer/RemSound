@@ -49,6 +49,14 @@ public sealed class AppConfig
     /// itself is the user-visible confirmation, so a follow-up popup is redundant.</summary>
     public bool SaveProfileConfirmationSuppressed { get; set; }
 
+    /// <summary>True if the user has ticked "do not show me this message again" on the
+    /// "this profile is read-only, save was skipped" popup. Once ticked, Ctrl+S / File → Save
+    /// on a read-only profile silently does nothing instead of explaining why — the user
+    /// has acknowledged that they know it's a no-op. Machine-local (not per-profile) so the
+    /// preference sticks across profile switches; the prompt itself is the same wording on
+    /// any read-only profile so a single dismissal applies everywhere. 2026-05-22.</summary>
+    public bool SaveOnReadOnlyMessageSuppressed { get; set; }
+
     /// <summary>If true, RemSound minimises to the system tray immediately after the main
     /// window finishes loading. Lets the user "boot up the machine and have RemSound
     /// already running quietly". Default false.</summary>
@@ -82,6 +90,22 @@ public sealed class AppConfig
     /// detached helper that waits for the exe to exit, swaps in the new files, and restarts
     /// RemSound. Default false — the user gets a confirmation dialog before each install.</summary>
     public bool SilentlyInstallUpdates { get; set; }
+
+    /// <summary>If true (the default), RemSound runs an update check shortly after launch in
+    /// addition to whatever <see cref="UpdateCheckFrequency"/> drives in the background. The
+    /// startup check is what catches users who quit and re-open the app within the polling
+    /// interval — without it they could miss an update for hours. Set to false to disable the
+    /// startup check; the periodic timer (if set) still runs.</summary>
+    public bool CheckForUpdatesOnStartup { get; set; } = true;
+
+    /// <summary>If true, RemSound tries to open the audio port (UDP 47830) on the local router
+    /// using UPnP / NAT-PMP / PCP, so peers on the public internet can reach this machine
+    /// without manual port forwarding. Default false — the toggle opt-in only, because some
+    /// networks (corporate, hostile shared) shouldn't have apps poking the router. When
+    /// successful, RemSound surfaces the external address in the Preferences dialog so the
+    /// user knows what to give peers. Falls back gracefully when the router doesn't support
+    /// UPnP — RemSound just doesn't open anything.</summary>
+    public bool UpnpEnabled { get; set; }
 
     /// <summary>UTC timestamp of the last successful update check. Used by the background
     /// update timer to space out polls across launches — if you set the frequency to

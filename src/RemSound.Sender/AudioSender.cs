@@ -141,12 +141,23 @@ public sealed class AudioSender : IDisposable
     public float TakeMaxPreEncodeStepWasapiLane() => defaultLane.TakeMaxPreEncodeStep();
     public float TakeMaxPreEncodeStepAsioLane() => asioLane.TakeMaxPreEncodeStep();
 
+    // Cross-buffer (boundary) and within-buffer (content) split — see AudioStepProbe for the
+    // diagnostic distinction. Used by the per-second diag logger to emit two extra columns so
+    // an offline log inspection can tell a real audio transient apart from a buffer-boundary
+    // glitch. 2026-05-21 addition.
+    public float TakeMaxPreEncodeStepWasapiLaneCrossBuffer() => defaultLane.TakeMaxPreEncodeStepCrossBuffer();
+    public float TakeMaxPreEncodeStepWasapiLaneWithinBuffer() => defaultLane.TakeMaxPreEncodeStepWithinBuffer();
+    public float TakeMaxPreEncodeStepAsioLaneCrossBuffer() => asioLane.TakeMaxPreEncodeStepCrossBuffer();
+    public float TakeMaxPreEncodeStepAsioLaneWithinBuffer() => asioLane.TakeMaxPreEncodeStepWithinBuffer();
+
     // Raw capture-side step probe — now lives inside each <see cref="ICaptureBackend"/>
     // implementation so the ASIO path and the WASAPI path each measure their own buffers
     // independently. The aggregate just asks the backend for the max since last read; in
     // BothIndependent mode the composite backend forwards to both inners and returns the
     // larger value.
     public float TakeMaxSenderRawCaptureStep() => engine.TakeMaxRawCaptureStep();
+    public float TakeMaxSenderRawCaptureStepCrossBuffer() => engine.TakeMaxRawCaptureStepCrossBuffer();
+    public float TakeMaxSenderRawCaptureStepWithinBuffer() => engine.TakeMaxRawCaptureStepWithinBuffer();
 
     // Snapshot the cumulative "hit the hard clamp" sample counter. The sender's mix path
     // clamps any sample whose magnitude exceeds 1.0 (avoids producing samples the int24 path

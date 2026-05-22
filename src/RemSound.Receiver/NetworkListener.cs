@@ -31,6 +31,18 @@ internal sealed class NetworkListener : IDisposable
     public int TakeMaxOnPacketMs() =>
         (int)(Interlocked.Exchange(ref maxOnPacketTicks, 0) * 1000 / Stopwatch.Frequency);
 
+    // Inter-packet arrival gap at the user-space socket. Measures the elapsed time between
+    // consecutive `ReceiveFrom` returns. This is the diagnostic that splits "the sender
+    // stalled" from "the network jittered" from "the OS sat on packets before delivering
+    // them to our process" — by comparing this with the sender's per-callback gap on the
+    // other machine, we can tell which side introduced the arrival gap that triggered a
+    // concealment-fire / underrun. The probe is gated on DiagnosticsGate.Enabled exactly
+    // like the OnPacket timer above; pays nothing when logs are off. 2026-05-21.
+    private long maxInterPacketGapTicks;
+    private long lastReceiveTicks;
+    public int TakeMaxInterPacketGapMs() =>
+        (int)(Interlocked.Exchange(ref maxInterPacketGapTicks, 0) * 1000 / Stopwatch.Frequency);
+
     public NetworkListener(Action<byte[], int, IPEndPoint> onPacket, Action<string> onDiagnostic)
     {
         this.onPacket = onPacket;
@@ -72,6 +84,11 @@ internal sealed class NetworkListener : IDisposable
         thread = null;
         cts?.Dispose();
         cts = null;
+        // Reset the inter-packet timestamp so a Restart doesn't measure the long pause
+        // between the previous session's last packet and the new session's first as a
+        // spurious huge gap.
+        Interlocked.Exchange(ref lastReceiveTicks, 0);
+        Interlocked.Exchange(ref maxInterPacketGapTicks, 0);
     }
 
     public void Dispose() => Stop();
@@ -104,7 +121,22 @@ internal sealed class NetworkListener : IDisposable
                 // per packet for a number nobody is going to log.
                 if (RemSound.Core.DiagnosticsGate.Enabled)
                 {
-                    var dispatchStart = Stopwatch.GetTimestamp();
+                    var nowTicks = Stopwatch.GetTimestamp();
+                    // Inter-packet arrival gap. First packet seeds lastReceiveTicks without
+                    // recording a gap (no previous to compare to). Subsequent packets compute
+                    // elapsed-since-previous-ReceiveFrom-returned. The window includes our
+                    // onPacket processing, but that's typically sub-millisecond — so a spike
+                    // here points at the OS/network layer below us, not at our dispatch work.
+                    // Our work shows up separately in maxOnPacketTicks.
+                    var prevReceiveTicks = Interlocked.Exchange(ref lastReceiveTicks, nowTicks);
+                    if (prevReceiveTicks != 0)
+                    {
+                        var gap = nowTicks - prevReceiveTicks;
+                        long curGap;
+                        do { curGap = Volatile.Read(ref maxInterPacketGapTicks); }
+                        while (gap > curGap && Interlocked.CompareExchange(ref maxInterPacketGapTicks, gap, curGap) != curGap);
+                    }
+                    var dispatchStart = nowTicks;
                     onPacket(buffer, received, remote);
                     var elapsed = Stopwatch.GetTimestamp() - dispatchStart;
                     long current;

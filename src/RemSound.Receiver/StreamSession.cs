@@ -53,6 +53,8 @@ internal sealed class StreamSession : IDisposable
     // samples a moment later (after riding through the ring buffer).
     private readonly AudioStepProbe postDecodeStepProbe = new();
     public float TakeMaxPostDecodeStep() => postDecodeStepProbe.TakeMax();
+    public float TakeMaxPostDecodeStepCrossBuffer() => postDecodeStepProbe.TakeMaxCrossBuffer();
+    public float TakeMaxPostDecodeStepWithinBuffer() => postDecodeStepProbe.TakeMaxWithinBuffer();
 
     // === Wire-level sequence tracking (Phase 5, 2026-05-14) ===
     // Every audio packet carries a wire sequence number that monotonically increases per

@@ -274,7 +274,9 @@ public sealed class AudioReceiver : IDisposable
     /// <summary>
     /// Frame duration of the most-recently-active stream (10 ms PCM, 20 ms Opus). null when no
     /// stream is active. With multiple senders this picks the largest frame duration as the
-    /// codec floor — most conservative for the auto-tune.
+    /// codec floor — most conservative for the auto-tune. Returns ms (rounded up to the next
+    /// integer if the underlying sample-count yields a fractional duration, e.g. 2.5 ms → 3),
+    /// so the auto-tune always overestimates rather than underestimates the codec floor.
     /// </summary>
     public int? ActiveStreamFrameMs
     {
@@ -283,12 +285,20 @@ public sealed class AudioReceiver : IDisposable
             lock (sessionsLock)
             {
                 if (sessions.Count == 0) return null;
-                var maxFrame = 0;
+                var maxSamples = 0;
+                var sampleRate = 48000;
                 foreach (var s in sessions.Values)
                 {
-                    if (s.Format.FrameDurationMilliseconds > maxFrame) maxFrame = s.Format.FrameDurationMilliseconds;
+                    if (s.Format.FrameSamplesPerChannel > maxSamples)
+                    {
+                        maxSamples = s.Format.FrameSamplesPerChannel;
+                        sampleRate = s.Format.SampleRate > 0 ? s.Format.SampleRate : 48000;
+                    }
                 }
-                return maxFrame;
+                // Round up so a 2.5 ms frame reports as 3 ms — the auto-tune treats this as
+                // a floor, and overestimating by half a millisecond is safer than rounding
+                // down to 2 ms and pushing the buffer below the real codec frame size.
+                return (maxSamples * 1000 + sampleRate - 1) / sampleRate;
             }
         }
     }

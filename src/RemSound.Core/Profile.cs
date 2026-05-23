@@ -62,7 +62,17 @@ public sealed class Profile
     // === Connectivity & transport ===
     public int AudioPort { get; set; } = 47830;
     public int CodecRaw { get; set; } = (int)AudioTransportCodec.Pcm;
-    public int OpusFrameMilliseconds { get; set; } = 10;
+    /// <summary>Opus frame size in samples-per-channel at 48 kHz. 120 = 2.5 ms, 240 = 5 ms,
+    /// 480 = 10 ms (default), 960 = 20 ms. Renamed from <c>OpusFrameMilliseconds</c> in the
+    /// v3.0 wire-format refactor (2026-05-23). The JSON key is kept as
+    /// <c>OpusFrameMilliseconds</c> for back-compat with v2.x profile files; on read,
+    /// <see cref="RemSoundSettingsStore.LoadOpusFrameSamplesPerChannel"/> disambiguates the
+    /// legacy integer-ms encoding (5/10/20) from the new sample-count encoding
+    /// (120/240/480/960) using a sentinel: any persisted value &lt; 120 is treated as ms and
+    /// multiplied by 48. v2.x readers loading a v3.x profile see e.g. 480 and clamp it to
+    /// their accept-list (which only knows 10 or 20), defaulting silently to 10 ms.</summary>
+    [JsonPropertyName("OpusFrameMilliseconds")]
+    public int OpusFrameSamplesPerChannel { get; set; } = 480;
     public int SendRateRaw { get; set; } = (int)SendRate.Standard;
     public bool TightLatencyMode { get; set; }
     /// <summary>True if this profile asks Windows to keep the RemSound process in

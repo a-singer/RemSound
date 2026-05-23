@@ -157,7 +157,10 @@ public static class RemPacket
         BinaryPrimitives.WriteInt32LittleEndian(destination[16..], format.BlockAlign);
         BinaryPrimitives.WriteInt32LittleEndian(destination[20..], format.AverageBytesPerSecond);
         BinaryPrimitives.WriteInt32LittleEndian(destination[24..], format.Codec);
-        BinaryPrimitives.WriteInt32LittleEndian(destination[28..], format.FrameDurationMilliseconds);
+        // Wire field at offset 28: sample-count per channel at the announced sample rate
+        // (formerly milliseconds, renamed 2026-05-23 — see AudioFormatInfo doc comment for
+        // the v3.0 wire-format change).
+        BinaryPrimitives.WriteInt32LittleEndian(destination[28..], format.FrameSamplesPerChannel);
         // Extension: 1 byte Lane + 3 reserved-zero bytes. Zero-fill the reserved slot so a
         // future receiver doesn't accidentally read stale stack data if WriteFormatPayload
         // is called on an uninitialised buffer.

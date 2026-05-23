@@ -14,7 +14,7 @@ namespace RemSound.Sender;
 ///
 /// Threading: the hot-path methods (<see cref="OnMixedSamples"/> and below) are called from
 /// the capture engine's callback thread. Each lane has exactly one such thread feeding it.
-/// Cross-thread state read from AudioSender (codec, mute, opusFrameMs, etc.) goes through
+/// Cross-thread state read from AudioSender (codec, mute, opusFrameSamples, etc.) goes through
 /// volatile fields on the owner. Configuration mutations (<see cref="ConfigureCodec"/>,
 /// <see cref="OnPcmFrameSizeChanged"/>) come from the UI thread; they take the same
 /// configGate that AudioSender does to serialise streamId rotation against in-flight
@@ -77,11 +77,11 @@ internal sealed class SenderLane
 
     public ushort StreamId => streamId;
 
-    public SenderLane(AudioSender owner, int initialOpusFrameMs, int opusBitrate)
+    public SenderLane(AudioSender owner, int initialOpusFrameSamplesPerChannel, int opusBitrate)
     {
         this.owner = owner;
         this.opusBitrate = opusBitrate;
-        opusEncoder = new OpusEncoderState(initialOpusFrameMs, opusBitrate);
+        opusEncoder = new OpusEncoderState(initialOpusFrameSamplesPerChannel, opusBitrate);
         opusFrameStereoSamples = opusEncoder.FrameSizePerChannel * MixChannels;
         streamId = NewStreamId();
     }
@@ -121,11 +121,11 @@ internal sealed class SenderLane
     /// format), rebuilds the Opus encoder if Opus is in play, and zeroes the accumulator so
     /// any half-filled frame from the previous format doesn't leak into the new one.
     /// </summary>
-    public void OnCodecChanged(AudioTransportCodec newCodec, int opusFrameMs)
+    public void OnCodecChanged(AudioTransportCodec newCodec, int opusFrameSamplesPerChannel)
     {
         if (newCodec == AudioTransportCodec.Opus)
         {
-            opusEncoder = new OpusEncoderState(opusFrameMs, opusBitrate);
+            opusEncoder = new OpusEncoderState(opusFrameSamplesPerChannel, opusBitrate);
             opusFrameStereoSamples = opusEncoder.FrameSizePerChannel * MixChannels;
         }
         streamId = NewStreamId();
@@ -287,19 +287,19 @@ internal sealed class SenderLane
         if (DateTime.UtcNow - lastFormatPacketUtc < TimeSpan.FromMilliseconds(FormatResendIntervalMs)) return;
         lastFormatPacketUtc = DateTime.UtcNow;
 
-        // PCM FrameDurationMilliseconds: receiver only uses this for buffer sizing and
-        // diagnostics, not for decode. Round 2.5 ms up to ≥1 to keep the wire field integer.
-        var pcmFrameMs = owner.PcmFrameSamplesPerChannel * 1000 / MixSampleRate;
-        if (pcmFrameMs < 1) pcmFrameMs = 1;
+        // Wire field FrameSamplesPerChannel: receiver uses this for buffer sizing and the
+        // decoder hot path. PCM passes through the sender's own sample-count directly; Opus
+        // uses whatever the encoder is configured for. v3.0 wire format — see
+        // AudioFormatInfo doc comment for the semantic-shift rationale.
         var codec = owner.Codec;
-        var opusFrameMs = owner.OpusFrameMilliseconds;
+        var opusFrameSamples = owner.OpusFrameSamplesPerChannel;
         // Pass this lane's current Route as the Lane field. In classic-mode senders this is
         // Mixed and the receiver routes the session to its legacy mix bus; in BothIndependent
         // senders this is WasapiLane or AsioLane and the receiver routes to the matching
         // per-route IWaveProvider surface.
         var format = codec == AudioTransportCodec.Opus
-            ? new AudioFormatInfo(48000, 2, 16, 1, 4, 192_000, (int)AudioTransportCodec.Opus, opusFrameMs, route)
-            : new AudioFormatInfo(48000, 2, 24, 1, 6, 288_000, (int)AudioTransportCodec.Pcm, pcmFrameMs, route);
+            ? new AudioFormatInfo(48000, 2, 16, 1, 4, 192_000, (int)AudioTransportCodec.Opus, opusFrameSamples, route)
+            : new AudioFormatInfo(48000, 2, 24, 1, 6, 288_000, (int)AudioTransportCodec.Pcm, owner.PcmFrameSamplesPerChannel, route);
 
         // Allocate the extended (36-byte) format payload — see RemPacket.FormatPayloadExtendedSize
         // for the backward-compat contract. Old receivers parse the first 32 bytes and ignore

@@ -265,3 +265,59 @@ The remaining items in the original list are now categorised honestly:
 * **Big remaining lever, requires real project**: replacement of NAudio for direct WASAPI/ASIO P/Invoke. Year-scale work. Not on the table now.
 
 **RemSound's efficiency is in a healthy state.** Steady-state PCM-sending: 1.6-4.7 % CPU, 150 KB/s allocs. Receive side: 10 % CPU (mostly NAudio + ASIO host thread, not ours), 178 KB/s. Opus is no longer special. No further efficiency work is recommended in this round; the next time someone surfaces a real performance complaint, this document should be the starting point for measuring before guessing.
+
+---
+
+## Design note (forward-looking): low-latency Opus mode, v3.0 candidate
+
+Captured 2026-05-23 — Ed asked whether we can get Opus closer to PCM-latency, citing Jamulus as the reference for "very very fast" Opus. Recorded here so a future session has the lay of the land without re-deriving it from scratch.
+
+### What Jamulus actually does
+
+Jamulus's low latency comes from a stack of choices, not one trick:
+
+1. **Opus Custom CELT**, not standard Opus. Opus Custom is a non-standard build of libopus exposing the CELT layer directly (it skips the SILK/CELT decision layer, and accepts non-standard frame sizes / sample rates). Requires libopus to be compiled with `--enable-custom-modes` — that flag is OFF by default in stock builds, including the binaries that ship in the `Concentus.Native` NuGet package we use today.
+2. **2.67 ms frames** (128 samples at 48 kHz), or 5.33 ms (256 samples). That's the dominant latency win. Algorithmic latency in Opus is roughly `frame size + 2.5 ms look-ahead` — at 2.67 ms frames you're at ~5 ms total instead of the ~12.5 ms a 10 ms standard Opus frame gives.
+3. **Complexity 1** (we use 10) — cheaper encode, marginally lower quality at the same bitrate.
+4. **CBR, no FEC, int16 input, joint stereo** — Jamulus prioritises predictable bandwidth and minimum per-packet overhead over robustness. We use VBR + FEC + float input because RemSound runs over WAN via Tailscale and needs to survive packet loss.
+5. **Tiny jitter buffer** — often 1-2 frames. RemSound's is sized for forgiveness, not LAN snappiness.
+
+### What RemSound v3.0 adds (shipped 2026-05-23)
+
+Standard libopus in `OPUS_APPLICATION_RESTRICTED_LOWDELAY` mode goes down to 2.5 ms frames at 48 kHz — same algorithmic latency as Opus Custom at the same frame size. The "Custom" bit gives you sub-frame-size flexibility (any sample count, any sample rate), not lower latency per se. So most of the Jamulus latency advantage is available from stock libopus, and that's what v3.0 pursues.
+
+**Test result (2026-05-23, desktop↔laptop on LAN, ASIO Audient + Tight rate + auto-tune):** at the new 2.5 ms mode, send-accum dropped from 5 ms to 1.3 ms (3.75 ms shaved), auto-tune pulled the receive buffer to 19 ms (vs 24–29 ms at 10 ms Opus, 5–10 ms shaved). End-to-end one-way ≈ 30 ms vs ≈ 45 ms at standard 10 ms. **~15 ms shaved one-way, ~30 ms round-trip.** Wire integrity perfect over the test session: 400 packets/sec/lane, zero missed, zero reordered, zero duplicates, zero FEC recoveries triggered. CPU on the sender doubled to ~12 % (was ~5 % at PCM), receiver ~9–23 %. Memory rock-solid (gen0/1/2 zero most ticks).
+
+**Refactor shipped in v3.0:**
+
+* `AudioFormatInfo.FrameDurationMilliseconds` → `FrameSamplesPerChannel`. The wire field at byte offset 28 of the format payload now carries the exact sample-count per channel at the announced sample rate. v2.x receivers reading a v3.0 format packet misinterpret 480 (= 10 ms in samples) as 480 ms; the actual Opus decode still works because the decoder is self-describing from the packet TOC byte, but their buffer sizing will be wildly off. v2 ↔ v3 audio works but with absurd buffer latency. v3 ↔ v3 is exact.
+* `OpusEncoderState` constructor now takes `frameSamplesPerChannel` directly — the lossy `48000 × ms / 1000` conversion (which couldn't represent 2.5 ms) is gone.
+* `AudioSender.OpusFrameMilliseconds` → `OpusFrameSamplesPerChannel`; `ConfigureCodec(codec, samples)` accepts 120 to 2880 (= 2.5 ms to 60 ms).
+* `SenderLane` constructor + `OnCodecChanged` signatures and `EnsureFormatPacketSent` propagate sample-counts straight through.
+* `MainFormChoices.CodecChoice` field renamed `OpusFrameMs` → `OpusFrameSamples`.
+* `MainForm.cs` codec dropdown: PCM, Opus 20 ms (960), Opus 10 ms (480), Opus 2.5 ms experimental (120). `EffectiveOpusFrameSamples` halves for Tight rate with a floor of 120 (so picking 2.5 ms + Tight stays at 2.5 ms; picking 20 ms + Tight gives 10 ms). `FormatCodecLabel` derives ms display from samples / 48 with one decimal so "Opus 2.5ms" displays cleanly. `ResolveCodecIndex` maps 960/480/120 to dropdown indices.
+* `RemSoundSettingsStore.LoadOpusFrameSamplesPerChannel` / `SaveOpusFrameSamplesPerChannel` (in-memory cache rename). The load path includes a `<120` sentinel migration: any persisted value below 120 is treated as legacy v2.x integer-ms and multiplied by 48. The ranges don't overlap (max legitimate ms = 60, min legitimate samples = 120), so the disambiguation is unambiguous.
+* `Profile.OpusFrameMilliseconds` → `Profile.OpusFrameSamplesPerChannel`. The JSON key is **kept** as `"OpusFrameMilliseconds"` via `[JsonPropertyName]`, so v2.x profile files still load (the `<120` sentinel migration converts their ms value on read).
+* `AudioReceiver.ActiveStreamFrameMs` rounds samples-per-channel up to the next integer ms so the auto-tune always overestimates rather than underestimates the codec floor.
+* `StreamSession.MatchesFormat` + `HandleOpus` use `FrameSamplesPerChannel` directly; the buffer-size calc dropped its `× SampleRate / 1000` conversion.
+
+Wire-format compatibility: v3.x ↔ v3.x exact; v2.x ↔ v3.x produces garbled buffer sizing but the Opus stream still decodes (TOC-self-describing). Users on the field upgrade both ends together.
+
+### What 2.5 ms gives you in real-world test
+
+* **~5 ms codec latency** (vs ~12.5 ms at the standard Opus 10 ms choice) — about 7.5 ms shaved off the end-to-end path. Within ~0.17 ms of Jamulus's Opus Custom 2.67 ms frame.
+* **4× the packet rate per lane** (200 pps → 800 pps) — measurably more CPU per second, more pressure on the kernel UDP send path, slightly worse single-packet-loss tolerance.
+* **Same encoder otherwise** — RESTRICTED_LOWDELAY, native libopus, FEC on, bitrate unchanged.
+
+### What Opus Custom would add on top of 2.5 ms (deferred to v3.1+ if ever)
+
+Once 2.5 ms standard libopus is in real-world use, the remaining gap to Jamulus is:
+
+* **Sub-2.5 ms frames** (Jamulus uses 64 samples = 1.33 ms, below stock libopus's floor). Saves ~1.2 ms more codec latency. At that point we're below the CPU-scheduling jitter floor on most consumer Windows hardware — the saving is theoretical more than perceptible.
+* **Skipping standard Opus packet framing** — saves 1-2 bytes per packet (about 1 % of total bandwidth at 2.5 ms frames). Trivial.
+
+Cost to add: half a day to a day of native-binary work (build libopus with `--enable-custom-modes`, P/Invoke layer for `opus_custom_mode_create` / `opus_custom_encoder_create` / `opus_custom_encode_float` / matching decode, wire-format extension to mark packets as custom-mode, NuGet/packaging plumbing).
+
+**Recommendation: do not pursue Opus Custom unless 2.5 ms in real-world testing shows a perceptible gap to Jamulus and the listening tests prove the missing ~1 ms matters.** Most users won't be able to tell.
+
+Skip the tight-jitter receive-buffer mode (1-2 frames) unless it surfaces as a complaint independently — the current buffer sizing is what makes Wi-Fi tolerable.

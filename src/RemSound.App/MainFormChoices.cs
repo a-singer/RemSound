@@ -16,9 +16,11 @@ internal sealed class LiveCheckedListBox : CheckedListBox
 
 /// <summary>
 /// User-facing choice that maps a friendly label to a codec + Opus frame size pair. The frame
-/// size is only meaningful when Codec == Opus; for PCM it's ignored.
+/// size is in samples-per-channel at 48 kHz (v3.0 wire-format unit — see
+/// <see cref="AudioFormatInfo"/>). 120 = 2.5 ms, 240 = 5 ms, 480 = 10 ms, 960 = 20 ms.
+/// Only meaningful when Codec == Opus; for PCM it's ignored.
 /// </summary>
-internal sealed record CodecChoice(string Label, AudioTransportCodec Codec, int OpusFrameMs)
+internal sealed record CodecChoice(string Label, AudioTransportCodec Codec, int OpusFrameSamples)
 {
     public override string ToString() => Label;
 }

@@ -20,6 +20,81 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v3.0
+
+        A big release with two things you'll actually notice:
+
+        1) A new "live latency" Opus mode. RemSound now sends
+           sound in tiny 2.5-millisecond chunks instead of the
+           usual 10 or 20 ms. End-to-end delay drops to about
+           5 ms of codec delay — close to PCM — perfect for
+           playing along with someone in real time. Uses a bit
+           more network bandwidth than the regular Opus mode
+           but still a fraction of PCM. Best on a clean wired
+           network. Pick it from the codec list as "Opus, live
+           latency — for jamming and monitoring".
+
+        2) After RemSound updates itself, it now reopens on
+           the same profile you were using. So if a silent
+           update fires mid-session, the session drops briefly
+           while the new files swap in, then RemSound reopens
+           with the same devices, peers and settings — you
+           don't see the profile picker, and you don't have to
+           be at the computer when it happens. The next time
+           you launch RemSound yourself, your normal startup
+           choice applies as before.
+
+        Other changes:
+          * The codec list is now three choices, with clearer
+            names: PCM 48K 24 bit (uncompressed); Opus,
+            broadcast quality (loss tolerant); Opus, live
+            latency (the new low-latency mode). The old
+            "Opus lower quality (10 ms)" middle option has
+            been retired — it sat between the other two
+            without a clear reason to pick it. If your saved
+            profile was using it, RemSound silently picks
+            broadcast quality for you — slightly more delay,
+            more loss tolerance.
+          * Save on a locked (read-only) profile now goes
+            through when you ask on purpose. The lock still
+            suppresses the automatic "save your changes?"
+            prompt on close (its main job), but if you press
+            Save deliberately, a one-time warning explains
+            what's about to happen and lets you confirm or
+            cancel. Once you tick "do not show again", future
+            deliberate saves on a locked profile go through
+            silently. Save as... is unchanged — it always
+            works.
+
+        Also includes everything from the never-separately-
+        released v2.2 work: a native Opus encoder that puts
+        much less load on Windows' memory manager (about 97 %
+        less per-second memory churn while sending Opus),
+        various small CPU and memory tidy-ups, and new
+        diagnostic log columns (cpu, memMB, wsMB, allocKBps,
+        captureMs / sendMs / recvMs / renderMs).
+
+        Compatibility note — please read:
+
+        v3.0 changes how RemSound describes audio frame sizes
+        to other RemSound machines on the wire. Two v3.0
+        machines talk to each other perfectly. A v3.0 machine
+        talking to a v2.x machine will still pass audio, but
+        the v2.x side will build up too much buffer and
+        latency will be very high. To avoid this, update BOTH
+        machines to v3.0. The auto-updater on v1.9 and later
+        will handle the upgrade for you, but the timing
+        matters: if one machine updates before the other,
+        expect a short period of high latency until the
+        second machine catches up.
+
+        If you had previously ticked "do not show me this
+        message again" on the v2.x "save was blocked on a
+        read-only profile" dialog, that suppression doesn't
+        carry over — you'll see the new one-time warning once
+        per machine. That's deliberate; the behaviour changed
+        and you need to know.
+
         RemSound v2.2
 
         A maintenance release that makes RemSound use less of

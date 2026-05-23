@@ -722,19 +722,26 @@ public sealed class MainForm : Form
         maxLatencyBox.AccessibleName = "Audio latency in milliseconds (Alt+L)";
 
         // --- Populate static choices ---
-        // Order: PCM first (LAN), Opus 20 ms (higher quality, more robust to loss), Opus 10 ms
-        // (lower latency at the cost of slightly less audio quality and loss tolerance). Labels
-        // intentionally avoid all numbers and ms jargon — the slider is the only place ms
-        // should appear in the UI.
+        // Three transport choices, ordered most-tolerant-of-bad-networks to most-demanding:
+        //   * PCM 48K 24-bit       — uncompressed, ~2.3 Mbps
+        //   * Opus broadcast quality — 20 ms frame (960 samples/ch at 48 kHz), loss tolerant
+        //   * Opus live latency      — 2.5 ms frame (120 samples/ch at 48 kHz), 8× the packet
+        //                              rate of broadcast quality, for jamming / live monitoring
+        // The 10 ms middle option (480 samples/ch) that lived here in v2.x has been retired —
+        // it sat between the other two without a clear use case (saved only 5 ms over 20 ms
+        // and gave up loss tolerance for no clearly audible win). Frame size on the wire is
+        // samples-per-channel at 48 kHz (v3.0 unit). Labels avoid numbers and ms jargon per
+        // the manual's "use case in words" convention; the per-peer status line surfaces the
+        // actual ms figure for users who want to verify.
         codecBox.Items.AddRange(new object[]
         {
-            new CodecChoice("PCM 48K 24 bit for very fast connections", AudioTransportCodec.Pcm, 0),
-            new CodecChoice("Opus high quality for fast connections", AudioTransportCodec.Opus, 20),
-            new CodecChoice("Opus lower quality for slower connections", AudioTransportCodec.Opus, 10),
+            new CodecChoice("PCM 48K 24 bit — uncompressed", AudioTransportCodec.Pcm, 0),
+            new CodecChoice("Opus, broadcast quality — loss tolerant", AudioTransportCodec.Opus, 960),
+            new CodecChoice("Opus, live latency — for jamming and monitoring", AudioTransportCodec.Opus, 120),
         });
-        codecBox.SelectedIndex = ResolveCodecIndex(settings.LoadCodec(), settings.LoadOpusFrameMilliseconds());
+        codecBox.SelectedIndex = ResolveCodecIndex(settings.LoadCodec(), settings.LoadOpusFrameSamplesPerChannel());
         var initialCodec = (CodecChoice)codecBox.SelectedItem!;
-        sender.ConfigureCodec(initialCodec.Codec, EffectiveOpusFrameMs(initialCodec.Codec, initialCodec.OpusFrameMs, settings.LoadSendRate()));
+        sender.ConfigureCodec(initialCodec.Codec, EffectiveOpusFrameSamples(initialCodec.Codec, initialCodec.OpusFrameSamples, settings.LoadSendRate()));
         sender.SetSendRate(settings.LoadSendRate());
 
         // Relay-mode plumbing. The sender's UDP socket is always-receiving from form construction
@@ -859,10 +866,10 @@ public sealed class MainForm : Form
             if (codecBox.SelectedItem is CodecChoice item)
             {
                 settings.SaveCodec(item.Codec);
-                if (item.Codec == AudioTransportCodec.Opus) settings.SaveOpusFrameMilliseconds(item.OpusFrameMs);
-                var effectiveFrameMs = EffectiveOpusFrameMs(item.Codec, item.OpusFrameMs, settings.LoadSendRate());
-                sender.ConfigureCodec(item.Codec, effectiveFrameMs);
-                logFile.Event($"codec changed to {item.Codec}{(item.Codec == AudioTransportCodec.Opus ? $" {effectiveFrameMs}ms" : "")}");
+                if (item.Codec == AudioTransportCodec.Opus) settings.SaveOpusFrameSamplesPerChannel(item.OpusFrameSamples);
+                var effectiveSamples = EffectiveOpusFrameSamples(item.Codec, item.OpusFrameSamples, settings.LoadSendRate());
+                sender.ConfigureCodec(item.Codec, effectiveSamples);
+                logFile.Event($"codec changed to {item.Codec}{(item.Codec == AudioTransportCodec.Opus ? $" {effectiveSamples / 48.0:0.##}ms" : "")}");
                 MarkProfileDirty();
             }
         };
@@ -1572,50 +1579,70 @@ public sealed class MainForm : Form
 
     /// <summary>Ctrl+S / File → Save behaviour: if a profile is currently loaded, overwrite
     /// it; if we're on the blank template (no current profile), fall through to Save as.
-    /// Read-only profiles refuse here with a hint pointing at Save As — that's the whole
-    /// point of read-only mode, so silently ignoring Ctrl+S would be more confusing than
-    /// a one-time message explaining why nothing happened. The message is suppressible
-    /// via the "Do not show again" tick (same pattern as the Save-success popup).</summary>
+    ///
+    /// Read-only profiles: the lock suppresses the automatic "you have unsaved changes"
+    /// prompt on close / profile switch (the user has declared "anything I changed this
+    /// session is throwaway"), but it does NOT block explicit Ctrl+S / File → Save — if the
+    /// user asks to save on purpose, the save goes through. First time they do this we show
+    /// a one-time warning explaining the situation, with a "Do not show again" tick so the
+    /// warning self-suppresses for power users. Changed 2026-05-23 from the v2.x hard-block
+    /// behaviour after Ed's feedback that the lock should protect against accident, not
+    /// against intent.</summary>
     private void SaveOrSaveAs()
     {
         if (currentProfileReadOnly)
         {
-            if (!AppConfig.Load().SaveOnReadOnlyMessageSuppressed)
+            if (!AppConfig.Load().SaveOnReadOnlyWarningSuppressed)
             {
-                ShowSaveBlockedByReadOnlyDialog();
+                if (!ShowSaveOnReadOnlyWarningDialog()) return;
             }
+            // Read-only profiles always have a title — read-only is meaningless on the blank
+            // template — so we go straight to UpdateExistingProfile without the
+            // string-null-check that the unlocked path needs.
+            UpdateExistingProfile();
             return;
         }
         if (string.IsNullOrEmpty(currentProfileTitle)) SaveProfileAs();
         else UpdateExistingProfile();
     }
 
-    /// <summary>Native TaskDialog explaining why Ctrl+S / File → Save did nothing on a
-    /// read-only profile. Verification checkbox lets the user suppress future occurrences;
-    /// same shape as <see cref="ShowSaveConfirmationDialog"/>. NVDA reads the heading +
-    /// body + checkbox as part of the normal tab order. 2026-05-22.</summary>
-    private void ShowSaveBlockedByReadOnlyDialog()
+    /// <summary>Native TaskDialog warning the user that they're about to overwrite a profile
+    /// marked read-only. Returns true if the user confirmed the save, false if they
+    /// cancelled. Verification checkbox lets the user suppress future occurrences via
+    /// <see cref="AppConfig.SaveOnReadOnlyWarningSuppressed"/>; same shape as
+    /// <see cref="ShowSaveConfirmationDialog"/>. NVDA reads the heading + body + checkbox
+    /// as part of the normal tab order. 2026-05-23 (rewrite of the v2.x hard-block dialog).
+    /// </summary>
+    private bool ShowSaveOnReadOnlyWarningDialog()
     {
         var verification = new TaskDialogVerificationCheckBox("Do not show me this message again");
+        var saveButton = new TaskDialogButton("Save anyway");
+        var cancelButton = new TaskDialogButton("Cancel") { AllowCloseDialog = true };
         var page = new TaskDialogPage
         {
             Caption = AppName,
-            Heading = "This profile is read-only",
-            Text = "This profile is locked, so Save was skipped. Use File → Save as... to save your changes to a new profile, or untick File → Lock profile (read-only) to unlock this one.",
-            Icon = TaskDialogIcon.Information,
+            Heading = "Saving onto a read-only profile",
+            Text = "You're about to save changes onto a profile that's marked as read-only. "
+                + "RemSound allows this because you asked to save on purpose — the lock only "
+                + "stops the automatic \"save your changes?\" prompt; it doesn't stop you "
+                + "saving when you mean to.\n\n"
+                + "Click Save anyway to overwrite this profile, or Cancel and use "
+                + "File → Save as... if you'd rather save your changes to a new profile.",
+            Icon = TaskDialogIcon.Warning,
             Verification = verification,
-            Buttons = { TaskDialogButton.OK },
-            DefaultButton = TaskDialogButton.OK,
+            Buttons = { saveButton, cancelButton },
+            DefaultButton = cancelButton,
             AllowCancel = true,
         };
-        TaskDialog.ShowDialog(this, page);
+        var clicked = TaskDialog.ShowDialog(this, page);
         if (verification.Checked)
         {
             var cfg = AppConfig.Load();
-            cfg.SaveOnReadOnlyMessageSuppressed = true;
+            cfg.SaveOnReadOnlyWarningSuppressed = true;
             try { cfg.Save(); } catch { /* harmless — preference just won't persist */ }
-            AppendLogEntry("save-blocked-by-read-only message suppressed by user");
+            AppendLogEntry("save-on-read-only warning suppressed by user");
         }
+        return clicked == saveButton;
     }
 
     /// <summary>Rename the currently-active profile JSON on disk. No-op on the blank
@@ -1877,7 +1904,13 @@ public sealed class MainForm : Form
     /// untouched.</summary>
     private async Task InstallUpdateAsync(UpdateInfo info)
     {
-        var ok = await updater.DownloadAndStageInstallAsync(info).ConfigureAwait(true);
+        // Pass the currently-loaded profile title so the updater drops a resume-after-update
+        // sentinel; the relaunched RemSound.exe will pick this up in Program.Main and silently
+        // re-open the same profile, skipping the picker. Without this, a silent or
+        // mid-session update would drop the session AND leave the user back at the picker —
+        // the session never resumes by itself. Null/empty title (blank template, no profile
+        // saved yet) skips the sentinel and the relaunch falls through to normal startup.
+        var ok = await updater.DownloadAndStageInstallAsync(info, currentProfileTitle).ConfigureAwait(true);
         if (!ok)
         {
             MessageBox.Show(this,
@@ -2658,7 +2691,7 @@ public sealed class MainForm : Form
             }
         }
         var sendingNow = connected && IsSendEnabled && sender.IsRunning;
-        var codecLabel = FormatCodecLabel(sender.Codec, sender.OpusFrameMilliseconds);
+        var codecLabel = FormatCodecLabel(sender.Codec, sender.OpusFrameSamplesPerChannel);
 
         for (int i = 0; i < connectedPeersList.Items.Count; i++)
         {
@@ -5272,7 +5305,8 @@ public sealed class MainForm : Form
         var rate = settings.LoadSendRate();
         if (item.Codec == AudioTransportCodec.Opus)
         {
-            return EffectiveOpusFrameMs(item.Codec, item.OpusFrameMs, rate) / 2.0;
+            // EffectiveOpusFrameSamples is samples-per-channel at 48 kHz; ÷ 48 → ms, ÷ 2 → half-frame.
+            return EffectiveOpusFrameSamples(item.Codec, item.OpusFrameSamples, rate) / 96.0;
         }
         // PCM
         if (settings.LoadTightLatencyMode() && settings.LoadAudioMode() == AudioMode.AsioOnly)
@@ -5304,28 +5338,29 @@ public sealed class MainForm : Form
     private double RenderBufferEstimateMs() => 10;
 
     /// <summary>
-    /// Translates a codec choice + the user's Send Rate into the effective Opus frame size.
-    /// PCM frame size is set separately in AudioSender.SetSendRate (it's a sample-count, not
-    /// a milliseconds value). Standard returns the codec's natural frame; Tight halves it
-    /// (Opus 20 → 10, Opus 10 → 5, PCM frame size handled in AudioSender). Opus codec accepts
-    /// 2.5/5/10/20/40/60 ms — never goes below 5 here so we don't need sub-millisecond Opus.
+    /// Translates a codec choice + the user's Send Rate into the effective Opus frame size in
+    /// samples-per-channel at 48 kHz. PCM frame size is set separately in AudioSender.SetSendRate.
+    /// Standard returns the codec's natural frame; Tight halves it (Opus 960 → 480 → 240 → 120
+    /// floored). Floor is 120 samples = 2.5 ms = standard libopus's RESTRICTED_LOWDELAY minimum.
     /// </summary>
-    private static int EffectiveOpusFrameMs(AudioTransportCodec codec, int opusFrameMs, SendRate rate)
+    private static int EffectiveOpusFrameSamples(AudioTransportCodec codec, int opusFrameSamples, SendRate rate)
     {
-        if (codec != AudioTransportCodec.Opus) return opusFrameMs;
-        return rate == SendRate.Tight ? Math.Max(5, opusFrameMs / 2) : opusFrameMs;
+        if (codec != AudioTransportCodec.Opus) return opusFrameSamples;
+        return rate == SendRate.Tight ? Math.Max(120, opusFrameSamples / 2) : opusFrameSamples;
     }
 
     /// <summary>
     /// Short codec label for the per-peer line in the connectivity dialog. e.g. "PCM",
-    /// "Opus 10ms", "Opus 20ms". Uses the same EffectiveOpusFrameMs the encoder uses so the
-    /// label reflects the actually-encoded frame size, not the codec menu choice.
+    /// "Opus 10ms", "Opus 20ms", "Opus 2.5ms". Input is samples-per-channel at 48 kHz; the
+    /// label derives ms from samples / 48 with up to one decimal place. Uses the same
+    /// EffectiveOpusFrameSamples the encoder uses so the label reflects the actually-encoded
+    /// frame size, not the codec menu choice.
     /// </summary>
-    private static string FormatCodecLabel(AudioTransportCodec codec, int opusFrameMs)
+    private static string FormatCodecLabel(AudioTransportCodec codec, int opusFrameSamples)
     {
         return codec switch
         {
-            AudioTransportCodec.Opus => $"Opus {Math.Max(1, opusFrameMs)}ms",
+            AudioTransportCodec.Opus => $"Opus {Math.Max(1, opusFrameSamples) / 48.0:0.##}ms",
             AudioTransportCodec.Pcm => "PCM",
             _ => codec.ToString(),
         };
@@ -5342,8 +5377,9 @@ public sealed class MainForm : Form
     {
         if (codecBox.SelectedItem is CodecChoice item && item.Codec == AudioTransportCodec.Opus)
         {
-            sender.ConfigureCodec(item.Codec, EffectiveOpusFrameMs(item.Codec, item.OpusFrameMs, rate));
-            logFile.Event($"send rate changed to {rate} → Opus frame {EffectiveOpusFrameMs(item.Codec, item.OpusFrameMs, rate)}ms");
+            var effectiveSamples = EffectiveOpusFrameSamples(item.Codec, item.OpusFrameSamples, rate);
+            sender.ConfigureCodec(item.Codec, effectiveSamples);
+            logFile.Event($"send rate changed to {rate} → Opus frame {effectiveSamples / 48.0:0.##}ms");
         }
         else
         {
@@ -5351,10 +5387,21 @@ public sealed class MainForm : Form
         }
     }
 
-    private static int ResolveCodecIndex(AudioTransportCodec codec, int opusFrameMs)
+    private static int ResolveCodecIndex(AudioTransportCodec codec, int opusFrameSamples)
     {
         if (codec == AudioTransportCodec.Pcm) return 0;
-        return opusFrameMs == 20 ? 1 : 2; // Opus 20 = index 1, Opus 10 (default) = index 2
+        // Opus 120 (2.5 ms — live latency) = index 2. Anything else (including the retired
+        // 10 ms middle (480) and the never-exposed 5 ms (240)) collapses to index 1
+        // (broadcast quality / 20 ms), the safer default — losing a little latency is the
+        // less surprising outcome on upgrade than losing loss tolerance. v2.x profiles that
+        // saved OpusFrameMilliseconds=10 (which the settings store migrates to 480 samples
+        // via the <120 sentinel) land here on the broadcast side; users who specifically
+        // want low latency re-pick "live latency" from the dropdown.
+        return opusFrameSamples switch
+        {
+            120 => 2,
+            _ => 1,
+        };
     }
 
     // ===================== Auto-tune =====================

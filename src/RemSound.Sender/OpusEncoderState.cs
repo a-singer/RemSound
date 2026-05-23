@@ -5,16 +5,22 @@ namespace RemSound.Sender;
 
 /// <summary>
 /// Wraps a Concentus Opus encoder configured for real-time low-latency 48 kHz stereo audio.
-/// Frame size is selectable at construction (10 ms or 20 ms). Receiver auto-handles whatever
-/// frame size the sender announces in the format packet — no coordination required.
+/// Frame size is selectable at construction as samples-per-channel. Receiver auto-handles
+/// whatever frame size the sender announces in the format packet — no coordination required.
 ///
-/// 2026-05-23 — switched from the <c>Encode(ReadOnlySpan&lt;short&gt;...)</c> overload to the
-/// float overload after the first allocation-rate measurement (Part C, item 51 of
-/// RemSoundefficiency.md). The float overload skips one internal float→short→float round trip
-/// inside Concentus (CELT runs in float natively in RESTRICTED_LOWDELAY mode), and lets us
-/// drop our own per-sample Math.Clamp + cast loop — Concentus' float overload does its own
-/// out-of-range clipping per its XML docs. Same encoder configuration, same bitrate, same
-/// frame size, same audio output bit-for-bit.
+/// 2026-05-23 (a) — switched from the <c>Encode(ReadOnlySpan&lt;short&gt;...)</c> overload to
+/// the float overload after the first allocation-rate measurement (Part C, item 51 of
+/// RemSoundefficiency.md). The float overload skips one internal float→short→float round
+/// trip inside Concentus (CELT runs in float natively in RESTRICTED_LOWDELAY mode), and
+/// lets us drop our own per-sample Math.Clamp + cast loop — Concentus' float overload does
+/// its own out-of-range clipping per its XML docs. Same encoder configuration, same bitrate,
+/// same audio output bit-for-bit.
+///
+/// 2026-05-23 (b) — constructor parameter switched from milliseconds to samples-per-channel
+/// as part of the v3.0 wire-format refactor. Lets us express the 2.5 ms (= 120 samples)
+/// experimental low-latency mode cleanly without floating-point ms, and removes the
+/// <c>48000 * ms / 1000</c> conversion (which lost precision below 1 ms boundaries). Encoder
+/// configuration is otherwise identical.
 /// </summary>
 internal sealed class OpusEncoderState : IDisposable
 {
@@ -24,16 +30,15 @@ internal sealed class OpusEncoderState : IDisposable
     private readonly IOpusEncoder encoder;
     private readonly byte[] packetScratch = new byte[PacketBufferBytes];
 
-    public int FrameMilliseconds { get; }
     public int FrameSizePerChannel { get; }
 
-    public OpusEncoderState(int frameMilliseconds, int bitrate)
+    public OpusEncoderState(int frameSamplesPerChannel, int bitrate)
     {
-        // RESTRICTED_LOWDELAY supports 2.5/5/10/20 ms frames. 10 ms = lowest practical latency,
-        // 20 ms = same bitrate but more robust to packet loss (each lost packet is half the audio
-        // share). We expose 10 and 20 as the user-selectable choices.
-        FrameMilliseconds = Math.Clamp(frameMilliseconds, 5, 60);
-        FrameSizePerChannel = 48000 * FrameMilliseconds / 1000;
+        // RESTRICTED_LOWDELAY supports 2.5/5/10/20 ms frames at 48 kHz = 120/240/480/960
+        // samples-per-channel. 120 (2.5 ms) is the lowest standard-Opus frame size. We clamp
+        // to the legal Opus range; the UI never offers a value outside it but a corrupt
+        // setting can't crash the encoder constructor.
+        FrameSizePerChannel = Math.Clamp(frameSamplesPerChannel, 120, 2880);
 
         encoder = OpusCodecFactory.CreateEncoder(48000, Channels, OpusApplication.OPUS_APPLICATION_RESTRICTED_LOWDELAY, TextWriter.Null);
         encoder.Bitrate = bitrate;

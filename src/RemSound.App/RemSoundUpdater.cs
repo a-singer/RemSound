@@ -134,12 +134,29 @@ internal sealed class RemSoundUpdater : IDisposable
         }
     }
 
+    /// <summary>Filename of the one-shot "after the update restart, silently load this profile"
+    /// sentinel. Written next to RemSound.exe by <see cref="DownloadAndStageInstallAsync"/>
+    /// when the caller supplies a non-empty <c>activeProfileTitle</c>; read and deleted by
+    /// <c>Program.Main</c> on the next startup. Lives in the install directory (not %TEMP%
+    /// or %APPDATA%) because the helper batch's robocopy step needs to know to skip it —
+    /// see the <c>/XF</c> list in <see cref="BuildInstallScript"/>.</summary>
+    public const string ResumeProfileSentinelName = "_resume-after-update.txt";
+
     /// <summary>Download the update ZIP, stage it next to RemSound.exe, spawn the detached
     /// install helper, and ask the App to exit so the helper can take over. Returns true if
     /// the helper was launched (caller should Application.Exit immediately afterwards);
     /// false on any failure earlier in the pipeline. A false return leaves the running
-    /// instance untouched.</summary>
-    public async Task<bool> DownloadAndStageInstallAsync(UpdateInfo info, CancellationToken token = default)
+    /// instance untouched.
+    ///
+    /// <paramref name="activeProfileTitle"/> — when non-empty, a one-shot sentinel file
+    /// <see cref="ResumeProfileSentinelName"/> is written next to RemSound.exe just before
+    /// the helper is launched. On the next startup, Program.Main reads it, loads that profile
+    /// silently (skipping the picker), and deletes the sentinel. This makes a silent / manual
+    /// update behave like the session never ended — the user is back in the same profile
+    /// they were running, without having to remember which one it was. When null/empty, no
+    /// sentinel is written and the post-update launch uses whatever startup behaviour
+    /// AppConfig has configured.</summary>
+    public async Task<bool> DownloadAndStageInstallAsync(UpdateInfo info, string? activeProfileTitle = null, CancellationToken token = default)
     {
         try
         {
@@ -147,13 +164,17 @@ internal sealed class RemSoundUpdater : IDisposable
             var stagingDir = Path.Combine(baseDir, "_update");
             var zipPath = Path.Combine(Path.GetTempPath(), $"RemSound-update-{info.Tag}.zip");
             var batchPath = Path.Combine(baseDir, "_apply-update.cmd");
+            var resumeSentinelPath = Path.Combine(baseDir, ResumeProfileSentinelName);
 
             // Tidy any leftover from a previous failed attempt before we start. Also clear
             // the failure marker — the new attempt starts clean and only re-creates the
-            // marker if THIS run fails.
+            // marker if THIS run fails. The resume sentinel from a previous run (if any) is
+            // also cleared here; if the caller supplies a profile title, the new sentinel is
+            // written below after staging succeeds.
             TryDelete(zipPath);
             TryDeleteDirectory(stagingDir);
             TryDelete(Path.Combine(baseDir, "update-failed.txt"));
+            TryDelete(resumeSentinelPath);
 
             Log?.Invoke($"updater: downloading {info.DownloadUrl}");
             await using (var src = await http.GetStreamAsync(info.DownloadUrl, token).ConfigureAwait(false))
@@ -173,6 +194,25 @@ internal sealed class RemSoundUpdater : IDisposable
 
             Log?.Invoke($"updater: writing install helper {batchPath}");
             File.WriteAllText(batchPath, BuildInstallScript(stagingRoot, baseDir));
+
+            // Write the resume-after-update sentinel so the post-restart launch loads the
+            // same profile silently (no picker, no missed session). Only when the caller
+            // supplied a title — blank-template sessions and explicit "no profile yet" cases
+            // fall through to the normal startup logic.
+            if (!string.IsNullOrWhiteSpace(activeProfileTitle))
+            {
+                try
+                {
+                    File.WriteAllText(resumeSentinelPath, activeProfileTitle);
+                    Log?.Invoke($"updater: wrote resume sentinel for profile '{activeProfileTitle}'");
+                }
+                catch (Exception ex)
+                {
+                    // Sentinel is best-effort. If we can't write it (disk full, ACL change),
+                    // the update still proceeds; the user gets the picker on relaunch.
+                    Log?.Invoke($"updater: could not write resume sentinel: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
 
             var pid = System.Environment.ProcessId;
             var psi = new System.Diagnostics.ProcessStartInfo
@@ -265,7 +305,7 @@ internal sealed class RemSoundUpdater : IDisposable
         rem startup settings) and their data folders (logs / profiles / recordings). An update
         rem replaces APP files only. build-release.ps1 already keeps those out of the release
         rem zip; this is the second line of defence so a bad zip still can't clobber them.
-        robocopy "{stagingArg}" "{installArg}" /E /IS /IT /NFL /NDL /NJH /NJS /R:60 /W:1 /XF _apply-update.cmd /XF _update-helper.log /XF update-failed.txt /XF remsound.config.json /XD logs profiles recordings _update /LOG+:"%LOG%"
+        robocopy "{stagingArg}" "{installArg}" /E /IS /IT /NFL /NDL /NJH /NJS /R:60 /W:1 /XF _apply-update.cmd /XF _update-helper.log /XF update-failed.txt /XF remsound.config.json /XF {ResumeProfileSentinelName} /XD logs profiles recordings _update /LOG+:"%LOG%"
         set "ROBO_EXIT=%ERRORLEVEL%"
         echo %DATE% %TIME% robocopy exit=%ROBO_EXIT% >> "%LOG%"
 
@@ -294,6 +334,10 @@ internal sealed class RemSoundUpdater : IDisposable
           echo. >> "%MARKER%"
           echo Once RemSound has updated successfully you can delete this file. >> "%MARKER%"
           echo Technical details for support are in _update-helper.log in this folder. >> "%MARKER%"
+          rem Drop the resume-after-update sentinel on failure too — there's no restart
+          rem happening, so a stale sentinel would mis-direct the user's next manual launch
+          rem into auto-loading a profile they may have moved on from in the meantime.
+          del "{installArg}\{ResumeProfileSentinelName}" 2>nul
           echo %DATE% %TIME% FAILURE: robocopy exit=%ROBO_EXIT%, update folder kept, NOT restarting RemSound >> "%LOG%"
           del "%~f0"
           exit /b %ROBO_EXIT%

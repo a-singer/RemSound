@@ -87,15 +87,18 @@ public sealed class AudioSender : IDisposable
 
     private readonly Stopwatch uptime = new();
     private volatile AudioTransportCodec codec = AudioTransportCodec.Pcm;
-    private volatile int opusFrameMs = 10; // only meaningful when codec == Opus
+    // Opus frame size in samples-per-channel at 48 kHz. Default 480 = 10 ms. Renamed from
+    // opusFrameMs 2026-05-23 (v3.0 wire-format refactor) so the 2.5 ms RESTRICTED_LOWDELAY
+    // mode (= 120 samples) can be expressed cleanly. Only meaningful when codec == Opus.
+    private volatile int opusFrameSamples = 480;
     private volatile bool muted;
     private IPEndPoint[] receivers = [];
     private long packetsSent;
     private long bytesSent;
 
     // Internal accessor so SenderLane can read tight-latency without exposing the field
-    // publicly. Codec, OpusFrameMilliseconds and IsMuted are already exposed publicly below
-    // and re-used directly by the lane.
+    // publicly. Codec, OpusFrameSamplesPerChannel and IsMuted are already exposed publicly
+    // below and re-used directly by the lane.
     internal bool IsTightLatencyEnabled => tightLatencyEnabled;
 
     // Hot-path timing instrumentation. Both lanes update these on every emit; the SNAP
@@ -253,8 +256,8 @@ public sealed class AudioSender : IDisposable
         // construction time), the lines are silently dropped, which is acceptable for a
         // success/no-op outcome. On failure the socket keeps working without prioritisation.
         networkPriority.TryAttach(udp.Client, msg => diagnostic?.Invoke(msg));
-        defaultLane = new SenderLane(this, opusFrameMs, OpusBitrateLan);
-        asioLane = new SenderLane(this, opusFrameMs, OpusBitrateLan);
+        defaultLane = new SenderLane(this, opusFrameSamples, OpusBitrateLan);
+        asioLane = new SenderLane(this, opusFrameSamples, OpusBitrateLan);
         // WasapiOnly at startup — no ASIO needed yet, so persistentAsio stays null.
         currentAudioMode = AudioMode.WasapiOnly;
         currentAsioDriverName = null;
@@ -388,9 +391,10 @@ public sealed class AudioSender : IDisposable
     public bool IsAsioBackend => engine is CompositeCaptureBackend;
 
     /// <summary>Updates the PCM frame size based on the user's "Send rate" choice. For Opus,
-    /// frame size is set via <see cref="ConfigureCodec"/>'s opusFrameMs parameter (the App
-    /// halves it when SendRate is Tight). On a frame-size change, resets the accumulator and
-    /// stream id so the receiver opens a fresh session at the new format.</summary>
+    /// frame size is set via <see cref="ConfigureCodec"/>'s opusFrameSamplesPerChannel
+    /// parameter (the App halves it when SendRate is Tight). On a frame-size change, resets
+    /// the accumulator and stream id so the receiver opens a fresh session at the new format.
+    /// </summary>
     public void SetSendRate(SendRate rate)
     {
         lock (configGate)
@@ -444,7 +448,10 @@ public sealed class AudioSender : IDisposable
     public string? CaptureFormatDescription => engine.FirstCaptureFormatDescription;
     public string? LastCaptureError => engine.FirstCaptureLastError;
     public AudioTransportCodec Codec => codec;
-    public int OpusFrameMilliseconds => opusFrameMs;
+    /// <summary>Opus frame size in samples-per-channel at 48 kHz. 120 = 2.5 ms, 240 = 5 ms,
+    /// 480 = 10 ms, 960 = 20 ms. Renamed from OpusFrameMilliseconds in the v3.0 wire-format
+    /// refactor (see <see cref="AudioFormatInfo"/>).</summary>
+    public int OpusFrameSamplesPerChannel => opusFrameSamples;
 
     /// <summary>
     /// Atomically set the codec and (for Opus) the frame size. Resets stream identity and the
@@ -452,22 +459,23 @@ public sealed class AudioSender : IDisposable
     /// parameters are taken together because changing only one would briefly send malformed
     /// frames at the encoder boundary.
     /// </summary>
-    public void ConfigureCodec(AudioTransportCodec newCodec, int newOpusFrameMs = 10)
+    public void ConfigureCodec(AudioTransportCodec newCodec, int newOpusFrameSamplesPerChannel = 480)
     {
-        var clampedFrameMs = Math.Clamp(newOpusFrameMs, 5, 60);
-        if (codec == newCodec && (newCodec != AudioTransportCodec.Opus || opusFrameMs == clampedFrameMs))
+        // Clamp to the legal Opus range at 48 kHz: 120 (2.5 ms) to 2880 (60 ms).
+        var clampedSamples = Math.Clamp(newOpusFrameSamplesPerChannel, 120, 2880);
+        if (codec == newCodec && (newCodec != AudioTransportCodec.Opus || opusFrameSamples == clampedSamples))
         {
             return;
         }
         lock (configGate)
         {
             codec = newCodec;
-            opusFrameMs = clampedFrameMs;
+            opusFrameSamples = clampedSamples;
             // Rebuild both lanes' encoders + rotate their streamIds. Same idle-lane rationale
             // as SetSendRate — harmless when the asio lane has no producer; necessary when it
             // does (BothIndependent).
-            defaultLane.OnCodecChanged(newCodec, clampedFrameMs);
-            asioLane.OnCodecChanged(newCodec, clampedFrameMs);
+            defaultLane.OnCodecChanged(newCodec, clampedSamples);
+            asioLane.OnCodecChanged(newCodec, clampedSamples);
         }
     }
 

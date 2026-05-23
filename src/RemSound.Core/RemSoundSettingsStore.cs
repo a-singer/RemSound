@@ -199,14 +199,39 @@ public sealed class RemSoundSettingsStore
         Save(s);
     }
 
-    public int LoadOpusFrameMilliseconds(int defaultValue = 10) =>
-        Try(() => Load()?.OpusFrameMilliseconds is int v && (v == 10 || v == 20) ? v : (int?)null) ?? defaultValue;
+    /// <summary>Loads the Opus frame size in samples-per-channel at 48 kHz. Default 480 = 10 ms.
+    /// Migration path: profiles written by v2.x stored milliseconds (5/10/20) in the same JSON
+    /// field; values &lt; 120 are interpreted as legacy ms and converted (×48 → samples). The
+    /// ranges don't overlap (max legitimate ms = 60, min legitimate samples = 120), so the
+    /// disambiguation is unambiguous.</summary>
+    public int LoadOpusFrameSamplesPerChannel(int defaultValue = 480) =>
+        Try(() => Load()?.OpusFrameSamplesPerChannel is int v ? NormalizeOpusFrameSamples(v) : (int?)null) ?? defaultValue;
 
-    public void SaveOpusFrameMilliseconds(int value)
+    /// <summary>Saves the Opus frame size in samples-per-channel at 48 kHz. Accepts the four
+    /// standard-Opus RESTRICTED_LOWDELAY values (120/240/480/960); anything else collapses to
+    /// 480 (= 10 ms), the safe default.</summary>
+    public void SaveOpusFrameSamplesPerChannel(int value)
     {
         var s = Load() ?? new Settings();
-        s.OpusFrameMilliseconds = value == 20 ? 20 : 10;
+        s.OpusFrameSamplesPerChannel = value switch
+        {
+            960 => 960,  // 20 ms
+            480 => 480,  // 10 ms
+            240 => 240,  // 5 ms — not exposed in the dropdown but reachable via Tight rate
+            120 => 120,  // 2.5 ms experimental
+            _ => 480,
+        };
         Save(s);
+    }
+
+    /// <summary>Disambiguates a persisted Opus frame-size value between the legacy v2.x
+    /// integer-milliseconds storage (5/10/20) and the v3.x samples-per-channel storage
+    /// (120/240/480/960). Values &lt; 120 are legacy ms; ≥ 120 are samples. See
+    /// <see cref="LoadOpusFrameSamplesPerChannel"/>.</summary>
+    private static int NormalizeOpusFrameSamples(int persisted)
+    {
+        if (persisted < 120) return persisted * 48; // legacy ms → samples at 48 kHz
+        return persisted;
     }
 
     public bool LoadContinuousAutoTuneEnabled(bool defaultValue = false) =>
@@ -486,7 +511,7 @@ public sealed class RemSoundSettingsStore
             AcceptRemoteVolumeCommands = profile.AcceptRemoteVolumeCommands,
             MaxLatencyMs = profile.MaxLatencyMs,
             Codec = profile.Codec,
-            OpusFrameMilliseconds = profile.OpusFrameMilliseconds,
+            OpusFrameSamplesPerChannel = profile.OpusFrameSamplesPerChannel,
             ContinuousAutoTuneEnabled = profile.ContinuousAutoTuneEnabled,
             ContinuousAutoTuneIntervalSec = profile.ContinuousAutoTuneIntervalSec,
             MaxLatencyMsAsio = profile.MaxLatencyMsAsio,
@@ -533,7 +558,7 @@ public sealed class RemSoundSettingsStore
         if (s.AcceptRemoteVolumeCommands is bool arvc) profile.AcceptRemoteVolumeCommands = arvc;
         if (s.MaxLatencyMs is int ml) profile.MaxLatencyMs = ml;
         if (s.Codec is AudioTransportCodec c) profile.Codec = c;
-        if (s.OpusFrameMilliseconds is int op) profile.OpusFrameMilliseconds = op;
+        if (s.OpusFrameSamplesPerChannel is int op) profile.OpusFrameSamplesPerChannel = op;
         if (s.ContinuousAutoTuneEnabled is bool cae) profile.ContinuousAutoTuneEnabled = cae;
         if (s.ContinuousAutoTuneIntervalSec is int cai) profile.ContinuousAutoTuneIntervalSec = cai;
         if (s.MaxLatencyMsAsio is int mla) profile.MaxLatencyMsAsio = mla;
@@ -592,7 +617,10 @@ public sealed class RemSoundSettingsStore
         public bool? AcceptRemoteVolumeCommands { get; set; }
         public int? MaxLatencyMs { get; set; }
         public AudioTransportCodec? Codec { get; set; }
-        public int? OpusFrameMilliseconds { get; set; }
+        // Renamed 2026-05-23 (v3.0). Was OpusFrameMilliseconds; value semantic shifted to
+        // samples-per-channel at 48 kHz. The cache is in-memory only — no JSON migration is
+        // needed here; on-disk migration happens in Profile via [JsonPropertyName].
+        public int? OpusFrameSamplesPerChannel { get; set; }
         public bool? ContinuousAutoTuneEnabled { get; set; }
         public int? ContinuousAutoTuneIntervalSec { get; set; }
         // Per-route latency settings used in AudioMode.BothIndependent only. MaxLatencyMs

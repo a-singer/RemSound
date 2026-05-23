@@ -167,15 +167,28 @@ ul, ol { padding-left: 1.4em; }
 <li>When you close RemSound, there is <strong>no save prompt</strong>. The app just closes. Whatever you changed during the session is forgotten; the next time you open the profile it's back to what it was when you locked it.</li>
 <li>The window title shows &ldquo;(read-only)&rdquo; so you can always tell at a glance.</li>
 <li>The startup profile picker also shows &ldquo;(read-only)&rdquo; next to locked profiles, so you know what you're picking before you hit Enter.</li>
-<li>Pressing Save (Ctrl+S) shows a one-time message telling you the profile is locked and suggesting Save as&hellip; instead. There's a tick on the message to stop it showing again.</li>
+<li>Pressing Save (Ctrl+S) still works &mdash; the lock only blocks the automatic save prompt, not deliberate saves. See &ldquo;Saving on purpose while a profile is locked&rdquo; below.</li>
 </ul>
 
 <p><strong>How to lock or unlock:</strong> open the File menu (Alt+F) and pick <strong>Lock profile (read-only)</strong> (Alt+F, L). It's a tickable menu item &mdash; pick it once to turn the lock on (a tick appears next to it); pick it again to turn the lock off (the tick disappears). The lock state is remembered with the profile, so closing and reopening RemSound keeps the profile locked exactly as you left it.</p>
 
-<p><strong>If you decide to keep your changes:</strong> two ways:</p>
+<h4>Saving on purpose while a profile is locked</h4>
+
+<p>The lock is there to stop accidents &mdash; it doesn't stop you saving when you mean to. If you press <strong>Save</strong> (Ctrl+S) or pick <strong>File &rarr; Save</strong> on a locked profile, RemSound shows a one-time warning explaining what's about to happen:</p>
+
+<blockquote>
+<p><strong>Saving onto a read-only profile.</strong> You're about to save changes onto a profile that's marked as read-only. RemSound allows this because you asked to save on purpose &mdash; the lock only stops the automatic &ldquo;save your changes?&rdquo; prompt; it doesn't stop you saving when you mean to.</p>
+<p>Click <strong>Save anyway</strong> to overwrite this profile, or <strong>Cancel</strong> and use File &rarr; Save as&hellip; if you'd rather save your changes to a new profile.</p>
+</blockquote>
+
+<p>There's a <strong>Do not show me this message again</strong> tick on the warning. Once you tick it, future deliberate saves on a locked profile go through silently without the warning. The setting is per-machine, not per-profile &mdash; tick it once and it applies on every locked profile from that point on.</p>
+
+<p>So in summary, on a locked profile:</p>
 <ul>
-<li>Unlock the profile first (untick the menu item), then press Save (Ctrl+S). Your changes are saved to the profile.</li>
-<li>Or use <strong>Save as&hellip;</strong> directly. That always works, even on a locked profile, and the new copy starts out unlocked &mdash; so you can edit it normally afterwards.</li>
+<li>Closing RemSound &mdash; no prompt, changes are forgotten.</li>
+<li>Switching to a different profile &mdash; no prompt, changes are forgotten.</li>
+<li>Pressing Save (Ctrl+S) on purpose &mdash; warning the first time (with a do-not-show-again tick), then the save goes through and overwrites the profile.</li>
+<li><strong>Save as&hellip;</strong> &mdash; always works, never warns. The new copy starts out unlocked.</li>
 </ul>
 
 <div class="note">
@@ -340,7 +353,7 @@ ul, ol { padding-left: 1.4em; }
 
 <table>
 <tr><th>Control</th><th>Shortcut</th><th>What it does</th></tr>
-<tr><td><strong>Audio codec</strong></td><td>Alt+C</td><td>The codec is the method RemSound uses to package the sound before sending it. Choices: PCM 48k 24-bit, Opus high quality (20 ms), or Opus lower quality (10 ms). See <a href="#latency">codec choice</a>.</td></tr>
+<tr><td><strong>Audio codec</strong></td><td>Alt+C</td><td>The codec is the method RemSound uses to package the sound before sending it. Three choices: PCM 48k 24-bit (uncompressed), Opus broadcast quality (loss tolerant), or Opus live latency (for jamming and monitoring). See <a href="#latency">codec choice</a>.</td></tr>
 <tr><td><strong>Packet size</strong></td><td>Alt+P</td><td><em>Standard</em> (the default) or <em>Small</em> (for a local network only). Smaller packets save a couple of milliseconds of delay on the sending side, but they double how many packets are sent.</td></tr>
 <tr><td><strong>Lock to audio clock</strong></td><td>Alt+D</td><td>A timing setting on the sending side. It ties the sending of packets to the sound device's own hardware clock, which removes a little jitter (jitter means uneven packet timing). Brief clicks are possible if the connection can't keep up. The label changes depending on whether ASIO is in use, so it always describes what it does in your setup.</td></tr>
 </table>
@@ -512,7 +525,7 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <li><strong>Continuous auto-tune</strong> &mdash; lets the receiving side choose the latency target for you, re-checking every few seconds.</li>
 </ul>
 
-<p>Plus the codec choice (PCM, Opus 20 ms or Opus 10 ms), also on the Audio profile tab. Most people only need to pick a codec and a smoothness level and leave the rest at the default.</p>
+<p>Plus the codec choice (PCM, Opus broadcast quality, or Opus live latency), also on the Audio profile tab. Most people only need to pick a codec and a smoothness level and leave the rest at the default.</p>
 
 <h3>Audio latency control</h3>
 
@@ -548,7 +561,7 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 
 <table>
 <tr><th>Packet size</th><th>What changes</th><th>Pick when</th></tr>
-<tr><td>Standard</td><td>One audio packet every 5 ms with PCM, or every 10 or 20 ms with Opus, depending on the codec you chose.</td><td>Any internet or Tailscale connection &mdash; any time you don't have a guaranteed-clean local network.</td></tr>
+<tr><td>Standard</td><td>One audio packet every 5 ms with PCM, every 20 ms with Opus broadcast quality, or every 2.5 ms with Opus live latency.</td><td>Any internet or Tailscale connection &mdash; any time you don't have a guaranteed-clean local network.</td></tr>
 <tr><td>Small (local network only)</td><td>Halves how much sound each packet carries. Saves up to 2.5 ms of delay on the sending side.</td><td>A same-house local network over wired Ethernet, where the network simply isn't going to drop packets or jitter.</td></tr>
 </table>
 
@@ -590,15 +603,19 @@ Audient USB Audio ASIO Driver &mdash; Pair 3 (channels 5/6): Loop-back 1 (L) / L
 <p>This happens on its own &mdash; there's no switch for it. PCM mode doesn't have it.</p>
 
 <h3>Codec choice</h3>
-<p>Remember, the codec is the method RemSound uses to package the sound before sending it.</p>
+<p>Remember, the codec is the method RemSound uses to package the sound before sending it. There are three choices:</p>
 <table>
-<tr><th>Codec</th><th>Quality</th><th>Network use</th><th>Use when</th></tr>
-<tr><td>PCM 48k 24-bit</td><td>Best</td><td>About 2.3 Mbps</td><td>Local networks, fast internet connections.</td></tr>
-<tr><td>Opus high quality (20 ms)</td><td>Very good</td><td>About 96 kbps</td><td>Most internet connections &mdash; the right default.</td></tr>
-<tr><td>Opus lower quality (10 ms)</td><td>Good</td><td>About 64 kbps</td><td>Slower or less reliable connections; tighter delay.</td></tr>
+<tr><th>Codec</th><th>Quality</th><th>Network use</th><th>Delay added by the codec</th></tr>
+<tr><td>PCM 48k 24-bit &mdash; uncompressed</td><td>Best, no loss at all</td><td>About 2.3 Mbps</td><td>None &mdash; the sound goes out exactly as it was captured.</td></tr>
+<tr><td>Opus, broadcast quality &mdash; loss tolerant</td><td>Very good</td><td>About 200 kbps</td><td>About 12 ms.</td></tr>
+<tr><td>Opus, live latency &mdash; for jamming and monitoring</td><td>Very good</td><td>About 320 kbps</td><td>About 5 ms.</td></tr>
 </table>
 
-<p>PCM gives the very best sound with no quality loss at all, but it uses about 30 times the network bandwidth of Opus. Over the open internet, Opus is almost always the right choice.</p>
+<p>The difference between the two Opus choices is what they trade for what. <strong>Broadcast quality</strong> packs sound into larger chunks &mdash; bigger packets, sent less often, more tolerant of a wobbly connection. <strong>Live latency</strong> packs sound into very small chunks and sends them eight times more often, getting your audio there with almost no codec delay at all &mdash; close to PCM &mdash; at the cost of being a bit more sensitive to a noisy connection. Broadcast quality is the right pick for anything across the open internet; live latency is for playing along together over a clean local network or a wired connection.</p>
+
+<p>PCM gives the very best sound with no quality loss at all, but it uses about ten times the network bandwidth of Opus. Over the open internet, Opus is almost always the right choice.</p>
+
+<p>Both Opus choices can automatically repair a single missing packet (see the section just above), so single drops are inaudible on both. PCM doesn't have that ability.</p>
 
 <h2 id="shortcuts">13. Keyboard shortcuts (within the main window)</h2>
 
@@ -818,11 +835,19 @@ Use whatever key combinations you prefer (for example Ctrl+Shift+Up / Ctrl+Shift
 <li>RemSound downloads the new version into a holding folder next to the running program.</li>
 <li>It writes a tiny helper alongside it that watches for RemSound to close.</li>
 <li>RemSound closes.</li>
-<li>The helper notices, copies the new files over the install folder, deletes the holding folder, and reopens RemSound.</li>
+<li>The helper notices, copies the new files over the install folder, deletes the holding folder, and reopens RemSound on the same profile you were running.</li>
 <li>The helper deletes itself.</li>
 </ol>
 
 <p>You'll see the window close, then reopen on the new version within a second or two. Anything that was unsaved in the old session (a profile you were partway through editing, for example) is lost &mdash; RemSound will not save it for you before installing. Save first if you've been making changes.</p>
+
+<h3>The same profile picks up automatically after an update</h3>
+
+<p>When the install finishes and RemSound reopens, it loads the same profile that was running just before the update &mdash; you don't see the profile picker, and your devices, peer list, codec and latency settings all come back exactly as they were. This means a silent update in the middle of a session drops the audio briefly while the install finishes, then your session reconnects on its own. You don't have to be at the computer when it happens.</p>
+
+<p>This is a one-shot, just-after-the-update behaviour. The very next time you launch RemSound manually (from the desktop, the Start menu, or the tray icon), it follows your normal startup choice &mdash; the picker if that's how you've set it, or your chosen startup profile if you've picked one in Options &rarr; Startup behaviour.</p>
+
+<p>If the profile that was running can't be found after the update (you'd renamed or moved it during the session, for example), RemSound falls back to your normal startup behaviour rather than getting stuck.</p>
 
 <h3>If an install fails</h3>
 

@@ -35,18 +35,53 @@ internal static class Program
 
             Profile? profile;
             string? title;
-            // Auto-load shortcut: if AppConfig.StartWithProfileTitle is set and the named
-            // profile actually exists in the current store, skip the picker entirely and
-            // load that profile directly. This is what the Startup behaviour dialog's
-            // "Start with a specific profile" toggle drives. Combined with the Windows
-            // auto-start registry entry and the StartMinimised flag, it lets the user
-            // boot a machine and have RemSound up and streaming with no clicks. Falls
-            // through to the normal picker if the configured profile no longer exists
-            // (deleted since it was selected, or the profiles folder changed) so the user
-            // isn't stuck.
+            // Auto-load shortcut: two paths.
+            //
+            //   (a) Resume-after-update sentinel — a one-shot file written by the updater
+            //       just before it relaunches RemSound.exe (see RemSoundUpdater
+            //       ResumeProfileSentinelName). Holds the title of whichever profile was
+            //       loaded at the moment the update fired. If present, we load that profile
+            //       silently and delete the sentinel — so a silent or mid-session update
+            //       restores the same session the user was running, without dropping them
+            //       at the picker. This takes precedence over StartWithProfileTitle because
+            //       a mid-session update may have moved the user away from their configured
+            //       startup profile.
+            //
+            //   (b) AppConfig.StartWithProfileTitle — the persistent "Start with a specific
+            //       profile" preference set via the Startup behaviour dialog. Loaded if (a)
+            //       didn't fire. Combined with the Windows auto-start registry entry and the
+            //       StartMinimised flag, it lets the user boot a machine and have RemSound
+            //       up and streaming with no clicks.
+            //
+            // Either path falls through to the normal picker if the named profile no longer
+            // exists (deleted since it was selected, or the profiles folder changed) so the
+            // user isn't stuck.
             Profile? autoLoaded = null;
             string? autoLoadedTitle = null;
-            if (!string.IsNullOrWhiteSpace(appConfig.StartWithProfileTitle))
+
+            var resumeSentinelPath = Path.Combine(AppContext.BaseDirectory, RemSoundUpdater.ResumeProfileSentinelName);
+            string? resumeTitle = null;
+            if (File.Exists(resumeSentinelPath))
+            {
+                try { resumeTitle = File.ReadAllText(resumeSentinelPath).Trim(); }
+                catch { resumeTitle = null; }
+                // Delete the sentinel unconditionally — it's a one-shot. If the load fails
+                // below, the user gets the picker on this launch and a normal start next
+                // time, rather than the sentinel re-firing on every relaunch forever.
+                try { File.Delete(resumeSentinelPath); } catch { /* ignore */ }
+            }
+
+            if (!string.IsNullOrWhiteSpace(resumeTitle))
+            {
+                try
+                {
+                    autoLoaded = store.Load(resumeTitle!);
+                    if (autoLoaded is not null) autoLoadedTitle = resumeTitle;
+                }
+                catch { /* fall through to StartWithProfileTitle / picker */ }
+            }
+
+            if (autoLoaded is null && !string.IsNullOrWhiteSpace(appConfig.StartWithProfileTitle))
             {
                 try
                 {

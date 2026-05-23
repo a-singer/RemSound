@@ -109,7 +109,7 @@ internal sealed class StreamSession : IDisposable
         && Format.Codec == format.Codec
         && Format.SampleRate == format.SampleRate
         && Format.Channels == format.Channels
-        && Format.FrameDurationMilliseconds == format.FrameDurationMilliseconds;
+        && Format.FrameSamplesPerChannel == format.FrameSamplesPerChannel;
 
     public bool IsSameEndpoint(IPEndPoint endpoint) => Endpoint.Equals(endpoint);
 
@@ -220,7 +220,11 @@ internal sealed class StreamSession : IDisposable
     {
         if (opusDecoder is null) return false;
 
-        var frameSize = Math.Max(1, Format.SampleRate * Math.Max(5, Format.FrameDurationMilliseconds) / 1000);
+        // Frame size in samples-per-channel comes directly off the wire in v3.0+ (was
+        // SampleRate × ms / 1000 in v2.x). Floor at 120 = 2.5 ms = standard libopus
+        // RESTRICTED_LOWDELAY minimum, so a malformed format packet with a tiny value can't
+        // size the scratch buffer below the encoder's minimum frame size.
+        var frameSize = Math.Max(120, Format.FrameSamplesPerChannel);
         var totalShorts = frameSize * Format.Channels;
         Span<short> shortScratch = totalShorts <= 4096 ? stackalloc short[totalShorts] : new short[totalShorts];
 

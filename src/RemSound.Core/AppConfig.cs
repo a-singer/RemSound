@@ -50,12 +50,18 @@ public sealed class AppConfig
     public bool SaveProfileConfirmationSuppressed { get; set; }
 
     /// <summary>True if the user has ticked "do not show me this message again" on the
-    /// "this profile is read-only, save was skipped" popup. Once ticked, Ctrl+S / File → Save
-    /// on a read-only profile silently does nothing instead of explaining why — the user
-    /// has acknowledged that they know it's a no-op. Machine-local (not per-profile) so the
-    /// preference sticks across profile switches; the prompt itself is the same wording on
-    /// any read-only profile so a single dismissal applies everywhere. 2026-05-22.</summary>
-    public bool SaveOnReadOnlyMessageSuppressed { get; set; }
+    /// "you are saving onto a read-only profile" warning. Once ticked, Ctrl+S / File → Save
+    /// on a read-only profile saves silently through the lock instead of warning first.
+    /// Machine-local (not per-profile) so the preference sticks across profile switches; the
+    /// prompt itself is the same wording on any read-only profile so a single dismissal
+    /// applies everywhere. 2026-05-23 — semantic shift from v2.x: in v2.x the read-only lock
+    /// hard-blocked explicit saves and this flag suppressed the explanatory "save was skipped"
+    /// popup. In v3.0 the lock only suppresses the automatic "you have unsaved changes" prompt
+    /// on close / profile switch; explicit Ctrl+S / File → Save now goes through with a
+    /// one-time warning gated by this flag. The JSON key was renamed alongside the semantic
+    /// change so users upgrading from v2.x see the new warning at least once — a v2.x
+    /// suppression flag is no longer applicable and is silently discarded on load.</summary>
+    public bool SaveOnReadOnlyWarningSuppressed { get; set; }
 
     /// <summary>If true, RemSound minimises to the system tray immediately after the main
     /// window finishes loading. Lets the user "boot up the machine and have RemSound

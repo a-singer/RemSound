@@ -120,6 +120,13 @@ internal sealed class MixingEngine : ICaptureBackend
     public float TakeMaxRawCaptureStep() => 0f;
     public float TakeMaxRawCaptureStepCrossBuffer() => 0f;
     public float TakeMaxRawCaptureStepWithinBuffer() => 0f;
+    public long TakeCumulativeCaptureTicks() => Interlocked.Exchange(ref cumulativeMixLoopTicks, 0);
+
+    // Cumulative ticks the mix-loop task spent doing per-tick work (everything between
+    // wake-up and the next sleep). Reported as captureMs on the diag log so the user sees
+    // the WASAPI mix-engine's CPU footprint when it's the active capture path.
+    // 2026-05-22 (item 2 of RemSoundefficiency.md).
+    private long cumulativeMixLoopTicks;
 
     /// <summary>
     /// Starts the mix loop with the given initial source set. If already running, the existing
@@ -316,7 +323,13 @@ internal sealed class MixingEngine : ICaptureBackend
                 if (nextTickStopwatch > now)
                 {
                     var sleepMs = (int)Math.Clamp((nextTickStopwatch - now) * 1000 / Stopwatch.Frequency, 1, 50);
-                    if (WaitHandle.WaitAny(new[] { ct.WaitHandle }, sleepMs) == 0) break;
+                    // Item 6 of RemSoundefficiency.md: use WaitHandle.WaitOne directly
+                    // instead of WaitAny(new[] { ct.WaitHandle }, ...). Identical semantics
+                    // (returns true on signal / false on timeout — i.e. the same as WaitAny
+                    // returning index 0 for our single-element case), but no per-call array
+                    // allocation. At this loop's ~100 Hz cadence the old line was producing
+                    // ~100 small array allocations per second; the new one produces none.
+                    if (ct.WaitHandle.WaitOne(sleepMs)) break;
                     continue;
                 }
 
@@ -330,8 +343,18 @@ internal sealed class MixingEngine : ICaptureBackend
                 var localMixer = mixer;
                 if (localMixer is null) continue;
 
+                // Per-thread CPU instrumentation. Capture-the-work-tick at the start of
+                // the active body so we can report this loop's CPU footprint via the
+                // captureMs column on the diag log.
+                var diag = RemSound.Core.DiagnosticsGate.Enabled;
+                var workStart = diag ? Stopwatch.GetTimestamp() : 0L;
+
                 var read = localMixer.Read(mixScratch, 0, MixSamplesPerTick);
-                if (read <= 0) continue;
+                if (read <= 0)
+                {
+                    if (diag) Interlocked.Add(ref cumulativeMixLoopTicks, Stopwatch.GetTimestamp() - workStart);
+                    continue;
+                }
 
                 // Hard-clamp mixed sum to [-1, 1] to prevent encoder clipping when multiple loud
                 // sources sum past unity. Counts clipped samples for diagnostics.
@@ -346,6 +369,7 @@ internal sealed class MixingEngine : ICaptureBackend
                 Interlocked.Increment(ref mixTickCount);
 
                 onMixedSamples(new ReadOnlyMemory<float>(mixScratch, 0, read));
+                if (diag) Interlocked.Add(ref cumulativeMixLoopTicks, Stopwatch.GetTimestamp() - workStart);
             }
             catch (OperationCanceledException)
             {

@@ -52,26 +52,14 @@ public enum RemoteControlKind : byte
     SystemMuteToggle = 5,
 }
 
-[Flags]
-public enum KeepAliveCapabilities : byte
-{
-    None = 0,
-    CanSend = 1,
-    CanReceive = 2,
-}
-
-public enum KeepAliveKind : byte
-{
-    Heartbeat = 1,
-    Ack = 2,
-}
-
-public readonly record struct KeepAliveInfo(
-    Guid SessionId,
-    KeepAliveKind Kind,
-    KeepAliveCapabilities Capabilities,
-    AudioTransportCodec Codec,
-    long UnixTimeMilliseconds);
+// KeepAliveCapabilities / KeepAliveKind / KeepAliveInfo + the KeepAlivePayloadSize +
+// WriteKeepAlivePayload / TryReadKeepAlive methods that lived here were removed 2026-05-23.
+// They date from before HeartbeatService (which arrived 2026-05-06). After HeartbeatService
+// went in, no code in RemSound ever wrote or read a KeepAlive packet again — they were dead
+// code carried through 16 releases. RemPacketType.KeepAlive = 3 and the silent-drop dispatch
+// in AudioReceiver are RETAINED on purpose so any pre-2026-05-06 build still in the wild
+// has its packets quietly ignored rather than counted as malformed — but the unused machinery
+// to construct/parse the payload is gone.
 
 /// <summary>
 /// Wire format for RemSound packets. Header is 12 bytes; body length is implied by the UDP datagram.
@@ -95,7 +83,8 @@ public static class RemPacket
     /// before reading the Lane field; payloads shorter than that default Lane to
     /// <see cref="RenderRoute.Mixed"/>. Senders newer than 2026-05-11 always write this size.</summary>
     public const int FormatPayloadExtendedSize = 36;
-    public const int KeepAlivePayloadSize = 28;
+    // KeepAlivePayloadSize removed 2026-05-23 — no code reads or writes this payload any more
+    // (see top-of-file comment). RemPacketType.KeepAlive itself is retained for wire safety.
     /// <summary>
     /// Heartbeat payload: 1 byte <see cref="HeartbeatKind"/> + 8 bytes originator-monotonic
     /// timestamp (Stopwatch.ElapsedMilliseconds at the time the originating Ping was sent).
@@ -179,24 +168,8 @@ public static class RemPacket
         return FormatPayloadExtendedSize;
     }
 
-    public static int WriteKeepAlivePayload(Span<byte> destination, KeepAliveInfo info)
-    {
-        if (destination.Length < KeepAlivePayloadSize)
-        {
-            throw new ArgumentException("KeepAlive payload destination too small", nameof(destination));
-        }
-
-        destination[0] = (byte)info.Kind;
-        destination[1] = (byte)info.Codec;
-        destination[2] = (byte)info.Capabilities;
-        destination[3] = 0;
-        BinaryPrimitives.WriteInt64LittleEndian(destination[4..], info.UnixTimeMilliseconds);
-        if (!info.SessionId.TryWriteBytes(destination.Slice(12, 16)))
-        {
-            return 0;
-        }
-        return KeepAlivePayloadSize;
-    }
+    // WriteKeepAlivePayload removed 2026-05-23 — dead since HeartbeatService landed
+    // 2026-05-06. See top-of-file comment.
 
     public static bool TryReadHeader(ReadOnlySpan<byte> packet, out RemPacketType type, out ushort streamId, out uint sequence)
     {
@@ -305,19 +278,8 @@ public static class RemPacket
         return true;
     }
 
-    public static bool TryReadKeepAlive(ReadOnlySpan<byte> payload, out KeepAliveInfo info)
-    {
-        info = default;
-        if (payload.Length < KeepAlivePayloadSize) return false;
-        if (!Enum.IsDefined((KeepAliveKind)payload[0])) return false;
-        info = new KeepAliveInfo(
-            new Guid(payload.Slice(12, 16)),
-            (KeepAliveKind)payload[0],
-            (KeepAliveCapabilities)payload[2],
-            Enum.IsDefined((AudioTransportCodec)payload[1]) ? (AudioTransportCodec)payload[1] : AudioTransportCodec.Pcm,
-            BinaryPrimitives.ReadInt64LittleEndian(payload[4..]));
-        return true;
-    }
+    // TryReadKeepAlive removed 2026-05-23 — dead since HeartbeatService landed 2026-05-06.
+    // See top-of-file comment.
 }
 
 /// <summary>

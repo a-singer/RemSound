@@ -145,6 +145,17 @@ internal sealed class CompositeCaptureBackend : ICaptureBackend
         return w > a ? w : a;
     }
 
+    /// <summary>Sum of cumulative capture-callback ticks across both inner backends since
+    /// the last call. The diag log uses this for captureMs — the per-thread CPU footprint
+    /// of all capture-side work (item 2 of RemSoundefficiency.md). Drains BOTH so neither
+    /// accumulates forever; in BothIndependent the user wants both lanes' load combined.</summary>
+    public long TakeCumulativeCaptureTicks()
+    {
+        var w = wasapi?.TakeCumulativeCaptureTicks() ?? 0L;
+        var a = asio?.TakeCumulativeCaptureTicks() ?? 0L;
+        return w + a;
+    }
+
     public void Start(IReadOnlyList<CaptureSourceSpec> specs)
     {
         lock (gate)

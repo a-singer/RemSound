@@ -63,6 +63,12 @@ public sealed class HeartbeatService : IDisposable
     private CancellationTokenSource? cts;
     private Task? sendTask;
     private uint sequence;
+    // Reusable outbound packet buffer for the once-per-second ping fan-out. Pre-2026-05-23
+    // SendPings did `var bytes = packet.ToArray()` on every call (a 21-byte allocation +
+    // GC header). Trivial in absolute terms — ~3 small allocations/sec/peer — but the
+    // SendPings thread has only one writer so a single reused array is straightforward and
+    // makes the pattern explicit. Item 14 of RemSoundefficiency.md.
+    private readonly byte[] outboundPingBuffer = new byte[RemPacket.HeaderSize + RemPacket.HeartbeatPayloadSize];
 
     /// <summary>
     /// Outbound transport for heartbeat packets. REQUIRED — without it Start() succeeds but
@@ -253,20 +259,22 @@ public sealed class HeartbeatService : IDisposable
             foreach (var p in targets) p.FirstPingSentUtc ??= nowUtc;
         }
 
-        // Build packet. streamId is fixed at 0xFFFF for heartbeats so it's distinguishable
-        // in any future stream-aware filter; sequence increments locally per send.
-        Span<byte> packet = stackalloc byte[RemPacket.HeaderSize + RemPacket.HeartbeatPayloadSize];
+        // Build packet directly into the reusable outboundPingBuffer instead of stack-
+        // allocating + ToArray(). Same wire format, no per-call allocation. SendPings runs
+        // exclusively on the timer task — single writer — so no lock needed around the
+        // reuse. streamId is fixed at 0xFFFF for heartbeats so it's distinguishable in any
+        // future stream-aware filter; sequence increments locally per send.
         var seq = Interlocked.Increment(ref sequence);
         var tickMs = monotonic.ElapsedMilliseconds;
-        RemPacket.WriteHeader(packet, RemPacketType.Heartbeat, 0xFFFF, seq);
-        RemPacket.WriteHeartbeatPayload(packet[RemPacket.HeaderSize..], HeartbeatKind.Ping, tickMs);
-        var bytes = packet.ToArray();
+        var packetSpan = outboundPingBuffer.AsSpan();
+        RemPacket.WriteHeader(packetSpan, RemPacketType.Heartbeat, 0xFFFF, seq);
+        RemPacket.WriteHeartbeatPayload(packetSpan[RemPacket.HeaderSize..], HeartbeatKind.Ping, tickMs);
 
         foreach (var p in targets)
         {
             try
             {
-                var ok = transport(bytes, bytes.Length, p.AudioEndpoint);
+                var ok = transport(outboundPingBuffer, outboundPingBuffer.Length, p.AudioEndpoint);
                 onDiagnostic?.Invoke($"send seq={seq} to={p.AudioEndpoint} {(ok ? "ok" : "FAILED")}");
             }
             catch (Exception ex)

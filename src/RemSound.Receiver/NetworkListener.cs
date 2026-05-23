@@ -43,6 +43,15 @@ internal sealed class NetworkListener : IDisposable
     public int TakeMaxInterPacketGapMs() =>
         (int)(Interlocked.Exchange(ref maxInterPacketGapTicks, 0) * 1000 / Stopwatch.Frequency);
 
+    // CUMULATIVE on-packet work-time counter. Sister to maxOnPacketTicks (per-call max)
+    // — this is "total time the receive thread spent inside the packet handler since the
+    // last Take". The diag log samples this once a second and reports milliseconds-of-
+    // CPU-per-second for the receive thread, which is the per-thread CPU% reading from
+    // item 2 of RemSoundefficiency.md. Cumulative-sum + atomic-take pattern; no lock.
+    // 2026-05-22.
+    private long cumulativeOnPacketTicks;
+    public long TakeCumulativeOnPacketTicks() => Interlocked.Exchange(ref cumulativeOnPacketTicks, 0);
+
     public NetworkListener(Action<byte[], int, IPEndPoint> onPacket, Action<string> onDiagnostic)
     {
         this.onPacket = onPacket;
@@ -89,6 +98,7 @@ internal sealed class NetworkListener : IDisposable
         // spurious huge gap.
         Interlocked.Exchange(ref lastReceiveTicks, 0);
         Interlocked.Exchange(ref maxInterPacketGapTicks, 0);
+        Interlocked.Exchange(ref cumulativeOnPacketTicks, 0);
     }
 
     public void Dispose() => Stop();
@@ -142,6 +152,10 @@ internal sealed class NetworkListener : IDisposable
                     long current;
                     do { current = Volatile.Read(ref maxOnPacketTicks); }
                     while (elapsed > current && Interlocked.CompareExchange(ref maxOnPacketTicks, elapsed, current) != current);
+                    // And the cumulative counter — every call's elapsed adds in. Lets the
+                    // diag log show "the receive thread spent X ms working this second"
+                    // (item 2 of the efficiency analysis).
+                    Interlocked.Add(ref cumulativeOnPacketTicks, elapsed);
                 }
                 else
                 {

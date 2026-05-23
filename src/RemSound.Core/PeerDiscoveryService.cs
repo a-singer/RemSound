@@ -39,6 +39,15 @@ public sealed class PeerDiscoveryService : IDisposable
     // reference once per tick. Volatile-write semantics via the assignment under the gate are
     // sufficient because we only ever swap the reference, never mutate in place.
     private IReadOnlyList<IPAddress> unicastTargets = [];
+    // Cached broadcast addresses. Item 16 of RemSoundefficiency.md — pre-2026-05-23 we
+    // recomputed these every 1.5 s by walking every network interface (NetworkInterface
+    // .GetAllNetworkInterfaces is a real Win32 P/Invoke), allocating a HashSet, and iterating
+    // unicast addresses. Network interfaces don't change on a 1.5 s cadence; cache the
+    // result and invalidate only when Windows raises the NetworkAddressChanged event.
+    // Reference-swap on update so the announce loop can read it without locking.
+    private volatile IPAddress[] cachedBroadcastAddresses = [];
+    private int broadcastCacheDirty = 1;  // 1 = needs rebuild, 0 = current. Int for Interlocked.
+    private NetworkAddressChangedEventHandler? networkChangeHandler;
 
     public event Action? PeersChanged;
 
@@ -69,6 +78,15 @@ public sealed class PeerDiscoveryService : IDisposable
         listener.Client.Bind(new IPEndPoint(IPAddress.Any, DefaultDiscoveryPort));
 
         announcer = new UdpClient(AddressFamily.InterNetwork) { EnableBroadcast = true };
+
+        // Subscribe to Windows network-change notifications so we know to rebuild the
+        // broadcast-address cache. Without this we'd either have to re-walk all interfaces
+        // every 1.5 s (the pre-2026-05-23 behaviour) or risk announcing on stale broadcast
+        // addresses after a network change. The handler just flips the dirty flag — the
+        // actual rebuild happens lazily the next time AnnounceLoop reads the cache.
+        networkChangeHandler = (_, _) => Interlocked.Exchange(ref broadcastCacheDirty, 1);
+        try { NetworkChange.NetworkAddressChanged += networkChangeHandler; }
+        catch { /* harmless — caching just falls back to per-tick rebuild on first miss */ }
 
         listenTask = Task.Run(() => ListenLoop(cts.Token));
         announceTask = Task.Run(() => AnnounceLoop(cts.Token));
@@ -105,6 +123,12 @@ public sealed class PeerDiscoveryService : IDisposable
 
     public void Stop()
     {
+        if (networkChangeHandler is not null)
+        {
+            try { NetworkChange.NetworkAddressChanged -= networkChangeHandler; }
+            catch { /* ignore — best-effort unsubscribe */ }
+            networkChangeHandler = null;
+        }
         cts?.Cancel();
         listener?.Dispose();
         announcer?.Dispose();
@@ -225,23 +249,48 @@ public sealed class PeerDiscoveryService : IDisposable
         }
     }
 
-    private static IEnumerable<IPAddress> GetBroadcastAddresses()
+    /// <summary>Returns the cached broadcast-address array, rebuilding it only if the
+    /// dirty flag has been set (initial state, or by the NetworkAddressChanged event).
+    /// The original implementation walked every NIC on every announcement (~40 per minute);
+    /// caching turns that into a single walk per network change. Item 16 of
+    /// RemSoundefficiency.md. 2026-05-23.</summary>
+    private IPAddress[] GetBroadcastAddresses()
     {
-        var addresses = new HashSet<IPAddress> { IPAddress.Broadcast };
-        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+        // Fast path: cache is current.
+        if (Volatile.Read(ref broadcastCacheDirty) == 0)
         {
-            if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
-            foreach (var unicast in ni.GetIPProperties().UnicastAddresses)
+            return cachedBroadcastAddresses;
+        }
+        // Slow path: rebuild. Atomic CAS clears the dirty flag before the rebuild so a
+        // concurrent NetworkAddressChanged event sets it again rather than racing.
+        Interlocked.Exchange(ref broadcastCacheDirty, 0);
+        var addresses = new HashSet<IPAddress> { IPAddress.Broadcast };
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
             {
-                if (unicast.Address.AddressFamily != AddressFamily.InterNetwork || unicast.IPv4Mask is null) continue;
-                var addr = unicast.Address.GetAddressBytes();
-                var mask = unicast.IPv4Mask.GetAddressBytes();
-                var bcast = new byte[4];
-                for (var i = 0; i < 4; i++) bcast[i] = (byte)(addr[i] | ~mask[i]);
-                addresses.Add(new IPAddress(bcast));
+                if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                foreach (var unicast in ni.GetIPProperties().UnicastAddresses)
+                {
+                    if (unicast.Address.AddressFamily != AddressFamily.InterNetwork || unicast.IPv4Mask is null) continue;
+                    var addr = unicast.Address.GetAddressBytes();
+                    var mask = unicast.IPv4Mask.GetAddressBytes();
+                    var bcast = new byte[4];
+                    for (var i = 0; i < 4; i++) bcast[i] = (byte)(addr[i] | ~mask[i]);
+                    addresses.Add(new IPAddress(bcast));
+                }
             }
         }
-        return addresses;
+        catch
+        {
+            // GetAllNetworkInterfaces can throw transiently on some configurations; the
+            // limited-broadcast 255.255.255.255 still reaches LAN peers on most setups, so
+            // fall back to just that rather than aborting discovery.
+        }
+        var snapshot = new IPAddress[addresses.Count];
+        addresses.CopyTo(snapshot);
+        cachedBroadcastAddresses = snapshot;
+        return snapshot;
     }
 
     private void PruneExpiredPeers()

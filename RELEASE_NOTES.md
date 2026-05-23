@@ -1,38 +1,42 @@
-# RemSound v2.1
+# RemSound v2.2
 
-Automatic router setup for internet streaming, a new "lock this profile" option to keep your default profile from prompting on close, a small notice before background updates install, and fixes for the "no sound after sleep / hibernate" problem. Wire format and audio pipeline are unchanged from v1.5 onward — all versions from v1.5 to v2.1 interoperate.
+A maintenance release that makes RemSound use less of your computer's CPU and memory, especially when sending audio with the Opus codec. No new features to learn, no settings have changed, audio sounds exactly the same. Wire format and audio pipeline are unchanged from v1.5 onward — every version from v1.5 to v2.2 still talks to every other version cleanly.
 
-## What's new
+## What's lighter on your computer
 
-* **Automatic router port opening (UPnP).** RemSound can now ask your router to open the audio port for incoming peer connections, so you don't have to set up port forwarding by hand. Off by default — tick **"Automatically open my router for incoming connections (UPnP)"** in Preferences (Ctrl+P) to turn it on. A live status line right below the tick tells you what happened: found your router and opened the port (with your external address), found your router but the port couldn't be opened, no router found that supports the feature, or the router opened the port but you're behind a carrier-grade NAT (common on mobile broadband — peers won't reach you directly, use Tailscale or the relay instead). Works with UPnP, NAT-PMP and PCP — whichever your router speaks.
+* **Opus sending now uses much less memory.** RemSound's Opus encoder used to do quite a lot of one-off memory work on every audio frame — about 4 MB per second of "throwaway" memory churn while sending Opus audio. v2.2 ships a native build of the same encoder that does the same work in a tighter way. The audio you hear is identical (it really is the same encoder, just packaged better); the memory churn drops by about 97 %. On laptops you should see less background CPU when streaming Opus, and long sessions are less likely to see brief pauses while Windows tidies up memory.
 
-* **Lock profile (read-only).** New tickable item in the File menu (Alt+F, L). When ticked, anything you change while RemSound is running stays in this session and is forgotten on close — your saved profile is left untouched, and there is **no save-changes prompt on exit**. Useful when you have a default profile you tweak constantly but don't want to commit those tweaks, and essential for unattended shutdowns where a save prompt could deadlock the close (screen reader gone, remote session dropped, machine hibernating). The lock state is saved on the profile itself, so it sticks across launches. Save As on a locked profile produces an unlocked copy. The window title and the startup profile picker both show "(read-only)" so you can tell at a glance.
+* **Smaller all-round efficiency tidy-up.** A handful of small fixes — RemSound checks the audio-device list a bit less often, reuses some small bits of memory it used to make fresh each time, and skips some paperwork on the receive side when there's nothing to do. Each one is small on its own; together they shave a few percent off RemSound's everyday CPU footprint and reduce memory churn modestly.
 
-* **Check for updates on startup.** New checkbox in Preferences, **on by default**. Shortly after RemSound launches it has a quiet look for a new release. Combined with "Silently install updates", this is "leave RemSound to keep itself up to date and never think about it".
+* **Removed some old leftover code** that was retired months ago but still lived on as zero-valued columns in the diagnostic log. Same behaviour, cleaner files for anyone who reads the diagnostic logs.
 
-* **Brief notice before a silent update installs.** When RemSound finds an update at startup and is set to install silently, it now shows a small window with the version it's about to install and an 8-second countdown. Press Enter (or wait) to install now, "Skip this version" to leave the update for another day, or "Postpone" to try again at the next check. Without this notice, the app would silently close on you a few seconds after launch and you'd have no idea why.
+## For people who use the diagnostic logs
 
-* **"Cue sounds" in Preferences is now labelled "Audio cue sounds"** for clarity.
+* **New columns added** (only emit when Enable logs is ticked, so cost nothing when off):
+  * `cpu=X.X%` — how much of one CPU core RemSound is using right now.
+  * `memMB=X.X` and `wsMB=X.X` — RemSound's memory footprint (managed heap and working set).
+  * `allocKBps=X.X` — how fast RemSound is asking Windows for new bits of memory right now. A low number is what we want.
+  * `captureMs / sendMs / recvMs / renderMs` — milliseconds of CPU each of RemSound's four audio threads spent doing work in the last second.
 
-## Bug fixes
+* **Some old columns removed.** `fanCacheMs`, `driftDrop`, `driftDropΔ`, `driftRep`, `driftRepΔ` and `driftAcc` are gone — they were always zero after the playback engine was changed in May.
 
-* **No sound after the computer wakes from sleep.** On many setups (especially USB audio interfaces), waking the computer left RemSound's audio engine in a state where it looked like it was running but no sound actually came out — you'd have to quit and reopen RemSound. RemSound now notices when the system has woken up, waits a moment for USB devices to settle, and rebuilds its audio engine automatically. A brief "Reconnecting to audio driver, please wait..." window appears during the rebuild so you can see it's happening.
+## Nothing else has changed
 
-* **Receiver audio silent after waking from hibernate.** A follow-up to the wake-from-sleep fix above: on hibernate (rather than ordinary sleep), the ASIO receive output's tick selection could be silently wiped during hibernation entry, leaving the receiver running silent on resume even though everything looked normal in the logs. Fixed by recognising the transient driver-disappeared state at hibernation entry and preserving the user's tick until the driver comes back.
+No bug fixes in v2.2 specifically. Everything in v2.1 — the UPnP automatic router-opening, the lock-profile (read-only) tick, the silent-install notice, the wake-from-sleep audio fix, the hibernate fix — is still in place and works exactly the same.
 
 ## Install
 
-1. Download `RemSound-v2.1.zip` from this release.
+1. Download `RemSound-v2.2.zip` from this release.
 2. Close RemSound.
-3. Extract the zip **over your existing RemSound folder**, overwriting program files when prompted. The zip is program files only — it will not touch your profiles, settings or recordings. (For a fresh install, just extract it anywhere you have write permission and run `RemSound.exe`.)
-4. Run `RemSound.exe`. Allow on private networks when Windows Firewall prompts. Press F1 for the user manual.
+3. Extract the zip **over your existing RemSound folder**, overwriting program files when prompted. The zip is program files only — it will not touch your profiles, settings or recordings.
+4. Run `RemSound.exe`. Press F1 for the user manual.
 
 Requires the .NET 10 Desktop Runtime. If it's missing, Windows offers to fetch it on first launch.
 
 ## Upgrading
 
-**v1.9, v2.0:** Help → Check for updates works — it will fetch and install v2.1 automatically. If you've ticked the new "Check for updates on startup" and "Silently install updates", v2.1 will install itself shortly after launch with a brief notice.
+**v1.9, v2.0, v2.1:** Help → Check for updates works — it will fetch and install v2.2 automatically. If you've ticked "Check for updates on startup" and "Silently install updates", v2.2 will install itself shortly after launch with a brief notice.
 
-**v1.8 and earlier:** the auto-updater in those versions has a fault that prevents it from installing updates, so Check for updates will download v2.1 but not apply it. Install v2.1 by hand using the steps above — just this once. From the build you install onward, updates are automatic.
+**v1.8 and earlier:** the auto-updater in those versions has a fault that prevents it from installing updates, so Check for updates will download v2.2 but not apply it. Install v2.2 by hand using the steps above — just this once. From the build you install onward, updates are automatic.
 
 If you installed RemSound inside a synced folder (Dropbox etc.) and your install is v1.0 / v1.1 / v1.2, see the [v1.3 release notes](https://github.com/Ednunp/RemSound/releases/tag/v1.3) for one-time manual install steps.

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using NAudio.Wave;
 using RemSound.Core;
@@ -82,6 +83,15 @@ internal sealed class PlayoutEngine : IWaveProvider
     private volatile bool asioLaneActive = true;
     private volatile bool muted;
     private volatile float volume = 1f;
+    // Cumulative render-thread work-time counter. Every Read / ReadForRoute call adds its
+    // elapsed Stopwatch ticks here; the diag log samples once a second to report renderMs
+    // — milliseconds of CPU the render thread(s) consumed in the last second. Per-thread
+    // CPU usage from item 2 of RemSoundefficiency.md. Gated implicitly by the diag log's
+    // own DiagnosticsGate check (the math is cheap enough that we don't gate the
+    // Stopwatch reads themselves — the alternative is a per-call branch every render
+    // callback, which costs more than the read does).
+    private long cumulativeRenderTicks;
+    public long TakeCumulativeRenderTicks() => Interlocked.Exchange(ref cumulativeRenderTicks, 0);
     // 1 = stupid aggressive, 10 = perfectly smooth. Read on the audio thread, written from UI.
     // Now mostly a safety-knob for the click-trim catastrophic path; in normal operation the
     // Phase-2 drift corrector (in SessionPlayout) keeps the buffer near target so the trim
@@ -414,27 +424,9 @@ internal sealed class PlayoutEngine : IWaveProvider
         }
     }
 
-    /// <summary>Cumulative count of single-frame drops the Phase-2 drift corrector has applied.</summary>
-    public long AggregateDriftDropFrames
-    {
-        get
-        {
-            long total = 0;
-            foreach (var s in sessionsSnapshot) total += s.DriftDropFramesTotal;
-            return total;
-        }
-    }
-
-    /// <summary>Cumulative count of single-frame repeats the Phase-2 drift corrector has applied.</summary>
-    public long AggregateDriftRepeatFrames
-    {
-        get
-        {
-            long total = 0;
-            foreach (var s in sessionsSnapshot) total += s.DriftRepeatFramesTotal;
-            return total;
-        }
-    }
+    // AggregateDriftDropFrames + AggregateDriftRepeatFrames removed 2026-05-23 alongside the
+    // backing per-session fields. They surfaced two always-zero diag-log columns; both columns
+    // and accessors are gone.
 
     /// <summary>Cumulative count of full-empty reads (framesRead == 0) across all sessions.
     /// These are the audible underrun events that trigger noise-burst concealment + fade-in
@@ -480,17 +472,9 @@ internal sealed class PlayoutEngine : IWaveProvider
         }
     }
 
-    /// <summary>Live state — the drift integrator accumulator of the first active session.
-    /// Crosses ±1 to fire a single-frame drop / repeat. Useful for "is the corrector about
-    /// to fire?" diagnosis.</summary>
-    public double PrimaryDriftAccumulator
-    {
-        get
-        {
-            var snap = sessionsSnapshot;
-            return snap.Length > 0 ? snap[0].DriftAccumulator : 0.0;
-        }
-    }
+    // PrimaryDriftAccumulator removed 2026-05-23 alongside SessionPlayout.DriftAccumulator
+    // (which always returned 0 under the Phase-4 resampler design) and the driftAcc= diag
+    // log column.
 
     /// <summary>Worst single-sample step seen out of the ring buffer since the last call.
     /// Compared against the sender's pre-encode probe and the session's post-resampler
@@ -595,8 +579,20 @@ internal sealed class PlayoutEngine : IWaveProvider
     /// stream onto an ASIO output (and vice versa) in BothIndependent mode — that broke a
     /// long-standing cross-backend send/receive flow.
     /// </summary>
-    public int Read(byte[] buffer, int offset, int count) =>
-        ReadAllSessions(buffer, offset, count, mixScratch, sessionScratch, recordDiagnostics: true);
+    public int Read(byte[] buffer, int offset, int count)
+    {
+        // Per-thread CPU instrumentation. Gated on DiagnosticsGate so the Stopwatch
+        // reads cost nothing when logs are off; cumulativeRenderTicks is what the diag
+        // log samples for the renderMs column.
+        if (!RemSound.Core.DiagnosticsGate.Enabled)
+        {
+            return ReadAllSessions(buffer, offset, count, mixScratch, sessionScratch, recordDiagnostics: true);
+        }
+        var start = Stopwatch.GetTimestamp();
+        var produced = ReadAllSessions(buffer, offset, count, mixScratch, sessionScratch, recordDiagnostics: true);
+        Interlocked.Add(ref cumulativeRenderTicks, Stopwatch.GetTimestamp() - start);
+        return produced;
+    }
 
     /// <summary>
     /// Shared per-route render pull. Iterates the session snapshot, summing only those
@@ -608,6 +604,23 @@ internal sealed class PlayoutEngine : IWaveProvider
     /// per-tick stats columns are still the user-visible source of truth.
     /// </summary>
     internal int ReadForRoute(byte[] buffer, int offset, int count, RenderRoute route, float[] mixBuf, float[] sessionBuf, bool recordDiagnostics)
+    {
+        // Per-thread CPU instrumentation — same shape as Read above. Gate on DiagnosticsGate
+        // so when logs are off this is a free pass-through.
+        long workStart = 0;
+        var diag = RemSound.Core.DiagnosticsGate.Enabled;
+        if (diag) workStart = Stopwatch.GetTimestamp();
+        try
+        {
+            return ReadForRouteInner(buffer, offset, count, route, mixBuf, sessionBuf, recordDiagnostics);
+        }
+        finally
+        {
+            if (diag) Interlocked.Add(ref cumulativeRenderTicks, Stopwatch.GetTimestamp() - workStart);
+        }
+    }
+
+    private int ReadForRouteInner(byte[] buffer, int offset, int count, RenderRoute route, float[] mixBuf, float[] sessionBuf, bool recordDiagnostics)
     {
         if (recordDiagnostics) diagnostics.RecordRenderRead(count);
 

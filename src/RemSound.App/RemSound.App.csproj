@@ -14,7 +14,7 @@
          tag_name on the latest GitHub release; bump it on every public release. The
          AssemblyVersion / FileVersion default to this value, and Assembly.GetName().Version
          is what the About dialog and the updater both read. -->
-    <Version>2.1.0</Version>
+    <Version>2.2.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -38,6 +38,22 @@
          manual port forwarding. Cross-protocol — picks whichever the router speaks. Used
          under the AppConfig.UpnpEnabled toggle, off by default. -->
     <PackageReference Include="Mono.Nat" Version="3.0.4" />
+    <!-- Native libopus binaries that Concentus 2.0+ auto-detects at runtime and routes
+         encode/decode calls through. Without this package Concentus uses its pure-managed
+         C# fallback, which `new`s ~15 working buffers per encode call (issue #22 on the
+         Concentus repo, open since 2018) and produces ~4.5 MB/s of GC pressure per
+         encoding lane at 10 ms frames. Switching to native via this package keeps the
+         encoder state allocated once (C-side) and reuses it across calls. Same encoder
+         settings, bit-for-bit identical audio output. Installed at the top-level project
+         (per the package's install guidance) so `dotnet publish` correctly trims native
+         binaries for irrelevant RIDs from the release output. 2026-05-23. -->
+    <PackageReference Include="Concentus.Native" Version="1.5.2" />
+    <!-- Explicit pin for the transitive Concentus.Native.NetCore. The parent package
+         declares a minimum version of 1.5.1, but 1.5.1 was never published to nuget.org —
+         only 1.5.2 was. NuGet still resolves correctly (it picks 1.5.2) but emits NU1603
+         as a warning, which our TreatWarningsAsErrors policy promotes to an error.
+         Pinning explicitly skips that warning and is self-documenting. -->
+    <PackageReference Include="Concentus.Native.NetCore" Version="1.5.2" />
   </ItemGroup>
 
   <ItemGroup>

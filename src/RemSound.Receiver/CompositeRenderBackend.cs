@@ -89,12 +89,11 @@ internal sealed class CompositeRenderBackend : IRenderBackend
 
     public bool IsRunning => started;
 
-    /// <summary>Legacy probe from the FanOut era — always 0 now that BothIndependent reads
-    /// per-lane sources directly with no intermediate cache. Kept on the surface so the
-    /// receiver-side diag plumbing (fanCacheMs= column) keeps emitting a sentinel zero
-    /// rather than disappearing. Can be removed once we're confident the per-lane wiring
-    /// is the right shape long-term.</summary>
-    public int TakeMaxFanOutCacheBytes() => 0;
+    // TakeMaxFanOutCacheBytes removed 2026-05-23. The FanOutSource architecture was retired
+    // in mid-May when each lane got its own filtered PlayoutEngine source — there's no shared
+    // cache to measure any more, so the method always returned 0. The receiver-side
+    // pass-through (AudioReceiver.TakeMaxFanOutCacheMs) and the fanCacheMs= diag column were
+    // removed alongside it.
 
     public string ActiveDeviceSummary
     {

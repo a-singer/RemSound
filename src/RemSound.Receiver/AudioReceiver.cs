@@ -248,20 +248,25 @@ public sealed class AudioReceiver : IDisposable
     /// servicing, scheduler not waking our receive thread, kernel batching). 2026-05-21.</summary>
     public int TakeMaxInterPacketGapMs() => listener.TakeMaxInterPacketGapMs();
 
-    /// <summary>Worst FanOutSource cache-occupancy seen since the last call, expressed in
-    /// milliseconds at the mix rate (48 kHz stereo float). With one active render lane the
-    /// FanOut should drain to ~0 after every consumer Read; sustained non-zero means a
-    /// render lane is holding samples (slow consumer holding back compaction, or the fast
-    /// consumer not draining quickly enough). Zero in WasapiOnly mode (no FanOut). Resets
-    /// on read. Added 2026-05-11 to verify the BothIndependent FanOut path isn't quietly
-    /// inflating latency on either lane.</summary>
-    public int TakeMaxFanOutCacheMs()
-    {
-        // 48000 Hz × 2 ch × 4 bytes/sample = 384,000 bytes/sec.
-        const int MixBytesPerSecond = 48000 * 2 * 4;
-        var bytes = (multiOutput as CompositeRenderBackend)?.TakeMaxFanOutCacheBytes() ?? 0;
-        return bytes * 1000 / MixBytesPerSecond;
-    }
+    /// <summary>Cumulative milliseconds the network receive thread spent inside packet-
+    /// handler work since the last call (drain-on-read pattern). Diag log emits this as
+    /// recvMs per second — a direct read of how busy the network thread is. Item 2 of
+    /// RemSoundefficiency.md. Resets on read.</summary>
+    public double TakeReceiveWorkMs() =>
+        listener.TakeCumulativeOnPacketTicks() * 1000.0 / Stopwatch.Frequency;
+
+    /// <summary>Cumulative milliseconds the audio render threads spent inside
+    /// <see cref="PlayoutEngine.Read"/> / <see cref="PlayoutEngine.ReadForRoute"/>
+    /// (per-session mix + volume + limiter + pack-to-bytes) since the last call. Diag log
+    /// emits this as renderMs per second. Resets on read. 2026-05-22.</summary>
+    public double TakeRenderWorkMs() =>
+        playoutEngine.TakeCumulativeRenderTicks() * 1000.0 / Stopwatch.Frequency;
+
+    // TakeMaxFanOutCacheMs removed 2026-05-23. Originally measured the FanOutSource cache age
+    // between WASAPI and ASIO consumers in BothIndependent mode. The FanOut architecture was
+    // removed in May when each lane got its own filtered PlayoutEngine source — there is no
+    // shared cache to measure any more, so the method always returned 0. Removed alongside
+    // CompositeRenderBackend.TakeMaxFanOutCacheBytes and the fanCacheMs= diag column.
     public string OutputDeviceName => multiOutput.ActiveDeviceSummary;
     public int CurrentBufferMs => playoutEngine.CurrentBufferMs;
     public int TargetLatencyMs => playoutEngine.TargetLatencyMs;
@@ -412,11 +417,9 @@ public sealed class AudioReceiver : IDisposable
     public long TrimDropBytes => playoutEngine.AggregateTrimDropBytes;
     public long DrainDropBytes => playoutEngine.AggregateDrainDropBytes;
     public long TrimFireCount => playoutEngine.AggregateTrimFireCount;
-    /// <summary>Phase-2 drift correction counters: how many single stereo frames have been
-    /// dropped (sender clock faster) or repeated (sender clock slower) to keep the playout
-    /// buffer aligned with target. Each event = 21 µs of audio at 48 kHz, sub-audible.</summary>
-    public long DriftDropFrames => playoutEngine.AggregateDriftDropFrames;
-    public long DriftRepeatFrames => playoutEngine.AggregateDriftRepeatFrames;
+    // DriftDropFrames / DriftRepeatFrames accessors removed 2026-05-23. They aggregated
+    // Phase-2 splice-corrector counters that the Phase-4 fixed-ratio resampler design never
+    // increments. Always-zero. Surfaced two unhelpful diag-log columns that are now gone.
     /// <summary>Cumulative count of FULL-empty playout reads (framesRead == 0) — the audible
     /// underrun events that trigger noise-burst concealment + fade-in. Separated from
     /// <see cref="Underruns"/> (which conflates full and partial short reads) so the diag
@@ -429,9 +432,8 @@ public sealed class AudioReceiver : IDisposable
     /// <summary>Live LP-filtered drift error of the primary active session (stereo frames,
     /// signed). Negative = buffer running below target on average; positive = above.</summary>
     public double FilteredDriftErrorFrames => playoutEngine.PrimaryFilteredDriftErrorFrames;
-    /// <summary>Live drift integrator accumulator of the primary session. Crosses ±1 to fire
-    /// a drop / repeat correction.</summary>
-    public double DriftAccumulator => playoutEngine.PrimaryDriftAccumulator;
+    // DriftAccumulator removed 2026-05-23. Phase-4 fixed-ratio resampler never sets an
+    // integrator value; always returned 0. Removed alongside the driftAcc= diag column.
     /// <summary>Take the worst single-sample step out of the ring buffer (after decode +
     /// SessionPlayout.Write, before resampler) since the last call.</summary>
     public float TakeMaxPostRingReadStep() => playoutEngine.TakeMaxPostRingReadStep();

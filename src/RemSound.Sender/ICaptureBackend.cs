@@ -68,6 +68,14 @@ internal interface ICaptureBackend : IDisposable
     /// Resets on read. Backends that can't sensibly expose raw samples return 0.</summary>
     float TakeMaxRawCaptureStepWithinBuffer();
 
+    /// <summary>Cumulative Stopwatch ticks the backend's capture callbacks spent doing
+    /// per-callback work (buffer copy, mix, clamp — everything BEFORE the encode handoff)
+    /// since the last call. Diag log samples this once a second to report captureMs
+    /// per second — i.e. how busy the capture thread is. Resets on read. Backends that
+    /// don't track this return 0. Per-thread CPU instrumentation from item 2 of
+    /// RemSoundefficiency.md. 2026-05-22.</summary>
+    long TakeCumulativeCaptureTicks();
+
     void Start(IReadOnlyList<CaptureSourceSpec> specs);
 
     /// <summary>Live-update of the active source set without stopping the mix loop. Adds/removes

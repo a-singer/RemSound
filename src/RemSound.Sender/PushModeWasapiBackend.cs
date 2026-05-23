@@ -111,6 +111,12 @@ internal sealed class PushModeWasapiBackend : ICaptureBackend
     public float TakeMaxRawCaptureStep() => rawCaptureStepProbe.TakeMax();
     public float TakeMaxRawCaptureStepCrossBuffer() => rawCaptureStepProbe.TakeMaxCrossBuffer();
     public float TakeMaxRawCaptureStepWithinBuffer() => rawCaptureStepProbe.TakeMaxWithinBuffer();
+    public long TakeCumulativeCaptureTicks() => Interlocked.Exchange(ref cumulativeCaptureTicks, 0);
+
+    // Per-thread CPU instrumentation. Cumulative ticks the WASAPI capture callback spent
+    // in per-callback work; the diag log samples this once a second to report captureMs.
+    // See item 2 of RemSoundefficiency.md. 2026-05-22.
+    private long cumulativeCaptureTicks;
 
     public void Start(IReadOnlyList<CaptureSourceSpec> specs)
     {
@@ -247,6 +253,8 @@ internal sealed class PushModeWasapiBackend : ICaptureBackend
         Interlocked.Add(ref bytesCaptured, e.BytesRecorded);
         if (e.BytesRecorded <= 0) return;
 
+        var diag = RemSound.Core.DiagnosticsGate.Enabled;
+        var workStart = diag ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
         try
         {
             // 1. Reinterpret captured bytes as floats. Only IeeeFloat is supported (see Start).
@@ -355,6 +363,16 @@ internal sealed class PushModeWasapiBackend : ICaptureBackend
         {
             lastError = ex.Message;
             onDiagnostic?.Invoke($"push-wasapi: callback error: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            // Capture-thread CPU instrumentation. See AsioCaptureBackend for matching
+            // pattern. Wrapped in `finally` so the count is honest even when the body
+            // throws (the catch above is the normal path).
+            if (diag)
+            {
+                Interlocked.Add(ref cumulativeCaptureTicks, System.Diagnostics.Stopwatch.GetTimestamp() - workStart);
+            }
         }
     }
 

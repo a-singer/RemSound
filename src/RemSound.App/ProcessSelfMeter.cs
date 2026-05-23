@@ -1,0 +1,99 @@
+using System;
+using System.Diagnostics;
+
+namespace RemSound.App;
+
+/// <summary>
+/// Process-wide CPU / memory / allocation / GC meter. Sampled once a second by the diag-
+/// log emitter (gated behind <see cref="RemSound.Core.DiagnosticsGate"/>) so we get a
+/// continuous baseline of "how heavy is RemSound right now?" alongside every audio-pipeline
+/// stat we already track. Item 1 + 3 of <c>RemSoundefficiency.md</c> — the "build the
+/// measurement layer first" finding.
+///
+/// All readings are deltas since the previous <see cref="Take"/> call, so consumers see
+/// "this second's CPU" not "since process start". The first call returns zeros for the
+/// delta-based fields (no previous sample to compare to) and the steady-state fields
+/// already meaningful at that point (memory, working set).
+///
+/// Threading: <see cref="Take"/> is called from the App's status-tick handler on the UI
+/// thread. Snapshot fields are mutated by that same single thread; no locks needed.
+/// </summary>
+internal sealed class ProcessSelfMeter
+{
+    private TimeSpan prevTotalCpu;
+    private long prevAllocBytes;
+    private DateTime prevSampleUtc;
+    // Cached Process handle. Process.GetCurrentProcess() allocates a new object each call
+    // and the underlying handle is the same for the process lifetime — caching it saves an
+    // allocation per Take.
+    private readonly Process selfProcess = Process.GetCurrentProcess();
+
+    /// <summary>One-second meter reading.</summary>
+    /// <param name="CpuPercentOneCore">CPU used in the last sample interval as a percentage
+    /// of one CPU core (so a fully-loaded core reads 100, two cores read 200, etc.). Zero
+    /// on the first call (no previous sample). Includes time across all of the app's
+    /// threads — kernel + user.</param>
+    /// <param name="ManagedHeapMb">Managed heap occupancy in megabytes right now. The
+    /// .NET garbage collector's view of "stuff RemSound is holding"; doesn't include
+    /// unmanaged buffers held via NAudio / Concentus / etc.</param>
+    /// <param name="WorkingSetMb">Working set in megabytes — what Task Manager shows for
+    /// the process. Includes managed heap, unmanaged buffers, and pages currently resident.</param>
+    /// <param name="AllocatedKbPerSecond">Bytes allocated to the managed heap in this
+    /// interval, divided by 1024 and normalised to per-second. A steady-state RemSound
+    /// should run in the single-digit-kilobytes-per-second range; sustained megabytes is
+    /// a leak somewhere in the hot path.</param>
+    /// <param name="ElapsedMs">Wall-clock milliseconds since the previous sample, so the
+    /// caller can sanity-check the delta calculation. Roughly 1000 in steady state.</param>
+    public readonly record struct Snapshot(
+        double CpuPercentOneCore,
+        double ManagedHeapMb,
+        double WorkingSetMb,
+        double AllocatedKbPerSecond,
+        double ElapsedMs);
+
+    public Snapshot Take()
+    {
+        var now = DateTime.UtcNow;
+        // TotalProcessorTime is "user + kernel time across every thread", refreshed lazily.
+        // Refresh() asks the OS for the current value; without it the property is sticky
+        // from the first access. Done explicitly so the math below is meaningful.
+        selfProcess.Refresh();
+        var totalCpu = selfProcess.TotalProcessorTime;
+        var workingSet = selfProcess.WorkingSet64;
+        // GC.GetTotalAllocatedBytes(precise: true) is the official .NET counter for
+        // "total bytes allocated across all threads since process start". precise: true
+        // forces a fast cross-thread sync; the cost is a thread-list walk (cheap). We
+        // need precise=true because the audio threads allocate too and we want their
+        // contribution included.
+        var totalAllocBytes = GC.GetTotalAllocatedBytes(precise: true);
+        // GetTotalMemory(false) doesn't trigger a collection; we just want the current
+        // size of the heap as the GC knows it.
+        var managedHeapBytes = GC.GetTotalMemory(false);
+
+        double cpuPercent = 0;
+        double allocKbps = 0;
+        double elapsedMs = 0;
+        if (prevSampleUtc != default)
+        {
+            elapsedMs = (now - prevSampleUtc).TotalMilliseconds;
+            if (elapsedMs > 0)
+            {
+                var cpuDeltaMs = (totalCpu - prevTotalCpu).TotalMilliseconds;
+                cpuPercent = cpuDeltaMs / elapsedMs * 100.0;
+                var allocDelta = totalAllocBytes - prevAllocBytes;
+                allocKbps = allocDelta / 1024.0 * (1000.0 / elapsedMs);
+            }
+        }
+
+        prevTotalCpu = totalCpu;
+        prevAllocBytes = totalAllocBytes;
+        prevSampleUtc = now;
+
+        return new Snapshot(
+            CpuPercentOneCore: cpuPercent,
+            ManagedHeapMb: managedHeapBytes / (1024.0 * 1024.0),
+            WorkingSetMb: workingSet / (1024.0 * 1024.0),
+            AllocatedKbPerSecond: allocKbps,
+            ElapsedMs: elapsedMs);
+    }
+}

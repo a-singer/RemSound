@@ -110,11 +110,17 @@ public sealed class AudioSender : IDisposable
     // Both are reset on each Take() so the SNAP gets per-second peaks.
     private long maxEmitTicks;
     private long maxSendCallTicks;
+    // Cumulative counters mirroring the max ones above. The diag log samples these once
+    // a second to report "milliseconds-of-CPU-per-second" for the send-side audio thread —
+    // i.e. per-thread CPU usage from item 2 of RemSoundefficiency.md. Drain-on-read so the
+    // value reads naturally as "this last second's load". 2026-05-22.
+    private long cumulativeEmitTicks;
     internal void RecordEmitTicks(long ticks)
     {
         long current;
         do { current = Volatile.Read(ref maxEmitTicks); }
         while (ticks > current && Interlocked.CompareExchange(ref maxEmitTicks, ticks, current) != current);
+        Interlocked.Add(ref cumulativeEmitTicks, ticks);
     }
     internal void RecordSendCallTicks(long ticks)
     {
@@ -124,6 +130,20 @@ public sealed class AudioSender : IDisposable
     }
     public int TakeMaxEmitMs() => (int)(Interlocked.Exchange(ref maxEmitTicks, 0) * 1000 / Stopwatch.Frequency);
     public int TakeMaxSendCallMs() => (int)(Interlocked.Exchange(ref maxSendCallTicks, 0) * 1000 / Stopwatch.Frequency);
+    /// <summary>Cumulative milliseconds the send-side audio thread spent inside
+    /// <see cref="SenderLane.OnMixedSamples"/> (encode + sendto + per-packet bookkeeping)
+    /// since the last call. Resets on read. Diag log emits this as sendMs per second
+    /// — direct measurement of "how busy is the send thread". 2026-05-22.</summary>
+    public double TakeSendWorkMs() =>
+        Interlocked.Exchange(ref cumulativeEmitTicks, 0) * 1000.0 / Stopwatch.Frequency;
+
+    /// <summary>Cumulative milliseconds the capture-side threads spent doing per-callback
+    /// work (ASIO buffer copy + mix loop; WASAPI capture body; MixingEngine.MixLoop per
+    /// tick) since the last call. Resets on read. Diag log emits this as captureMs per
+    /// second. Sister metric to <see cref="TakeSendWorkMs"/> — the two together split
+    /// "what is the sender side spending its CPU on". 2026-05-22.</summary>
+    public double TakeCaptureWorkMs() =>
+        engine.TakeCumulativeCaptureTicks() * 1000.0 / Stopwatch.Frequency;
 
     // Pre-encode discontinuity probe — per-lane (each <see cref="SenderLane"/> owns its own).
     // The aggregate accessor returns the max across both lanes since the last read; per-lane

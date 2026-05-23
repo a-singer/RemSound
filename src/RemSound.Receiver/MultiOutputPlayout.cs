@@ -38,6 +38,14 @@ internal sealed class MultiOutputPlayout : IRenderBackend
     private readonly Dictionary<string, OutputEntry> outputs = new(StringComparer.OrdinalIgnoreCase);
     private readonly byte[] frameScratch = new byte[FrameBytes];
     private readonly WaveFormat sharedFormat = WaveFormat.CreateIeeeFloatWaveFormat(MixSampleRate, MixChannels);
+    // Snapshot of the current output buffers, rebuilt only when SetOutputDevices changes the
+    // device set (rare — typically once per user action, minutes apart). The producer loop
+    // reads this with a single volatile load per tick instead of taking the gate and
+    // rebuilding `outputs.Values.Select(o => o.Buffer).ToArray()` on every 10 ms tick.
+    // Item 7 of RemSoundefficiency.md — eliminates ~100 array allocations per second on the
+    // receive side whenever any output device is ticked. Empty array is a singleton via
+    // Array.Empty<T>(), so the default value costs nothing.
+    private volatile BufferedWaveProvider[] outputBufferSnapshot = Array.Empty<BufferedWaveProvider>();
 
     private CancellationTokenSource? cts;
     private Task? produceTask;
@@ -95,6 +103,10 @@ internal sealed class MultiOutputPlayout : IRenderBackend
 
             foreach (var o in outputs.Values) DisposeOutput(o);
             outputs.Clear();
+            // Reset the snapshot the producer loop reads so any subsequent Start sees the
+            // empty state cleanly (not a stale snapshot from the previous session). Empty
+            // array is a cached singleton, no allocation.
+            outputBufferSnapshot = Array.Empty<BufferedWaveProvider>();
         }
     }
 
@@ -152,6 +164,14 @@ internal sealed class MultiOutputPlayout : IRenderBackend
                     try { device?.Dispose(); } catch { /* ignore */ }
                 }
             }
+
+            // Refresh the snapshot the producer loop reads. Under the gate, so the producer
+            // sees a consistent view; once published via the volatile field, the loop reads
+            // it without taking the gate every tick. Empty case uses the cached singleton
+            // so it's allocation-free. Item 7 of RemSoundefficiency.md.
+            outputBufferSnapshot = outputs.Count == 0
+                ? Array.Empty<BufferedWaveProvider>()
+                : outputs.Values.Select(o => o.Buffer).ToArray();
         }
     }
 
@@ -178,7 +198,10 @@ internal sealed class MultiOutputPlayout : IRenderBackend
                 if (nextTickStopwatch > now)
                 {
                     var sleepMs = (int)Math.Clamp((nextTickStopwatch - now) * 1000 / Stopwatch.Frequency, 1, 50);
-                    if (WaitHandle.WaitAny(new[] { ct.WaitHandle }, sleepMs) == 0) break;
+                    // Item 6 of RemSoundefficiency.md — see matching change in
+                    // MixingEngine.MixLoop for the rationale. WaitOne is allocation-free
+                    // and semantically equivalent to WaitAny on a 1-element array.
+                    if (ct.WaitHandle.WaitOne(sleepMs)) break;
                     continue;
                 }
 
@@ -188,22 +211,16 @@ internal sealed class MultiOutputPlayout : IRenderBackend
                 }
                 nextTickStopwatch += ticksPerFrame;
 
-                // Snapshot the buffers under the gate so we don't iterate a mid-mutation dict.
-                // Also skip the source.Read entirely when no outputs are ticked: in
-                // BothIndependent mode the source is a FanOutSource view shared with the ASIO
-                // lane, and pulling here when WASAPI has nothing ticked makes the FanOut
-                // consume PlayoutEngine audio ~10 ms ahead of the ASIO consumer, leaving the
-                // ASIO lane permanently reading from a cache 10 ms behind the source. That
-                // showed up in test logs as fanCacheMs sustained at 12–14 ms with bufAvg=0,
-                // and audibly as an extra 10 ms baked into the ASIO lane's perceived latency.
-                // The gate-then-read order matters; the previous order (read first, then
-                // check outputs.Count) was the bug.
-                BufferedWaveProvider[] targets;
-                lock (gate)
-                {
-                    if (outputs.Count == 0) continue;
-                    targets = outputs.Values.Select(o => o.Buffer).ToArray();
-                }
+                // Read the pre-built snapshot. Volatile load — no lock, no allocation per
+                // tick. SetOutputDevices rebuilds the snapshot under the gate whenever the
+                // device set changes (rare event), so reads here see a consistent view.
+                // Skip the source.Read entirely when no outputs are ticked: in BothIndependent
+                // mode the source is shared between WASAPI and ASIO, and pulling here when
+                // WASAPI has nothing ticked would consume PlayoutEngine audio ahead of the
+                // ASIO consumer. Pre-2026-05-23 this whole block ran under `lock (gate)` and
+                // rebuilt the array on every tick — fixed as item 7 of RemSoundefficiency.md.
+                var targets = outputBufferSnapshot;
+                if (targets.Length == 0) continue;
 
                 var produced = source.Read(frameScratch, 0, FrameBytes);
                 if (produced <= 0) continue;

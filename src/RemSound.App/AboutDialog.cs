@@ -20,14 +20,57 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
-        RemSound v2.1
+        RemSound v2.2
 
-        Automatic router setup for internet streaming, a small
-        notice before background updates install, a "lock this
-        profile" option for users who don't want close prompts,
-        and a fix for the "no sound after the laptop wakes up"
-        problem. No wire-format or audio-pipeline changes —
-        v1.5 through v2.1 peers interoperate.
+        A maintenance release that makes RemSound use less of
+        your computer's CPU and memory, especially when sending
+        with the Opus codec. No new features to learn, no
+        settings have changed, and audio sounds exactly the same.
+        Wire format and audio pipeline are unchanged — every
+        version from v1.5 to v2.2 still talks to every other
+        version cleanly.
+
+        What's lighter on your computer:
+          * Opus sending uses much less memory. RemSound's
+            Opus encoder used to put quite a lot of work on
+            Windows' memory manager — about 4 megabytes per
+            second of "throwaway" memory churn while sending
+            Opus audio. v2.2 ships a native build of the same
+            encoder that does its work in a tighter, faster way.
+            The audio you hear is identical (it really is the
+            same encoder, just packaged better); the memory
+            churn drops by about 97 per cent. On laptops you
+            should see less background CPU when streaming Opus,
+            and longer sessions are less likely to see brief
+            pauses while Windows tidies up memory.
+          * Smaller all-round efficiency tidy-up. A handful of
+            small fixes — RemSound checks the audio-device list
+            less often, reuses some small bits of memory it
+            used to make fresh each time, and skips some
+            paperwork on the receive side when there's nothing
+            to do. Each one is small on its own; together they
+            cut RemSound's everyday memory churn modestly.
+          * Removed some old leftover code that was retired
+            months ago but still lived on as zero-valued
+            columns in the diagnostic log. Same behaviour,
+            cleaner files.
+
+        For people who use the diagnostic logs:
+          * Several new columns. "cpu" shows how much of one
+            CPU core RemSound just used. "memMB" and "wsMB" are
+            its memory footprint. "allocKBps" is the per-second
+            memory-churn rate. "captureMs / sendMs / recvMs /
+            renderMs" show how busy each of the four audio
+            threads is. All of this only writes to the log when
+            Enable logs is ticked; with logs off it costs
+            nothing.
+          * "fanCacheMs", "driftDrop", "driftRep" and "driftAcc"
+            columns have been removed — they were always zero
+            after the playback engine changed in May.
+
+        No bug fixes in v2.2 specifically — everything carried
+        over from v2.1's UPnP, lock-profile, wake-from-sleep
+        and hibernate fixes is still in place.
 
         What's new:
           * Automatic router port opening (UPnP). RemSound can

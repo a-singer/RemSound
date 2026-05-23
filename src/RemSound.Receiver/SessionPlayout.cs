@@ -163,14 +163,11 @@ internal sealed class SessionPlayout : IDisposable
     // we don't realloc on the hot path.
     private float[] resamplerInputScratch = new float[2048];
 
-    // Retained for backward compatibility with the diagnostic surface — the diag log line
-    // still emits driftDrop / driftRep counters and the DriftAccumulator / FilteredError
-    // accessors. In the Phase-4 design these are all just informational metrics that stay
-    // at zero / track the same buffer-vs-target offset, but old log parsers don't break.
-    // Explicit zero init so the compiler doesn't flag them as never-assigned when the
-    // Phase-4 design no longer increments them anywhere.
-    private long driftDropFramesTotal = 0;
-    private long driftRepeatFramesTotal = 0;
+    // driftDropFramesTotal + driftRepeatFramesTotal fields removed 2026-05-23. They were
+    // Phase-2/3 splice-corrector counters that the Phase-4 fixed-ratio resampler design
+    // never incremented; they sat at zero and fed dead diag-log columns that have also been
+    // removed. The current corrector's "where is the buffer" signal is filteredErrorFrames
+    // (below) — that one IS still active and IS still surfaced via FilteredDriftErrorFrames.
     // Live state for the diag log — the current buffer-level offset from target, low-pass
     // filtered. Lets the diag line continue to surface "where the buffer is sitting".
     // Updated each Read; no longer drives any correction logic itself.
@@ -204,12 +201,9 @@ internal sealed class SessionPlayout : IDisposable
     private const double DriftFilterTimeConstantSec = 2.0;
     // Number of stereo frames each side of a splice point that get blended when a drop or
     // repeat fires. Cosine crossfade over this window smooths the discontinuity into an audio
-    // Public accessors for the diag log. Drop / repeat counters are retained for the diag
-    // surface (the Phase-4 resampler doesn't increment them, so they stay flat at the
-    // last value from any pre-Phase-4 fallback path — informationally that's "the splice
-    // path didn't fire", which is what we want to see now).
-    public long DriftDropFramesTotal => Interlocked.Read(ref driftDropFramesTotal);
-    public long DriftRepeatFramesTotal => Interlocked.Read(ref driftRepeatFramesTotal);
+    // DriftDropFramesTotal / DriftRepeatFramesTotal accessors removed 2026-05-23 alongside
+    // their backing fields — they only ever surfaced two always-zero columns in the diag log,
+    // and the columns have been removed too.
     /// <summary>Diagnostic accessor — current smoothed sender-rate-ratio applied to the
     /// resampler. 1.0 = no resampling (matched clocks). Values like 1.0002 = sender running
     /// 200 ppm faster than receiver; 0.9998 = 200 ppm slower.</summary>
@@ -245,11 +239,9 @@ internal sealed class SessionPlayout : IDisposable
     /// running above target on average (sender clock faster); negative = buffer below
     /// target. Magnitude shows how off-target the buffer's average position is right now.</summary>
     public double FilteredDriftErrorFrames => filteredErrorFrames;
-    /// <summary>Legacy diag accessor — the Phase-2 / Phase-3 integrator accumulator is no
-    /// longer used in the Phase-4 resampler design. Always returns 0. Kept on the surface
-    /// so MainForm's existing diag log line still compiles; can be removed once the diag
-    /// columns are pruned.</summary>
-    public double DriftAccumulator => 0.0;
+    // DriftAccumulator accessor removed 2026-05-23. The Phase-4 fixed-ratio resampler design
+    // never sets an integrator accumulator value; the property always returned 0. Removed
+    // along with the driftAcc= diag column.
 
     public IPEndPoint Endpoint { get; }
     /// <summary>The stream ID this session was opened for. Sessions are keyed by

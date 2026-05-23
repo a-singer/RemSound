@@ -68,6 +68,11 @@ internal sealed class AsioCaptureBackend : ICaptureBackend
     // is via Interlocked which provides its own memory barriers (no need for volatile).
     private long lastCallbackTimestamp;
     private int maxCallbackGapMs;
+    // Cumulative ticks the ASIO capture callback spent doing per-callback work. The diag
+    // log samples this once a second; per-thread CPU instrumentation from item 2 of
+    // RemSoundefficiency.md. Gated by DiagnosticsGate.Enabled so logs-off costs nothing.
+    // 2026-05-22.
+    private long cumulativeCaptureTicks;
 
     public AsioCaptureBackend(string driverName, Action<ReadOnlyMemory<float>> onMixedSamples, Action<string>? onDiagnostic = null)
     {
@@ -90,6 +95,7 @@ internal sealed class AsioCaptureBackend : ICaptureBackend
     public float TakeMaxRawCaptureStep() => rawCaptureStepProbe.TakeMax();
     public float TakeMaxRawCaptureStepCrossBuffer() => rawCaptureStepProbe.TakeMaxCrossBuffer();
     public float TakeMaxRawCaptureStepWithinBuffer() => rawCaptureStepProbe.TakeMaxWithinBuffer();
+    public long TakeCumulativeCaptureTicks() => Interlocked.Exchange(ref cumulativeCaptureTicks, 0);
 
     public bool IsRunning => asio is not null;
     public long TotalCaptureCallbacks => Interlocked.Read(ref callbackCount);
@@ -238,9 +244,12 @@ internal sealed class AsioCaptureBackend : ICaptureBackend
         // gap (we have nothing to compare to). Subsequent callbacks compute the elapsed ms
         // since the previous one and CAS-update the max. Skipped entirely when diagnostics
         // are off — saves the Stopwatch reads, exchange and CAS loop on every ASIO callback.
-        if (RemSound.Core.DiagnosticsGate.Enabled)
+        var diag = RemSound.Core.DiagnosticsGate.Enabled;
+        long workStart = 0;
+        if (diag)
         {
             var now = Stopwatch.GetTimestamp();
+            workStart = now;
             var prev = Interlocked.Exchange(ref lastCallbackTimestamp, now);
             if (prev != 0)
             {
@@ -312,6 +321,14 @@ internal sealed class AsioCaptureBackend : ICaptureBackend
         }
 
         onMixedSamples(new ReadOnlyMemory<float>(mixScratch, 0, stereoFloats));
+        // Capture-thread CPU instrumentation (item 2 of RemSoundefficiency.md). Records
+        // the time the WHOLE callback spent — including the synchronous downstream
+        // OnMixedSamples invocation, because that runs on this same thread and counts
+        // toward "the capture thread's per-second CPU load". Send-side encode work is
+        // ALSO tallied separately via AudioSender.cumulativeEmitTicks for a more detailed
+        // breakdown; capture vs send columns let us see "is the bottleneck the buffer
+        // copy + mix loop, or is it encode + sendto".
+        if (diag) Interlocked.Add(ref cumulativeCaptureTicks, Stopwatch.GetTimestamp() - workStart);
     }
 
     /// <summary>Returns the names of all installed ASIO drivers, or an empty list if NAudio

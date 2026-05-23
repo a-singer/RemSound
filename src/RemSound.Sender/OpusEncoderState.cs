@@ -7,6 +7,14 @@ namespace RemSound.Sender;
 /// Wraps a Concentus Opus encoder configured for real-time low-latency 48 kHz stereo audio.
 /// Frame size is selectable at construction (10 ms or 20 ms). Receiver auto-handles whatever
 /// frame size the sender announces in the format packet — no coordination required.
+///
+/// 2026-05-23 — switched from the <c>Encode(ReadOnlySpan&lt;short&gt;...)</c> overload to the
+/// float overload after the first allocation-rate measurement (Part C, item 51 of
+/// RemSoundefficiency.md). The float overload skips one internal float→short→float round trip
+/// inside Concentus (CELT runs in float natively in RESTRICTED_LOWDELAY mode), and lets us
+/// drop our own per-sample Math.Clamp + cast loop — Concentus' float overload does its own
+/// out-of-range clipping per its XML docs. Same encoder configuration, same bitrate, same
+/// frame size, same audio output bit-for-bit.
 /// </summary>
 internal sealed class OpusEncoderState : IDisposable
 {
@@ -14,7 +22,6 @@ internal sealed class OpusEncoderState : IDisposable
     private const int PacketBufferBytes = 4000;
 
     private readonly IOpusEncoder encoder;
-    private readonly short[] pcm16Scratch;
     private readonly byte[] packetScratch = new byte[PacketBufferBytes];
 
     public int FrameMilliseconds { get; }
@@ -27,7 +34,6 @@ internal sealed class OpusEncoderState : IDisposable
         // share). We expose 10 and 20 as the user-selectable choices.
         FrameMilliseconds = Math.Clamp(frameMilliseconds, 5, 60);
         FrameSizePerChannel = 48000 * FrameMilliseconds / 1000;
-        pcm16Scratch = new short[FrameSizePerChannel * Channels];
 
         encoder = OpusCodecFactory.CreateEncoder(48000, Channels, OpusApplication.OPUS_APPLICATION_RESTRICTED_LOWDELAY, TextWriter.Null);
         encoder.Bitrate = bitrate;
@@ -55,13 +61,11 @@ internal sealed class OpusEncoderState : IDisposable
             throw new ArgumentException($"Expected {FrameSizePerChannel * Channels} samples, got {stereoFloats.Length}", nameof(stereoFloats));
         }
 
-        for (var i = 0; i < stereoFloats.Length; i++)
-        {
-            var clamped = Math.Clamp(stereoFloats[i], -1f, 1f);
-            pcm16Scratch[i] = (short)(clamped * 32767f);
-        }
-
-        return encoder.Encode(pcm16Scratch, FrameSizePerChannel, packetScratch.AsSpan(), packetScratch.Length);
+        // Direct float→Opus path. Concentus' float-input Encode overload normalises and clips
+        // out-of-range samples internally (per its XML doc) — so the Math.Clamp loop we used
+        // to run on every sample before calling the int16 overload is no longer needed. That
+        // also lets us delete the pcm16Scratch field entirely.
+        return encoder.Encode(stereoFloats, FrameSizePerChannel, packetScratch.AsSpan(), packetScratch.Length);
     }
 
     public ReadOnlySpan<byte> LastEncoded(int length) => packetScratch.AsSpan(0, length);

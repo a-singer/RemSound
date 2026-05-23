@@ -359,7 +359,15 @@ public sealed class MainForm : Form
     // threads (which run on separate MMCSS-boosted threads). The listbox itself is only
     // rebuilt when the (id, name) signature actually changes, so NVDA isn't pestered on every
     // tick — only when a device truly came or went.
-    private readonly System.Windows.Forms.Timer deviceRefreshTimer = new() { Interval = 1000 };
+    // 3 s interval (was 1 s pre-2026-05-23). Item 4 of RemSoundefficiency.md — when an ASIO
+    // driver is configured, each tick calls AsioDeviceProbe.ProbeDriverInfo which briefly
+    // opens the driver to enumerate channel names. That's measurable CPU (~1.6 % of one core
+    // in the test we ran) for a check that only matters when a USB audio device is hot-
+    // plugged. 3 s is the value the existing RefreshAudioDeviceLists docstring already
+    // claimed; the actual timer just hadn't been bumped to match. Hot-plug latency goes from
+    // up-to-1 s to up-to-3 s, which is fine for the device-list-refresh use case (nobody
+    // pulls a device and stares at the menu in the next second waiting for it to drop off).
+    private readonly System.Windows.Forms.Timer deviceRefreshTimer = new() { Interval = 3000 };
     // Debounce timer for ASIO driver listbox selection. See SelectedIndexChanged handler
     // wiring for the full rationale. 300 ms is long enough to coalesce arrow-key bursts
     // (NVDA users typically press a few keys in quick succession to scan through items),
@@ -386,8 +394,9 @@ public sealed class MainForm : Form
     // subtracting from the current value gives "how many fired this second". Only read when
     // DiagnosticsGate.Enabled (i.e. logs on); otherwise SnapshotLogIfDue early-outs before
     // touching these.
-    private long prevDiagDriftDrops;
-    private long prevDiagDriftReps;
+    // prevDiagDriftDrops / prevDiagDriftReps removed 2026-05-23. Drift drop/repeat counters
+    // were dead since the Phase-4 fixed-ratio resampler design (always zero); diag columns
+    // are gone too.
     private long prevDiagConceal;
     private long prevDiagShortRead;
     private long prevDiagTrimFires;
@@ -412,6 +421,10 @@ public sealed class MainForm : Form
     private int prevDiagGc0Count;
     private int prevDiagGc1Count;
     private int prevDiagGc2Count;
+    // Per-process CPU% / memory / allocation / GC meter — drained once per second by the
+    // diag emitter. New 2026-05-22, item 1 + 3 of RemSoundefficiency.md. Carries no cost
+    // when logs are off because the diag emitter is itself gated.
+    private readonly ProcessSelfMeter processSelfMeter = new();
 
     // Profile system (2026-05-02). The active profile (if any) was selected at app start and
     // populated `settings` with its values BEFORE the constructor body runs (see ApplyProfile
@@ -4229,28 +4242,19 @@ public sealed class MainForm : Form
                 //     >0 = real anomalous samples in RemSound's output. ~0 = clean output.
                 //   sampleStepMax = raw peak step magnitude (false-positive prone on bright
                 //     music; informational only).
-                var driftDrops = receiver.DriftDropFrames;
-                var driftReps = receiver.DriftRepeatFrames;
-                // Per-second deltas for the same counters — easier to read at a glance than
-                // ever-growing cumulative numbers. driftDropΔ + driftRepΔ tell us how fast
-                // the corrector is firing right now. concealΔ tells us how many real underruns
-                // fired this second (audible). shortReadΔ tracks the now-silent partial-read
-                // events for clock-phase diagnostics. Trim fires + delta gives us "is the
-                // click-trim safety net firing".
+                // driftDrops / driftReps / driftAccumulator readings removed 2026-05-23 along
+                // with their dead accessors. The Phase-4 fixed-ratio resampler design never
+                // increments those counters; the columns were always zero. filteredErrorFrames
+                // below is the still-useful "where the buffer is sitting on average" signal —
+                // computed every Read by the active LP filter.
                 var concealNow = receiver.ConcealmentFires;
                 var shortReadNow = receiver.ShortReadFires;
-                var driftDropDelta = driftDrops - prevDiagDriftDrops; prevDiagDriftDrops = driftDrops;
-                var driftRepDelta = driftReps - prevDiagDriftReps; prevDiagDriftReps = driftReps;
                 var concealDelta = concealNow - prevDiagConceal; prevDiagConceal = concealNow;
                 var shortReadDelta = shortReadNow - prevDiagShortRead; prevDiagShortRead = shortReadNow;
                 var trimDelta = trimFires - prevDiagTrimFires; prevDiagTrimFires = trimFires;
-                // Live state (not deltas) — current LP-filtered drift error and accumulator
-                // value. Both let us see "where the corrector thinks the buffer is" between
-                // explicit drop/repeat events. filtErr negative = buffer running below target
-                // on average; positive = above. driftAcc near 0 = corrector idle; near ±1 =
-                // about to fire.
+                // Live state — current LP-filtered drift error. Negative = buffer running below
+                // target on average; positive = above.
                 var filteredErrorFrames = receiver.FilteredDriftErrorFrames;
-                var driftAccumulator = receiver.DriftAccumulator;
                 // 2026-05-11 added timing-split metrics:
                 //   emitMs    = sender's worst time-in-OnMixedSamples (encode + scratch + send)
                 //   sndCallMs = sender's worst time-in-udp.Client.SendTo (kernel send only)
@@ -4271,11 +4275,9 @@ public sealed class MainForm : Form
                 // thread, kernel batching, GC pause — rather than the sender stalling or
                 // RemSound's own decode/dispatch chain. 2026-05-21.
                 var rxNetGapMs = receiver.TakeMaxInterPacketGapMs();
-                // fanCacheMs = worst BothIndependent FanOut cache occupancy this tick. Single
-                // active render lane should sit at ~0; non-zero says the FanOut is sitting on
-                // samples that aren't reaching the audio output, i.e. extra perceived latency
-                // not visible in bufAvg. Always 0 in WasapiOnly (no FanOut).
-                var fanCacheMs = receiver.TakeMaxFanOutCacheMs();
+                // fanCacheMs reading + column removed 2026-05-23. The FanOutSource was retired
+                // mid-May (each lane reads its own filtered PlayoutEngine source directly); the
+                // measurement always returned 0 and surfaced an unhelpful diag column.
                 // GC pressure delta. .NET's GC.CollectionCount is cumulative; subtracting the
                 // previous tick gives the per-second collection count per generation. Gen-0
                 // collections are cheap (microseconds); Gen-1 takes longer; Gen-2 / LOH can
@@ -4288,6 +4290,21 @@ public sealed class MainForm : Form
                 var gc0Delta = gc0Now - prevDiagGc0Count; prevDiagGc0Count = gc0Now;
                 var gc1Delta = gc1Now - prevDiagGc1Count; prevDiagGc1Count = gc1Now;
                 var gc2Delta = gc2Now - prevDiagGc2Count; prevDiagGc2Count = gc2Now;
+                // Process-wide self-meter (item 1 + 3 of RemSoundefficiency.md). Single
+                // snapshot covers CPU%, managed heap MB, working set MB, allocation rate.
+                var selfMeter = processSelfMeter.Take();
+                // Per-thread work-time (item 2 of RemSoundefficiency.md). Each is the
+                // milliseconds of CPU that thread (or thread group) consumed in the last
+                // second; in a clean steady-state session they should all be small. The
+                // four categories follow the request: capture, send, receive, render.
+                // captureMs covers ASIO + WASAPI capture bodies and the MixingEngine tick;
+                // sendMs is encode + sendto on the audio thread; recvMs is the network
+                // thread's packet handler; renderMs is the audio render thread's mix +
+                // limiter + pack work.
+                var captureMs = sender.TakeCaptureWorkMs();
+                var sendMs = sender.TakeSendWorkMs();
+                var recvMs = receiver.TakeReceiveWorkMs();
+                var renderMs = receiver.TakeRenderWorkMs();
                 // Per-stage discontinuity probes. Compare these to localise where in the
                 // pipeline a click is introduced:
                 //   stepPreEnc   = sender's float buffer just before encoding. Non-zero =
@@ -4353,12 +4370,13 @@ public sealed class MainForm : Form
 
                 logFile.Event($"diag bufAvg={diag.BufferAvgMs}ms bufMin={diag.BufferMinMs}ms bufMax={diag.BufferMaxMs}ms " +
                     $"maxGapMs={diag.MaxArrivalGapMs} sendCbGapMs={sendCbGapMs} renderCbGapMs={diag.MaxRenderCallbackGapMs} maxReadMs={diag.MaxRenderReadMs} reads={diag.RenderReadCount} " +
-                    $"emitMs={emitMs} sndCallMs={sendCallMs} rxDispMs={rxDispatchMs} rxNetGapMs={rxNetGapMs} fanCacheMs={fanCacheMs} " +
+                    $"emitMs={emitMs} sndCallMs={sendCallMs} rxDispMs={rxDispatchMs} rxNetGapMs={rxNetGapMs} " +
                     $"gc0Δ={gc0Delta} gc1Δ={gc1Delta} gc2Δ={gc2Delta} " +
+                    $"cpu={selfMeter.CpuPercentOneCore:0.0}% memMB={selfMeter.ManagedHeapMb:0.0} wsMB={selfMeter.WorkingSetMb:0.0} allocKBps={selfMeter.AllocatedKbPerSecond:0.0} " +
+                    $"captureMs={captureMs:0.0} sendMs={sendMs:0.0} recvMs={recvMs:0.0} renderMs={renderMs:0.0} " +
                     $"trimB={trimBytes} trimN={trimFires} trimΔ={trimDelta} drainB={drainBytes} ovfB={ovfBytes} pktRej={pktRej} " +
-                    $"driftDrop={driftDrops} driftDropΔ={driftDropDelta} driftRep={driftReps} driftRepΔ={driftRepDelta} " +
                     $"concealΔ={concealDelta} shortReadΔ={shortReadDelta} " +
-                    $"filtErr={filteredErrorFrames:0.0}f driftAcc={driftAccumulator:0.000} " +
+                    $"filtErr={filteredErrorFrames:0.0}f " +
                     $"stepRawCap={stepRawCap:0.000} stepPreEnc={stepPreEnc:0.000} stepPreEncWas={stepPreEncWas:0.000} stepPreEncAsi={stepPreEncAsi:0.000} stepPostDec={stepPostDec:0.000} stepPostRing={stepPostRing:0.000} stepPostRsm={stepPostRsm:0.000} " +
                     $"stepRawCapXB={stepRawCapXB:0.000} stepRawCapWB={stepRawCapWB:0.000} " +
                     $"stepPreEncWasXB={stepPreEncWasXB:0.000} stepPreEncWasWB={stepPreEncWasWB:0.000} " +
@@ -4412,6 +4430,14 @@ public sealed class MainForm : Form
                 var gc0Delta = gc0Now - prevDiagGc0Count; prevDiagGc0Count = gc0Now;
                 var gc1Delta = gc1Now - prevDiagGc1Count; prevDiagGc1Count = gc1Now;
                 var gc2Delta = gc2Now - prevDiagGc2Count; prevDiagGc2Count = gc2Now;
+                // Process self-meter + per-thread work-time on the send-only side too.
+                // captureMs covers the WASAPI / ASIO callback bodies; sendMs is the encode
+                // + sendto work; recvMs / renderMs stay at 0 (no playback on this machine
+                // by definition for the send-only branch). See item 1, 2, 3 of
+                // RemSoundefficiency.md.
+                var selfMeter = processSelfMeter.Take();
+                var captureMs = sender.TakeCaptureWorkMs();
+                var sendMs = sender.TakeSendWorkMs();
                 logFile.Event(
                     $"sender-diag sendCbGapMs={sendCbGapMs} emitMs={emitMs} sndCallMs={sendCallMs} " +
                     $"stepPreEnc={stepPreEnc:0.000} stepPreEncWas={stepPreEncWas:0.000} stepPreEncAsi={stepPreEncAsi:0.000} stepRawCap={stepRawCap:0.000} " +
@@ -4419,6 +4445,8 @@ public sealed class MainForm : Form
                     $"stepPreEncWasXB={stepPreEncWasXB:0.000} stepPreEncWasWB={stepPreEncWasWB:0.000} " +
                     $"stepPreEncAsiXB={stepPreEncAsiXB:0.000} stepPreEncAsiWB={stepPreEncAsiWB:0.000} " +
                     $"gc0Δ={gc0Delta} gc1Δ={gc1Delta} gc2Δ={gc2Delta} " +
+                    $"cpu={selfMeter.CpuPercentOneCore:0.0}% memMB={selfMeter.ManagedHeapMb:0.0} wsMB={selfMeter.WorkingSetMb:0.0} allocKBps={selfMeter.AllocatedKbPerSecond:0.0} " +
+                    $"captureMs={captureMs:0.0} sendMs={sendMs:0.0} " +
                     $"clipΔ={clippedDelta} packets={sender.PacketsSent} captureCallbacks={sender.CaptureCallbacks}");
             }
 

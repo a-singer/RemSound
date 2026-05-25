@@ -1051,12 +1051,22 @@ public sealed class MainForm : Form
 
             // Kick off UPnP discovery if the user has the box ticked. Off by default; the
             // mapper itself coalesces redundant Start() calls so a re-enter via Shown after
-            // a sleep cycle is harmless.
+            // a sleep cycle is harmless. Run on a thread-pool thread because
+            // NatUtility.StartDiscovery() (Mono.Nat 3.0.4) sets up SSDP sockets on every
+            // network interface and CAN BLOCK FOR TENS OF SECONDS, or indefinitely, on
+            // unusual network setups (multiple adapters, VPNs, hostile firewalls, routers
+            // that swallow SSDP). Calling it on the UI thread freezes the WinForms message
+            // pump — Andre's v3.0 hang was this exact pattern. The status label still
+            // updates correctly because StatusChanged fires on the mapper's own thread and
+            // the PreferencesDialog handler BeginInvokes back to the UI thread. 2026-05-23.
             var startupCfg = AppConfig.Load();
             if (startupCfg.UpnpEnabled)
             {
-                try { routerPortMapper.Start(); }
-                catch (Exception ex) { logFile.Event($"upnp: start failed: {ex.GetType().Name}: {ex.Message}"); }
+                Task.Run(() =>
+                {
+                    try { routerPortMapper.Start(); }
+                    catch (Exception ex) { logFile.Event($"upnp: start failed: {ex.GetType().Name}: {ex.Message}"); }
+                });
             }
 
             // Startup update check — separate from the periodic timer because users who
@@ -1751,17 +1761,28 @@ public sealed class MainForm : Form
             applyUpnpEnabled: enabled =>
             {
                 // The persist already happened in the dialog; this callback only flips the
-                // live RouterPortMapper. Start kicks off discovery; Stop politely removes any
-                // existing mapping.
+                // live RouterPortMapper. Start/Stop both run on a thread-pool thread because
+                // NatUtility's discovery + socket teardown CAN BLOCK FOR TENS OF SECONDS, or
+                // indefinitely, on unusual network setups (multiple adapters, VPNs, hostile
+                // firewalls). Doing that on the UI thread here would freeze the
+                // Preferences dialog AND every other UI element until the call returned —
+                // Andre's v3.0 hang was triggered from this exact handler. See the longer
+                // explanation on the startup-time UPnP block in OnShown. 2026-05-23.
                 if (enabled)
                 {
-                    try { routerPortMapper.Start(); }
-                    catch (Exception ex) { logFile.Event($"upnp: start from prefs failed: {ex.GetType().Name}: {ex.Message}"); }
+                    Task.Run(() =>
+                    {
+                        try { routerPortMapper.Start(); }
+                        catch (Exception ex) { logFile.Event($"upnp: start from prefs failed: {ex.GetType().Name}: {ex.Message}"); }
+                    });
                 }
                 else
                 {
-                    try { routerPortMapper.Stop(); }
-                    catch (Exception ex) { logFile.Event($"upnp: stop from prefs failed: {ex.GetType().Name}: {ex.Message}"); }
+                    Task.Run(() =>
+                    {
+                        try { routerPortMapper.Stop(); }
+                        catch (Exception ex) { logFile.Event($"upnp: stop from prefs failed: {ex.GetType().Name}: {ex.Message}"); }
+                    });
                 }
             },
             getUpnpSnapshot: () => (routerPortMapper.Status, routerPortMapper.ExternalEndpoint, routerPortMapper.LastError),
@@ -3631,11 +3652,18 @@ public sealed class MainForm : Form
 
             // Re-poke the router. UPnP/NAT-PMP mappings often survive a sleep, but cheap
             // routers and ISP-supplied combo boxes sometimes drop their NAT table — easier
-            // to just rediscover than to guess. Refresh() is a no-op if UPnP is off.
+            // to just rediscover than to guess. Refresh() is a no-op if UPnP is off. Run on
+            // a thread-pool thread for the same reason as the other UPnP entry points: the
+            // NatUtility teardown + restart inside Refresh() can block for tens of seconds
+            // on unusual networks, and we're on the UI thread during the resume handler.
+            // 2026-05-23.
             if (AppConfig.Load().UpnpEnabled)
             {
-                try { routerPortMapper.Refresh(); }
-                catch (Exception ex) { logFile.Event($"upnp: refresh-on-resume failed: {ex.GetType().Name}: {ex.Message}"); }
+                Task.Run(() =>
+                {
+                    try { routerPortMapper.Refresh(); }
+                    catch (Exception ex) { logFile.Event($"upnp: refresh-on-resume failed: {ex.GetType().Name}: {ex.Message}"); }
+                });
             }
         }
         catch (Exception ex)

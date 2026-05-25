@@ -20,6 +20,32 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v3.0.1
+
+        Hot-fix for a bug in the "Automatically open my router
+        for incoming connections (UPnP)" tickbox.
+
+        On some network setups (machines with several network
+        adapters, a VPN connected, or a router that doesn't
+        answer the way RemSound's UPnP library expects) ticking
+        that box could freeze RemSound's window — audio kept
+        flowing, but you couldn't open the window again, even
+        from the system tray. The only way out was to end the
+        process from Task Manager.
+
+        The fault was that RemSound was doing the router
+        discovery on the same thread that draws the window, so
+        a slow router (or no router answering at all) would
+        block the window until it finished — which sometimes
+        was never. v3.0.1 moves that work off to a background
+        thread so the window stays responsive while RemSound
+        looks for the router.
+
+        Nothing else has changed from v3.0 — same wire format,
+        same codec list, same everything. If you were already
+        running v3.0 happily, this update fixes a problem you
+        may not have hit; you can install it at your leisure.
+
         RemSound v3.0
 
         A big release with two things you'll actually notice:

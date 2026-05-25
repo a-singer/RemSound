@@ -22,7 +22,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidatePattern('^v[0-9]+\.[0-9]+$')]
+    # Accepts two-part (v3.0) or three-part (v3.0.1 hot-fix) tags.
+    [ValidatePattern('^v[0-9]+\.[0-9]+(\.[0-9]+)?$')]
     [string]$Tag
 )
 

@@ -179,7 +179,22 @@ internal sealed class StreamSession : IDisposable
         }
     }
 
-    public void Dispose() { /* IOpusDecoder has no Dispose; nothing else to free */ }
+    public void Dispose()
+    {
+        // 2026-05-27 — the comment that used to live here said "IOpusDecoder has no Dispose"
+        // and that was true for the pure-managed Concentus.OpusDecoder we used pre-v2.2.
+        // After Concentus.Native was wired in (v2.2 / shipped in v3.0), the concrete decoder
+        // returned by OpusCodecFactory.CreateDecoder is the native-backed NativeOpusDecoder,
+        // which IS IDisposable and owns native libopus state. Not calling Dispose here meant
+        // the native state only released when the GC eventually finalized the wrapper —
+        // which never happened in practice because we set GCSettings.SustainedLowLatency
+        // (see Program.Main). Andre's 23-hour receive session showed the resulting working-
+        // set climb (83 MB → 3.5 GB). The cast-to-IDisposable handles both the native and
+        // the pure-managed path transparently — if the concrete type doesn't implement
+        // IDisposable, the as-cast yields null and the null-conditional is a no-op.
+        (opusDecoder as IDisposable)?.Dispose();
+        opusDecoder = null;
+    }
 
     // === PCM ===
 

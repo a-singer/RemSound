@@ -20,6 +20,49 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v3.0.2
+
+        Hot-fix for a slow memory leak in the receive side. If
+        you leave RemSound running for many hours receiving
+        audio, its memory use was creeping up steadily — small
+        at first, but big enough after a day to slow the
+        computer down and make audio feel slightly laggy.
+
+        What was happening: RemSound uses a small library
+        called Concentus to decode incoming Opus audio. In
+        version 2.2 we switched it from a pure software
+        version to a faster native version. The native version
+        keeps some memory in Windows itself rather than in
+        RemSound, and you're supposed to tell it explicitly
+        when you're done with it. Our code wasn't doing that —
+        it was relying on the system to notice and tidy up
+        eventually, but a setting we use to keep audio smooth
+        also stops Windows from doing that tidy-up. Result:
+        memory built up over hours and never came back.
+
+        The fix is twofold. First, RemSound now does that
+        tidy-up properly every time it finishes with a piece
+        of the audio pipeline — at the end of a session, when
+        you change codec, and when a recording stops. Second,
+        as a backstop in case any other piece of the puzzle
+        ever has the same shape of bug, RemSound now does a
+        quick "release any leftover memory" pass once every
+        five minutes in the background. The pass doesn't
+        affect audio — it runs on its own and is over before
+        the next audio packet arrives.
+
+        Reported by a user whose desktop was using 3.5 GB of
+        memory after running RemSound continuously for nearly
+        a full day. After the fix, expect memory to settle at
+        around 100-200 megabytes and stay there for as long as
+        you leave RemSound running.
+
+        Nothing else has changed from v3.0.1 — same wire
+        format, same codec list, same everything. If you've
+        not noticed any slowdown after long sessions, the fix
+        is still worth having because the leak was happening
+        under the surface even if you didn't see it.
+
         RemSound v3.0.1
 
         Hot-fix for a bug in the "Automatically open my router

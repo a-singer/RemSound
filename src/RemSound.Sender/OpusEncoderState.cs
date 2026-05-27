@@ -75,5 +75,18 @@ internal sealed class OpusEncoderState : IDisposable
 
     public ReadOnlySpan<byte> LastEncoded(int length) => packetScratch.AsSpan(0, length);
 
-    public void Dispose() { /* IOpusEncoder is finalized by GC, no Dispose */ }
+    public void Dispose()
+    {
+        // 2026-05-27 — same fix as StreamSession.Dispose on the receive side. The comment
+        // that used to live here said "IOpusEncoder is finalized by GC, no Dispose" and
+        // that was correct for the pure-managed encoder pre-v2.2. After Concentus.Native
+        // was wired in, the concrete encoder is NativeOpusEncoder which IS IDisposable and
+        // owns native libopus state. Not calling Dispose meant the native state only
+        // released when the GC finalizer ran — which never happens in practice under
+        // GCSettings.SustainedLowLatency. Less catastrophic on the send side than on the
+        // receive side because there's one encoder per SenderLane and it's typically
+        // long-lived, but a codec change or stream-id rotation rebuilds it and the old
+        // one would leak. Fix the leak at its source.
+        (encoder as IDisposable)?.Dispose();
+    }
 }

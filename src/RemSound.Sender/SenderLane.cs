@@ -125,6 +125,11 @@ internal sealed class SenderLane
     {
         if (newCodec == AudioTransportCodec.Opus)
         {
+            // Dispose the outgoing encoder before replacing it — its underlying
+            // NativeOpusEncoder owns native libopus state that doesn't get released until
+            // explicit Dispose under our SustainedLowLatency GC mode. Pre-2026-05-27 this
+            // overwrite leaked the old encoder's native state on every codec change.
+            opusEncoder.Dispose();
             opusEncoder = new OpusEncoderState(opusFrameSamplesPerChannel, opusBitrate);
             opusFrameStereoSamples = opusEncoder.FrameSizePerChannel * MixChannels;
         }

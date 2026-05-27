@@ -890,6 +890,11 @@ internal sealed class AudioRecorder : IDisposable
             }
             catch { /* best-effort final flush */ }
             try { fileStream.Dispose(); } catch { /* best-effort close */ }
+            // 2026-05-27 — release native libopus state owned by the recording encoder. The
+            // concrete encoder is NativeOpusEncoder under Concentus.Native; not disposing it
+            // leaked native memory on every recording stop. See StreamSession.Dispose for the
+            // full backstory.
+            try { (encoder as IDisposable)?.Dispose(); } catch { /* best-effort */ }
         }
     }
 

@@ -389,6 +389,11 @@ public sealed class MainForm : Form
     private bool firstSenderPacketLogged;
     private bool firstReceiverPacketLogged;
 
+    // Counter for SnapshotLogIfDue's periodic native-memory reaper. Increments once per
+    // snapshot tick (~1 Hz) and triggers a forced gen2 + finalizer flush every 300 ticks
+    // (~5 minutes). See the inline comment in SnapshotLogIfDue for the full rationale.
+    private int nativeReaperTickCount;
+
     // Previous-tick values for the per-second deltas surfaced in the diag log line. Each is
     // the receiver-side cumulative counter snapshot at the previous SnapshotLogIfDue tick;
     // subtracting from the current value gives "how many fired this second". Only read when
@@ -4164,6 +4169,31 @@ public sealed class MainForm : Form
         // serialised on the network-thread lock inside the receiver, so doing it from the UI
         // tick is safe.
         receiver.PruneIdleSessions();
+        // Periodic native-memory reaper. SustainedLowLatency GC mode (set in Program.Main)
+        // explicitly avoids gen2 collections to keep audio scheduling smooth — but that same
+        // suppression means finalizers for IDisposable wrappers that didn't get explicit
+        // Dispose calls also never run. Most paths have been fixed (StreamSession,
+        // OpusEncoderState, AudioRecorder all call decoder/encoder Dispose now), but this
+        // serves as a belt-and-braces backstop for any future code path we forget to wire,
+        // and for cleaning up any per-call native scratch allocations that Concentus.Native
+        // (or any other library) might accumulate. Forced gen2 every 5 minutes (300 ticks at
+        // 1 Hz) on a background thread so the gen2 work doesn't hitch the UI thread; audio
+        // threads are separate and unaffected. Andre's v3.0.1 receive session showed the
+        // unmanaged working set climbing 83 MB → 3.5 GB over 23 hours; this caps it.
+        nativeReaperTickCount++;
+        if (nativeReaperTickCount >= 300)
+        {
+            nativeReaperTickCount = 0;
+            Task.Run(() =>
+            {
+                try
+                {
+                    GC.Collect(2, GCCollectionMode.Optimized, blocking: true, compacting: false);
+                    GC.WaitForPendingFinalizers();
+                }
+                catch { /* GC pass is best-effort — never let it crash the snapshot tick */ }
+            });
+        }
         // Detect peer health transitions and play connect/disconnect cues.
         DetectAndAnnouncePeerHealthTransitions();
         // If neither logs nor auto-tune is active we have nothing to do — neither audience

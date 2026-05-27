@@ -35,6 +35,44 @@ $distDir = Join-Path $repo 'dist'
 $zipPath = Join-Path $distDir "RemSound-$Tag.zip"
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("remsound-release-" + [guid]::NewGuid().ToString('N'))
 
+# 0. Keep the GitHub-facing MANUAL.md in sync with the bundled readme.html.
+#    Two copies of the manual exist on purpose: readme.html ships inside RemSound (F1
+#    inside the app opens it), MANUAL.md is the Markdown rendition rendered on the
+#    repo's main page. The Python sync-manual.py script regenerates MANUAL.md from
+#    readme.html every time we package a release, so the GitHub page can never go out
+#    of sync with the bundled help. After the regeneration we check whether MANUAL.md
+#    differs from what git has committed — if so, the release is paused so the user
+#    can commit the updated MANUAL.md alongside the release commit.
+$syncScript = Join-Path $repo 'sync-manual.py'
+if (Test-Path $syncScript) {
+    Write-Host "Syncing MANUAL.md from readme.html..." -ForegroundColor Cyan
+    # Prefer the user-local Python 3.11 install; fall back to whichever 'python' resolves
+    # on PATH if that's not present. py.exe is the official Windows launcher and is the
+    # most reliable single command, so try it first.
+    $pythonCmd = $null
+    foreach ($candidate in @('py', 'python', 'python3')) {
+        if (Get-Command $candidate -ErrorAction SilentlyContinue) { $pythonCmd = $candidate; break }
+    }
+    if (-not $pythonCmd) { throw "Python not found on PATH - cannot sync MANUAL.md. Install Python 3.x and re-run." }
+    & $pythonCmd $syncScript
+    if ($LASTEXITCODE -ne 0) { throw "sync-manual.py failed (exit $LASTEXITCODE)" }
+
+    # Refuse to ship a release when MANUAL.md is uncommitted relative to readme.html.
+    # 'git diff --quiet -- MANUAL.md' exits 0 if no change, 1 if there is one.
+    & git -C $repo diff --quiet -- MANUAL.md
+    if ($LASTEXITCODE -eq 1) {
+        Write-Host ""
+        Write-Host "RELEASE PAUSED - MANUAL.md was regenerated and now differs from the committed copy." -ForegroundColor Yellow
+        Write-Host "Commit the updated MANUAL.md alongside this release before re-running build-release.ps1:" -ForegroundColor Yellow
+        Write-Host "    git add MANUAL.md" -ForegroundColor Yellow
+        Write-Host "    git commit -m 'Refresh MANUAL.md from readme.html'" -ForegroundColor Yellow
+        Write-Host "Then re-run: powershell -ExecutionPolicy Bypass -File build-release.ps1 -Tag $Tag" -ForegroundColor Yellow
+        exit 1
+    }
+} else {
+    Write-Host "Note: sync-manual.py not found - skipping MANUAL.md sync." -ForegroundColor DarkGray
+}
+
 # Anything matching these must NEVER appear in a release. Folders by name; files by
 # extension / exact name. RemSound.deps.json and RemSound.runtimeconfig.json are
 # legitimate app files and are deliberately NOT matched (different names).

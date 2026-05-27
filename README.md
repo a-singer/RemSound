@@ -1,64 +1,60 @@
 # RemSound
 
-Low-latency peer-to-peer audio between two or more Windows PCs over UDP. Pick what each machine captures and what it plays back; audio flows directly between them, no central server.
+**Free Windows app for sending live audio between two computers — across a house, across a city, or anywhere your internet reaches. Low delay, great quality, fully accessible to screen-reader users.**
 
-Built for music collaboration over the internet, live monitoring across rooms in a house, podcast co-hosting, NVDA-Remote audio workflows, and anything else that wants "send the sound from this PC to that PC, fast".
+[**Download the latest version**](https://github.com/Ednunp/RemSound/releases/latest)  ·  [**Read the user manual**](MANUAL.md)
 
-## Highlights
+---
 
-- **WASAPI and ASIO side by side.** Run them as two independent UDP streams at their own native latencies, or use WASAPI alone. ASIO drivers get hardware-clocked timing; WASAPI gets push-mode timing on single-source captures.
-- **Profiles.** Save your full setup (device ticks, peers, codec, latency targets, hotkeys, ASIO driver) into one JSON file. Pick which profile to load at launch.
-- **Continuous auto-tune.** Watches receive jitter and nudges the latency target to stay click-free without forcing you to overshoot. Independent per-lane in WASAPI+ASIO mode.
-- **Opus with inband FEC.** Single-packet losses recover transparently — no click. PCM 24-bit 48 kHz is also available for clean LAN.
-- **Remote control hotkeys.** Configurable global hotkeys can nudge a peer's RemSound volume or their Windows system master volume, opt-in on the receiver.
-- **Built-in self-updater.** Optional GitHub-driven update check on a schedule you set.
-- **Designed for screen readers.** Each control has a paired Alt+letter mnemonic. State changes raise the right UIA notifications. F1 anywhere opens the user manual.
+RemSound is for musicians, sound designers, podcasters, and anyone else who wants to share audio between two Windows machines with as little delay as possible.
 
-## Install
+You sit at one computer, RemSound captures whatever is playing — a track in your music software, a video call, system sound from anything else running — and sends it cleanly to another computer where it plays through speakers or headphones in real time. The person at the other end hears what you're hearing, with a delay measured in milliseconds rather than seconds.
 
-1. Download the latest `RemSound-vX.Y.zip` from [Releases](https://github.com/Ednunp/RemSound/releases).
-2. Extract somewhere it can write — e.g. `C:\RemSound\`, your `Documents`, or a folder in your user profile. Avoid `Program Files` unless you grant write permission to the install folder (the self-updater needs to overwrite files in place).
-3. Run `RemSound.exe`. On first launch Windows Firewall will prompt — allow on private networks.
-4. Open the user manual from the **Help** menu (or press F1) for the full walkthrough.
+It's also fully accessible. The interface was designed with screen readers (NVDA in particular) in mind from day one. Every button has a keyboard shortcut, every status line is read out clearly, and there are no menus or controls that need a mouse to reach.
 
-RemSound requires the .NET 10 Desktop Runtime. If it's not installed, Windows offers to fetch it on first launch. You can also install it from <https://dotnet.microsoft.com/download/dotnet/10.0> (pick the "Windows x64 Desktop Runtime").
+## What you can do with it
 
-## Updates
+* **Listen to one of your computers from another room.** Sit at your laptop and hear what's playing on your desktop. Walk around the house — the sound follows you.
+* **Play music together over the internet.** Two musicians at different houses can play along together with very low delay. Much faster than a video call, fast enough that timing-sensitive playing works.
+* **Send a finished mix to a producer or client** in real time, without uploading a file and waiting.
+* **Record what comes through the connection** to WAV, MP3, OGG-Opus, or FLAC. Save sessions for review later.
 
-RemSound can check this repository's Releases page on a schedule (never, hourly, every 6 hours, every 24 hours) and either prompt you to install or do it silently. Configure via File → Preferences. You can also trigger a manual check from the Help menu or the same Preferences dialog.
+## Three quality settings, simple choice
 
-## Build from source
+Inside RemSound there's just one main decision: which quality and delay you want.
 
-You need the .NET 10 SDK. The solution lives at `RemSound.slnx`.
+* **PCM 48K 24 bit — uncompressed.** The best possible sound. Uses about 2.3 megabits a second. Use it when both computers are on the same local network.
+* **Opus, broadcast quality — loss tolerant.** Compressed, very good sound, only 200 kilobits a second. Robust against patchy connections. Use it across the internet.
+* **Opus, live latency — for jamming and monitoring.** Compressed, ultra-low-latency mode. About 5 milliseconds of delay added by the codec itself, very close to PCM. Best when you and the person on the other end are playing along together over a clean network.
 
-```powershell
-cd D:\proj\RemSound
-dotnet build -c Release
-dotnet publish src\RemSound.App\RemSound.App.csproj -c Release
-```
+## How to install it
 
-The publish output lands at `src\RemSound.App\bin\Release\net10.0-windows\publish\`. Copy its contents into a folder of your choice — or zip it for distribution. Don't enable `PublishSingleFile` or `SelfContained=true`; RemSound ships framework-dependent on purpose so the publish folder stays under 2 MB.
+1. Go to the [latest release](https://github.com/Ednunp/RemSound/releases/latest).
+2. Download the file called `RemSound-v3.0.2.zip` (the version number changes over time — pick whichever is newest).
+3. Extract the zip into a folder of your choice.
+4. Double-click `RemSound.exe` and away you go.
 
-## Project layout
+The first time you launch, RemSound will offer to install Microsoft's .NET 10 Desktop Runtime if you don't already have it. Free, just say yes.
 
-```
-src/RemSound.Core      packet protocol, peer discovery, hotkeys, MMCSS, heartbeat, settings, AppConfig
-src/RemSound.Sender    capture → mix → encode → UDP send
-src/RemSound.Receiver  UDP receive → ring buffer → drift-corrected playout → render
-src/RemSound.Harness   console test program (1 sender → 1 receiver, no UI)
-src/RemSound.App       WinForms UI (sender + receiver + heartbeat + discovery + updater)
-server/                optional Raspberry Pi / systemd-Linux relay bundle (see below)
-```
+After that, RemSound updates itself. Help → Check for updates pulls the next version, or you can tick a box in Preferences and let it install updates quietly in the background.
 
-## Optional: running your own relay server
+## What you'll need
 
-Two RemSound peers normally reach each other directly over your LAN, or via Tailscale across the internet. If neither of those work for your situation — for example one peer is behind a router that won't forward inbound UDP and you'd prefer not to use Tailscale — you can run a small Python relay on a publicly-reachable host (a Raspberry Pi at home with one UDP port forwarded works fine) and have both peers dial that.
+* **Windows 10 or 11.** Some users run it successfully on Windows 7, but it's not officially supported there.
+* **Another person running RemSound** on their own Windows machine.
+* **A way for the two machines to reach each other on the network.** Both on the same Wi-Fi works. Both on the same [Tailscale](https://tailscale.com) network works (free and easy to set up). Or both pointed at the public RemSound relay (also free, no setup).
 
-The `server/` folder in this repo is a self-contained bundle: relay script, systemd unit, install / uninstall / smoke-test scripts, and a step-by-step README. See [`server/README.md`](server/README.md) for the setup walkthrough.
+## Learn how to use it
 
-## Issues and feedback
+The full user manual is right here on GitHub: **[Read the user manual](MANUAL.md)**. It covers getting connected for the first time, every setting and what it does, troubleshooting tips, and a glossary at the end. It's the same manual you can press F1 to read from inside RemSound, so you can read it before installing if you want to see what you're getting.
 
-Open an issue on the [GitHub issues page](https://github.com/Ednunp/RemSound/issues). If reporting an audio problem, please tick **File → Preferences → Enable logs**, reproduce the issue, then attach the latest log file from `logs\` next to `RemSound.exe`.
+## Questions or problems?
+
+[File an issue](https://github.com/Ednunp/RemSound/issues/new). Bugs and questions are welcome and someone will get back to you.
+
+## Who made this
+
+RemSound was built by a sound designer who wanted to listen to one of his computers while sitting at another, and couldn't find anything else that fit the bill. It's free, open-source, and yours to use however you like.
 
 ## Licence
 

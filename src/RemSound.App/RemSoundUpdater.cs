@@ -60,7 +60,7 @@ internal sealed class RemSoundUpdater : IDisposable
     /// limited, repo not found) or if the latest version is not newer than the running
     /// assembly. Caller decides whether to surface "you're up to date" vs silently doing
     /// nothing — both paths get null back.</summary>
-    public async Task<UpdateInfo?> CheckForUpdateAsync(CancellationToken token = default)
+    public async Task<UpdateCheckResult> CheckForUpdateAsync(CancellationToken token = default)
     {
         try
         {
@@ -81,14 +81,14 @@ internal sealed class RemSoundUpdater : IDisposable
             if (!resp.IsSuccessStatusCode)
             {
                 Log?.Invoke($"updater: HTTP {(int)resp.StatusCode} from GitHub");
-                return null;
+                return new UpdateCheckFailed(FailureKind.HttpError, $"GitHub responded with HTTP {(int)resp.StatusCode}.");
             }
             await using var stream = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
             var releases = await JsonSerializer.DeserializeAsync<List<GitHubRelease>>(stream, JsonOpts, token).ConfigureAwait(false);
             if (releases is null || releases.Count == 0)
             {
                 Log?.Invoke("updater: releases list was empty");
-                return null;
+                return new UpdateCheckFailed(FailureKind.HttpError, "GitHub returned an empty release list.");
             }
 
             // Highest-versioned RemSound client release. Skip drafts, prereleases, and any
@@ -105,33 +105,59 @@ internal sealed class RemSoundUpdater : IDisposable
             if (release?.TagName is null)
             {
                 Log?.Invoke("updater: no RemSound client release found in the releases list");
-                return null;
+                return new UpdateCheckFailed(FailureKind.HttpError, "GitHub returned releases but none looked like a RemSound client release.");
             }
 
             var current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0);
             Log?.Invoke($"updater: current={current.ToString(3)} latest={latest.ToString(3)} ({release.TagName})");
-            if (latest <= current) return null;
+            if (latest <= current) return UpToDate.Instance;
 
             var expectedAsset = AssetNameTemplate.Replace("{tag}", release.TagName);
             var asset = release.Assets?.FirstOrDefault(a => string.Equals(a.Name, expectedAsset, StringComparison.OrdinalIgnoreCase));
             if (asset?.BrowserDownloadUrl is null)
             {
                 Log?.Invoke($"updater: latest release has no asset named '{expectedAsset}'");
-                return null;
+                return new UpdateCheckFailed(FailureKind.HttpError, $"The latest release page is missing the expected file '{expectedAsset}'.");
             }
 
-            return new UpdateInfo(
+            return new UpdateAvailable(new UpdateInfo(
                 Tag: release.TagName,
                 Version: latest,
                 DownloadUrl: asset.BrowserDownloadUrl,
                 ReleaseNotes: release.Body ?? "",
-                ReleaseUrl: release.HtmlUrl ?? "");
+                ReleaseUrl: release.HtmlUrl ?? ""));
         }
         catch (Exception ex)
         {
             Log?.Invoke($"updater: check failed: {ex.GetType().Name}: {ex.Message}");
-            return null;
+            return new UpdateCheckFailed(ClassifyFailure(ex), ex.Message);
         }
+    }
+
+    /// <summary>Maps a thrown exception from the GitHub HTTP call to a coarse-grained
+    /// <see cref="FailureKind"/> the UI can hang an honest plain-English message off without
+    /// quoting the underlying .NET exception type. Most "couldn't reach the server" errors
+    /// fall into the network bucket; the SSL bucket is broken out separately because it has
+    /// a specific cause and fix on Windows 7 (TLS 1.2 / SHA-2 Windows updates) that we want
+    /// to point users at when we see it. 2026-05-28.</summary>
+    private static FailureKind ClassifyFailure(Exception ex)
+    {
+        // Walk the exception chain — HttpRequestException is the outer wrapper; the actual
+        // cause (System.Net.Security.AuthenticationException, IOException, SocketException,
+        // etc) is in InnerException. Either layer might carry the diagnostic clue.
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+        {
+            var typeName = e.GetType().Name;
+            var msg = e.Message ?? "";
+            if (typeName.Contains("Authentication", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("SSL", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("TLS", StringComparison.OrdinalIgnoreCase))
+            {
+                return FailureKind.SecureConnection;
+            }
+        }
+        if (ex is TaskCanceledException) return FailureKind.Timeout;
+        return FailureKind.NetworkUnreachable;
     }
 
     /// <summary>Filename of the one-shot "after the update restart, silently load this profile"
@@ -445,3 +471,49 @@ internal sealed record UpdateInfo(
     string DownloadUrl,
     string ReleaseNotes,
     string ReleaseUrl);
+
+/// <summary>Discriminated result of an update check. Replaces the v3.1.x-and-earlier
+/// "UpdateInfo?" return type, which conflated "no newer version available" with "couldn't
+/// reach the server" — the user saw "you are running the latest version" in both cases,
+/// even when the check had actually failed because (e.g.) the OS couldn't establish a
+/// secure connection to GitHub. The caller pattern-matches on this and shows an honest
+/// message for each outcome. 2026-05-28.</summary>
+internal abstract record UpdateCheckResult;
+
+/// <summary>A newer release is available. Carries the parsed <see cref="UpdateInfo"/> the
+/// caller passes to <see cref="RemSoundUpdater.DownloadAndStageInstallAsync"/>.</summary>
+internal sealed record UpdateAvailable(UpdateInfo Info) : UpdateCheckResult;
+
+/// <summary>The check completed and the installed version is at or above the latest
+/// release. Singleton — there's nothing to carry beyond the result type itself.</summary>
+internal sealed record UpToDate : UpdateCheckResult
+{
+    public static readonly UpToDate Instance = new();
+    private UpToDate() { }
+}
+
+/// <summary>The check could not complete. <see cref="Kind"/> is a coarse classifier the UI
+/// uses to pick a plain-English message; <see cref="TechnicalDetail"/> is the raw exception
+/// or HTTP-status message intended for log output and "what to send the developer" cases —
+/// never put it in a user-facing dialog verbatim.</summary>
+internal sealed record UpdateCheckFailed(FailureKind Kind, string TechnicalDetail) : UpdateCheckResult;
+
+/// <summary>Why the update check couldn't complete. Lets the UI distinguish "your TLS stack
+/// is too old to reach modern HTTPS servers" (a known and fixable Windows 7 issue) from
+/// "your internet is down" so the message and any pointers we offer match the actual
+/// problem.</summary>
+internal enum FailureKind
+{
+    /// <summary>The HTTPS handshake itself failed — usually means the OS's TLS or
+    /// certificate stack is too old. Most commonly seen on Windows 7 installs without
+    /// the TLS 1.2 enablement update (KB3140245) and SHA-2 code signing support
+    /// (KB4474419).</summary>
+    SecureConnection,
+    /// <summary>The HTTP call reached GitHub but got back an unexpected response (4xx /
+    /// 5xx HTTP status, malformed JSON, empty release list, etc).</summary>
+    HttpError,
+    /// <summary>The HTTP call timed out.</summary>
+    Timeout,
+    /// <summary>Generic "couldn't reach the server" — DNS, socket, no internet.</summary>
+    NetworkUnreachable,
+}

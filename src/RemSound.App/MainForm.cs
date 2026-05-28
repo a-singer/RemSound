@@ -1840,26 +1840,74 @@ public sealed class MainForm : Form
     }
 
     /// <summary>User pressed "Check for updates" (Help menu or Preferences button). Always
-    /// runs the check noisily — i.e. surfaces "you're up to date" / "v1.x available" via a
-    /// MessageBox, regardless of the Silently-install setting. Silent install only applies
-    /// to background polls. Caller is on the UI thread.</summary>
+    /// runs the check noisily — i.e. surfaces "you're up to date", "vX.Y is available", or
+    /// "couldn't reach the server" via a MessageBox, regardless of the Silently-install
+    /// setting. Silent install only applies to background polls. Caller is on the UI thread.
+    /// </summary>
     private async void CheckForUpdatesManually()
     {
-        var info = await updater.CheckForUpdateAsync().ConfigureAwait(true);
-        if (info is null)
+        var result = await updater.CheckForUpdateAsync().ConfigureAwait(true);
+        switch (result)
         {
-            MessageBox.Show(this,
-                $"You are running the latest version (v{updater.CurrentVersion}).",
-                "Check for updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
+            case UpToDate:
+                MessageBox.Show(this,
+                    $"You are running the latest version (v{updater.CurrentVersion}).",
+                    "Check for updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+
+            case UpdateCheckFailed failure:
+                ShowUpdateCheckFailedDialog(failure);
+                return;
+
+            case UpdateAvailable available:
+                var info = available.Info;
+                var summary = string.IsNullOrWhiteSpace(info.ReleaseNotes)
+                    ? $"RemSound {info.Tag} is available. Install now?"
+                    : $"RemSound {info.Tag} is available.\n\n{TruncateForDialog(info.ReleaseNotes)}\n\nInstall now?";
+                var choice = MessageBox.Show(this, summary, "Update available",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
+                if (choice != DialogResult.Yes) return;
+                await InstallUpdateAsync(info).ConfigureAwait(true);
+                return;
         }
-        var summary = string.IsNullOrWhiteSpace(info.ReleaseNotes)
-            ? $"RemSound {info.Tag} is available. Install now?"
-            : $"RemSound {info.Tag} is available.\n\n{TruncateForDialog(info.ReleaseNotes)}\n\nInstall now?";
-        var choice = MessageBox.Show(this, summary, "Update available",
-            MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
-        if (choice != DialogResult.Yes) return;
-        await InstallUpdateAsync(info).ConfigureAwait(true);
+    }
+
+    /// <summary>Show a plain-English MessageBox explaining why an update check couldn't
+    /// complete. The wording is tailored to the <see cref="FailureKind"/>: the SecureConnection
+    /// case (which is most often Windows 7 lacking TLS 1.2 / SHA-2 updates) gets pointers to
+    /// the specific Microsoft KBs that fix it; other failures get a friendlier "check your
+    /// internet" message. The user is also offered the manual zip-install fallback URL so they
+    /// can recover without us debugging their machine. The technical detail goes to the log,
+    /// not the dialog. 2026-05-28.</summary>
+    private void ShowUpdateCheckFailedDialog(UpdateCheckFailed failure)
+    {
+        var (heading, body) = failure.Kind switch
+        {
+            FailureKind.SecureConnection => (
+                "Couldn't reach the update server (secure connection failed)",
+                "RemSound couldn't make a secure connection to GitHub to check for an update.\n\n"
+                + "This is almost always because the Windows install is missing one or both of these official Microsoft updates that enable modern secure connections:\n\n"
+                + "  • KB3140245 — turns on TLS 1.2 support.\n"
+                + "  • KB4474419 — updates the trusted certificate list (SHA-2 support).\n\n"
+                + "Both are free and won't break anything else. Run Windows Update (Control Panel → Windows Update) and install whatever it offers. Once those are in, Check for updates should work normally.\n\n"
+                + "If you'd rather install the latest version by hand: go to https://github.com/Ednunp/RemSound/releases/latest, download the zip, close RemSound, and extract the zip over your RemSound folder. That works regardless of the secure-connection issue."),
+
+            FailureKind.NetworkUnreachable => (
+                "Couldn't reach the update server",
+                "RemSound couldn't reach GitHub to check for an update. This is usually a network problem — check your internet connection, then try Check for updates again.\n\n"
+                + "If you'd rather install the latest version by hand: go to https://github.com/Ednunp/RemSound/releases/latest, download the zip, close RemSound, and extract the zip over your RemSound folder."),
+
+            FailureKind.Timeout => (
+                "Update check timed out",
+                "RemSound's request to GitHub took too long to respond. This is usually a slow or congested network — try Check for updates again in a minute or two.\n\n"
+                + "If you'd rather install the latest version by hand: go to https://github.com/Ednunp/RemSound/releases/latest, download the zip, close RemSound, and extract the zip over your RemSound folder."),
+
+            _ => (
+                "Couldn't check for updates",
+                "RemSound's request to GitHub didn't get the response it expected, so it can't tell whether a newer version is available. Try Check for updates again later.\n\n"
+                + "If you'd rather install the latest version by hand: go to https://github.com/Ednunp/RemSound/releases/latest, download the zip, close RemSound, and extract the zip over your RemSound folder."),
+        };
+        MessageBox.Show(this, body, heading, MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
     /// <summary>Background-poll path. Runs on a timer tick; surfaces nothing unless an update
@@ -1868,7 +1916,7 @@ public sealed class MainForm : Form
     /// silent no-op — the user already chose to delegate scheduling to the timer.</summary>
     private async void CheckForUpdatesInBackground()
     {
-        var info = await updater.CheckForUpdateAsync().ConfigureAwait(true);
+        var result = await updater.CheckForUpdateAsync().ConfigureAwait(true);
         // Persist the timestamp so cross-launch scheduling can space the next poll out.
         try
         {
@@ -1877,7 +1925,12 @@ public sealed class MainForm : Form
             cfg.Save();
         }
         catch { /* timestamp persistence is best-effort */ }
-        if (info is null) return;
+        // Background polls stay silent on both UpToDate and UpdateCheckFailed — the user
+        // delegated scheduling to the timer and a failure here isn't actionable from where
+        // they are. The next poll re-checks. The failure detail has already gone to the log
+        // via the updater's Log callback.
+        if (result is not UpdateAvailable available) return;
+        var info = available.Info;
         if (AppConfig.Load().SilentlyInstallUpdates)
         {
             // Notice the user before the app vanishes and the helper takes over. Hidden from
@@ -1904,14 +1957,14 @@ public sealed class MainForm : Form
     /// stays consistent.</summary>
     private async void CheckForUpdatesOnStartup()
     {
-        UpdateInfo? info;
+        UpdateCheckResult result;
         try
         {
-            info = await updater.CheckForUpdateAsync().ConfigureAwait(true);
+            result = await updater.CheckForUpdateAsync().ConfigureAwait(true);
         }
         catch (Exception ex)
         {
-            logFile.Event($"updater: startup check failed: {ex.GetType().Name}: {ex.Message}");
+            logFile.Event($"updater: startup check threw unexpectedly: {ex.GetType().Name}: {ex.Message}");
             return;
         }
         try
@@ -1921,11 +1974,22 @@ public sealed class MainForm : Form
             cfg.Save();
         }
         catch { /* harmless */ }
-        if (info is null)
+        // Log each outcome distinctly so a failed check (TLS error, network down, GitHub
+        // 5xx) doesn't get filed as "up to date" — that's the misclassification Tech Singer's
+        // log from 2026-05-28 demonstrated, where a Win7 SSL handshake failure quietly logged
+        // as "up to date" instead of the real cause.
+        if (result is UpdateCheckFailed failure)
+        {
+            logFile.Event($"updater: startup check failed ({failure.Kind}): {failure.TechnicalDetail}");
+            return;
+        }
+        if (result is UpToDate)
         {
             logFile.Event($"updater: startup check — up to date (v{updater.CurrentVersion})");
             return;
         }
+        if (result is not UpdateAvailable available) return;
+        var info = available.Info;
         logFile.Event($"updater: startup check found {info.Tag}");
         if (AppConfig.Load().SilentlyInstallUpdates)
         {

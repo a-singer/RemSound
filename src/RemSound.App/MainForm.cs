@@ -622,6 +622,10 @@ public sealed class MainForm : Form
             // every time the submenu opens, so newly-loaded profiles appear immediately.
             getRecentProfilePaths: () => AppConfig.Load().RecentProfiles,
             switchToProfile: path => SwitchToRecentProfile(path),
+            // Tooltip builder — called once just before the tray icon first becomes visible
+            // (in Minimize) so the shell's NIM_ADD sees the current live state instead of a
+            // stale "starting up" string. Subsequent updates ride on the 1 Hz snapshot tick.
+            buildTooltip: BuildTrayTooltip,
             exit: Close);
 
         recordingController = new RecordingController(

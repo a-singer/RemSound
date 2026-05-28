@@ -37,6 +37,7 @@ internal sealed class MainFormTrayController : IDisposable
     private readonly Action toggleReceiving;
     private readonly Func<IReadOnlyList<string>> getRecentProfilePaths;
     private readonly Action<string> switchToProfile;
+    private readonly Func<string> buildTooltip;
     private readonly Action exit;
 
     private readonly ToolStripMenuItem sendingItem;
@@ -51,6 +52,7 @@ internal sealed class MainFormTrayController : IDisposable
         Action toggleReceiving,
         Func<IReadOnlyList<string>> getRecentProfilePaths,
         Action<string> switchToProfile,
+        Func<string> buildTooltip,
         Action exit)
     {
         this.owner = owner;
@@ -60,16 +62,20 @@ internal sealed class MainFormTrayController : IDisposable
         this.toggleReceiving = toggleReceiving;
         this.getRecentProfilePaths = getRecentProfilePaths;
         this.switchToProfile = switchToProfile;
+        this.buildTooltip = buildTooltip;
         this.exit = exit;
 
-        // Initial tooltip text — deliberately NOT just "RemSound" because some screen
-        // readers (NVDA in particular) read tray icons as "<process name>, <tooltip>",
-        // which with a single-word "RemSound" tooltip on a "RemSound" process renders as
-        // "RemSound RemSound" until the first snapshot tick (~1s after launch) overwrites
-        // it. Picking a sensible startup-state string avoids the duplicate read entirely;
-        // the snapshot tick refreshes this with live peer / send / receive info from then
-        // on.
-        trayIcon.Text = "RemSound — starting up";
+        // We deliberately don't bake any "starting up" / "running" string into the icon
+        // here. The tooltip is computed fresh from buildTooltip() at the moment the icon
+        // first becomes visible (in Minimize) and refreshed every second from MainForm's
+        // snapshot tick after that. The reason: Windows' shell caches the tooltip text
+        // it sees at NIM_ADD time and is reluctant to refresh hover text for the same
+        // icon ID. Setting an "initial" string here meant that on a slow / minimised-at-
+        // launch flow (e.g. the resume-after-update path with StartMinimised on), the
+        // shell registered the icon with the stale string and kept showing it until the
+        // user hid + re-showed the icon. By computing the right text once, just before
+        // we set Visible = true for the first time, the shell sees the live state from
+        // NIM_ADD onward.
         trayIcon.Icon = SystemIcons.Application;
         trayIcon.Visible = false;
         trayIcon.DoubleClick += (_, _) => Restore();
@@ -182,6 +188,13 @@ internal sealed class MainFormTrayController : IDisposable
     public void Minimize()
     {
         owner.Hide();
+        // Refresh the tooltip BEFORE showing the icon so the shell's NIM_ADD call carries
+        // the current live state (peer count, send / receive routing, recording timer),
+        // not a stale "starting up" string set earlier. The shell tends to cache hover
+        // text from NIM_ADD time and is slow to update on subsequent NIM_MODIFY calls —
+        // computing the right text now means the first hover already reads correctly.
+        try { SetTooltip(buildTooltip()); }
+        catch { /* harmless — fall through to the snapshot-tick refresh */ }
         trayIcon.Visible = true;
     }
 

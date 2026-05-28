@@ -20,6 +20,33 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v3.1.1
+
+        Hot-fix for a small but annoying bug with the system
+        tray tooltip after v3.1 first installed itself.
+
+        What was happening: if the v3.1 auto-update fired
+        while RemSound was set to start minimised to the tray,
+        the tray icon's hover text could get stuck saying
+        "RemSound — starting up" indefinitely, instead of
+        switching to the live "X peers, sending, receiving"
+        summary after a second or so. Showing the main window
+        and then minimising it again was the workaround.
+
+        What was actually going wrong: Windows registers a
+        tray icon's tooltip with the shell at the moment the
+        icon becomes visible. RemSound was setting an initial
+        "starting up" string at construction time, and the
+        shell tended to keep showing that on hover even after
+        the live state had been computed and pushed through.
+        The workaround (hide then re-show the icon) cleared
+        the shell's cache. The fix is to compute the right
+        live tooltip text once, just before the icon becomes
+        visible for the first time, so the shell registers
+        the icon with correct text from the start.
+
+        Everything else in v3.1 is unchanged.
+
         RemSound v3.1
 
         Two big rounds of work on audio cues and the system

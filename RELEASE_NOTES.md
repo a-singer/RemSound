@@ -1,40 +1,71 @@
-# RemSound v3.0.2
+# RemSound v3.1
 
-Hot-fix for a slow memory leak on the receiving side. If you leave RemSound running for many hours receiving audio, its memory use was creeping up over time. Small at first, big enough after a day to slow the computer down and make audio feel slightly laggy.
+A meaningful round of work on **audio cue sounds** and the **system tray**. Two new cues, a way to swap in your own WAV files per profile, and a rebuilt tray menu with a live status tooltip. Plus a couple of smaller bug fixes. No wire format change — v3.1 talks to v3.0.x machines exactly as before.
 
-## What was happening
+## New audio cue sounds
 
-RemSound uses a small library called Concentus to decode incoming Opus audio. In version 2.2 we switched from a pure software version of that library to a faster native one. The native version keeps some memory in Windows itself rather than in RemSound, and you're supposed to tell it explicitly when you're done with it. Our code wasn't doing that — it was relying on the system to notice and tidy up eventually, but a setting we use to keep audio smooth also stops Windows from doing that tidy-up.
+Two new sounds join the existing connect / disconnect / record-start / record-stop cues:
 
-So memory built up steadily over hours and never came back. A user left RemSound running for nearly a full day receiving audio and his desktop ended up using 3.5 gigabytes of memory before he restarted it. That was getting in the way of everything else on the computer and was almost certainly the cause of a feeling that audio latency was "drifting" over a long session — at that point the CPU was working hard enough that audio scheduling wasn't as tight as it should be.
+* **Profile saved.** Plays a short cue whenever a profile is saved — either via File → Save (Ctrl+S) or Save as. An audible "yes, that took" so you don't have to look at the screen.
+* **Profile switched.** Plays a short cue whenever a profile finishes loading. Fires at startup if you started with a profile, and after every mid-session profile switch. **It plays the new profile's cue, not the old one's** — so if you give each profile a different switched-to sound, you can hear which profile you're now on without checking the title bar.
 
-## What's fixed
+## Custom cue sounds, per profile
 
-Two things. First, the part of RemSound that uses Concentus now properly releases its memory at the right moments — when a session ends, when you change codec, and when a recording stops. That stops the leak at its source.
+The **Audio cue sounds** list in Preferences now has six entries (Connect, Disconnect, Recording start, Recording stop, Profile saved, Profile switched), each with a tickbox to enable or silence it.
 
-Second, as a safety net in case anything else in RemSound or any other library we use ever has the same kind of bug, RemSound now does a quick "release any leftover memory" pass once every five minutes. The pass runs in the background, doesn't affect audio in any way, and finishes long before the next audio packet arrives.
+Two new buttons sit just below the list, both acting on whichever cue is currently highlighted:
 
-## What to expect
+* **Play [cue name]** (Alt+P) previews the currently-configured sound through your default Windows output. Works regardless of whether the cue is ticked, so you can listen before deciding to enable.
+* **Browse for [cue name]…** (Alt+B) opens a Windows file picker so you can choose your own WAV file to replace the default sound for that cue. Right-clicking the Browse button offers a **Use default sound** item to undo the swap.
 
-After updating, your memory use should settle at around 100-200 megabytes and stay there as long as you leave RemSound running. You can leave it running overnight, or for days, and the memory should hold roughly flat instead of climbing.
+Both the tick states AND the custom sound choices are **saved with the active profile**. A "quiet listening" profile can have all cues off; a "studio" profile can use a distinct set of sounds. When you switch profiles, the cues switch too.
 
-If you noticed audio feeling slightly laggier after long sessions and had been working around it by restarting RemSound, that workaround should no longer be needed.
+The default WAV files have moved out of the install folder root into a new `sounds\` subfolder, keeping the install layout tidier.
 
-## Nothing else has changed
+## System tray icon redesigned
 
-Same wire format as v3.0 and v3.0.1, same codec list, same everything else. v3.0.2 talks to other v3.0.x machines exactly as before. If you've not noticed any slowdown after long sessions, the fix is still worth having because the leak was happening under the surface even if you didn't see it.
+**Hover summary.** The tray icon's tooltip now shows a live summary that refreshes every second:
+
+* `RemSound — not connected`
+* `RemSound — 2 peers, sending (WASAPI), receiving (WASAPI)`
+* `RemSound — recording for 5:23, 1 peer, sending (WASAPI + ASIO), receiving (WASAPI + ASIO)`
+
+The recording timer only shows when you're actually recording. The "(WASAPI)", "(ASIO)", or "(WASAPI + ASIO)" tag reflects which lanes the corresponding direction is actually using.
+
+**Right-click menu rebuilt.** Five items, each with a single-letter shortcut:
+
+| Item | Key |
+|---|---|
+| Show RemSound | W |
+| Enable sending (tickable, shows current state) | S |
+| Enable receiving (tickable, shows current state) | R |
+| Profiles (submenu of recent profiles) | P |
+| Exit | X |
+
+* **Show RemSound** now reliably brings the window to the front AND gives it focus, fixing a case where screen-reader users had to Alt+Tab to actually reach the restored window.
+* **Enable sending / Enable receiving** now **toggle** the state instead of always switching it on — so you can use them to turn off as well.
+* The **Profiles submenu** shows your five most recent profiles (same list the File menu uses) with number-key shortcuts. While the submenu is open, press 1 for the most recent, 2 for the next, and so on. Switching from the tray works the same way as from the File menu — RemSound reloads under the new profile, your devices and peers come back as the new profile has them.
+
+## Smaller bug fixes
+
+* **Tray icon's first-launch tooltip read as "RemSound RemSound"** for some screen-reader users because the tooltip text matched the process name. Initial tooltip is now "RemSound — starting up", which avoids the duplicate read. Within a second the live state takes over and reads cleanly from then on.
+* **Recent profiles in both the File menu and the new tray menu** no longer announce a "Recent profile N:" prefix on each item — they just read the profile name. The 1..5 number-key shortcuts still work either way.
+
+## Compatibility
+
+No wire format change. v3.1 talks to other v3.0.x machines (v3.0, v3.0.1, v3.0.2) exactly the same as before. Profiles created or saved on v3.1 carry the new per-cue settings and a v3.0.x build loading one will silently ignore the new fields (so the profile still works, just without the new cue-customisation state).
 
 ## Install
 
-1. Download `RemSound-v3.0.2.zip` from this release.
+1. Download `RemSound-v3.1.zip` from this release.
 2. Close RemSound.
-3. Extract the zip over your existing RemSound folder, overwriting program files when prompted. The zip is program files only — it will not touch your profiles, settings or recordings.
+3. Extract the zip **over your existing RemSound folder**, overwriting program files when prompted. The zip is program files only — it will not touch your profiles, settings or recordings.
 4. Run `RemSound.exe`. Press F1 for the user manual.
 
 Requires the .NET 10 Desktop Runtime. If it's missing, Windows offers to fetch it on first launch.
 
 ## Upgrading
 
-**v1.9, v2.0, v2.1, v3.0, v3.0.1:** Help → Check for updates works — it will fetch and install v3.0.2 automatically. If you've ticked "Check for updates on startup" and "Silently install updates", v3.0.2 installs itself shortly after launch and RemSound reopens on whichever profile you were running (a feature added in v3.0).
+**v1.9 through v3.0.2:** Help → Check for updates works — it will fetch and install v3.1 automatically. If you've ticked "Check for updates on startup" and "Silently install updates", v3.1 installs itself shortly after launch and RemSound reopens on whichever profile you were running.
 
-**v1.8 and earlier:** the auto-updater in those versions has a fault that prevents it from installing updates, so Check for updates will download v3.0.2 but not apply it. Install v3.0.2 by hand using the steps above — just this once. From the build you install onward, updates are automatic.
+**v1.8 and earlier:** the auto-updater in those versions has a fault that prevents it from installing updates, so Check for updates will download v3.1 but not apply it. Install v3.1 by hand using the steps above — just this once. From the build you install onward, updates are automatic.

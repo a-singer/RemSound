@@ -321,6 +321,11 @@ public sealed class MainForm : Form
     // anything the recorder is doing.
     private System.Media.SoundPlayer? recordStartSound;
     private System.Media.SoundPlayer? recordStopSound;
+    // Profile-save and profile-switch cues, added 2026-05-28 alongside the move of all
+    // default WAVs into a sounds\ subfolder. Save fires after a successful File → Save /
+    // Save As; Profile fires immediately after a profile finishes loading in MainForm.
+    private System.Media.SoundPlayer? saveSound;
+    private System.Media.SoundPlayer? profileSwitchSound;
     // Labels for the three send/receive device lists, captured at layout time so they can be
     // re-titled when the user toggles between WASAPI mode (Windows devices) and ASIO mode
     // (driver channel pairs). null until BuildLayout has run.
@@ -606,9 +611,18 @@ public sealed class MainForm : Form
         hotkeyController.OnHotkeyChanged = MarkProfileDirty;
         trayController = new MainFormTrayController(
             this,
-            () => sendMyAudioCheckbox.Checked = true,
-            () => receiveAudioCheckbox.Checked = true,
-            Close);
+            // getSending / toggleSending — the tray's "Enable sending" checkable item reads
+            // and toggles the main-window send checkbox. Toggle (not set-to-true) so right-
+            // clicking it twice doesn't get the user stuck on. 2026-05-28 redesign.
+            getSending: () => sendMyAudioCheckbox.Checked,
+            toggleSending: () => sendMyAudioCheckbox.Checked = !sendMyAudioCheckbox.Checked,
+            getReceiving: () => receiveAudioCheckbox.Checked,
+            toggleReceiving: () => receiveAudioCheckbox.Checked = !receiveAudioCheckbox.Checked,
+            // Profiles submenu — list of recent profile file paths read live from AppConfig
+            // every time the submenu opens, so newly-loaded profiles appear immediately.
+            getRecentProfilePaths: () => AppConfig.Load().RecentProfiles,
+            switchToProfile: path => SwitchToRecentProfile(path),
+            exit: Close);
 
         recordingController = new RecordingController(
             sender,
@@ -833,12 +847,16 @@ public sealed class MainForm : Form
         sender.Diagnostic = msg => logFile.Event($"sender: {msg}");
         receiver.Diagnostic = msg => logFile.Event($"receiver: {msg}");
 
-        // Pre-load peer-state cue sounds so the first playback isn't delayed by file I/O.
-        // Files are deployed alongside the .exe (see RemSound.App.csproj Content rules).
-        TryLoadCueSound("connect.wav", out connectSound);
-        TryLoadCueSound("disconnect.wav", out disconnectSound);
-        TryLoadCueSound("record start.wav", out recordStartSound);
-        TryLoadCueSound("record stop.wav", out recordStopSound);
+        // Pre-load all cue sounds so the first playback isn't delayed by file I/O. Default
+        // WAVs are deployed to a sounds\ subfolder under RemSound.exe (see RemSound.App
+        // .csproj Content rules); the per-cue custom-path overrides in AppConfig.CustomCuePaths
+        // are honoured by TryLoadCueSound when set.
+        TryLoadCueSound(CueId.Connect, "connect.wav", out connectSound);
+        TryLoadCueSound(CueId.Disconnect, "disconnect.wav", out disconnectSound);
+        TryLoadCueSound(CueId.RecordStart, "record start.wav", out recordStartSound);
+        TryLoadCueSound(CueId.RecordStop, "record stop.wav", out recordStopSound);
+        TryLoadCueSound(CueId.Save, "save.wav", out saveSound);
+        TryLoadCueSound(CueId.ProfileSwitch, "profile.wav", out profileSwitchSound);
 
         LoadAudioDevices();
         // Apply persisted ASIO mode from settings — switches sender/receiver backends so the
@@ -1030,6 +1048,17 @@ public sealed class MainForm : Form
             // blank-template case (no pendingProfile) we schedule it here.
             if (pendingProfile is null) ScheduleBaselineCapture();
             ApplyPendingProfileToControls();
+            // Profile-switch cue (2026-05-28): fires once after the profile finishes loading
+            // into the UI. Covers BOTH startup (user picks a profile from the picker) and
+            // mid-session switch (user picks a different profile from the menu — Program.Main
+            // re-creates MainForm under the new profile). Skipped when the user is on the
+            // blank template, where there's no profile to announce. Honours the per-profile
+            // EnableProfileSwitchCue flag set in Preferences.
+            if (pendingProfile is not null
+                && settings.LoadEnableProfileSwitchCue())
+            {
+                profileSwitchSound?.Play();
+            }
             // Show/hide the Update vs Save-as buttons based on whether we're on a loaded
             // profile or the blank template.
             UpdateProfileButtonsVisibility();
@@ -1393,9 +1422,13 @@ public sealed class MainForm : Form
             if (string.IsNullOrWhiteSpace(path)) continue;
             if (!File.Exists(path)) continue; // skip missing files; keep in storage in case they reappear
             var title = Path.GetFileNameWithoutExtension(path);
+            // Visible Text has the &1..&5 mnemonic for number-key access; AccessibleName is
+            // just the profile name so NVDA reads the menu item naturally rather than
+            // prefixing every entry with "Recent profile N:" (which was the original cut
+            // and Ed flagged it as noisy / unwanted).
             var item = new ToolStripMenuItem($"&{slot} {title}")
             {
-                AccessibleName = $"Recent profile {slot}: {title}",
+                AccessibleName = title,
                 // Stash the path on the menu item so the click handler doesn't depend on
                 // closure capture of the loop variable.
                 Tag = path,
@@ -1795,6 +1828,11 @@ public sealed class MainForm : Form
             unsubscribeUpnpStatusChanged: handler => routerPortMapper.StatusChanged -= handler);
         dialog.ShowDialog(this);
         if (dialog.ChangedAnyProfileSetting) MarkProfileDirty();
+        // The Preferences dialog includes per-cue Browse buttons that can change custom
+        // WAV paths in AppConfig.CustomCuePaths. Reload the cached SoundPlayer instances
+        // here unconditionally — cheap, only six small files, and guarantees the next
+        // play uses whatever the user just picked without waiting for the next launch.
+        ReloadAllCueSounds();
     }
 
     /// <summary>User pressed "Check for updates" (Help menu or Preferences button). Always
@@ -4169,6 +4207,10 @@ public sealed class MainForm : Form
         // serialised on the network-thread lock inside the receiver, so doing it from the UI
         // tick is safe.
         receiver.PruneIdleSessions();
+        // Refresh the tray icon's hover tooltip so it reflects the current peer count and
+        // send / receive routing (WASAPI / ASIO / both). 1 Hz cadence is fine — the user is
+        // hovering, not staring at a counter — and BuildTrayTooltip is allocation-cheap.
+        trayController.SetTooltip(BuildTrayTooltip());
         // Periodic native-memory reaper. SustainedLowLatency GC mode (set in Program.Main)
         // explicitly avoids gen2 collections to keep audio scheduling smooth — but that same
         // suppression means finalizers for IDisposable wrappers that didn't get explicit
@@ -4892,6 +4934,11 @@ public sealed class MainForm : Form
         {
             SaveCurrentStateToProfileFile(title);
             AppendLogEntry($"profile saved: \"{title}\"");
+            // Save cue (2026-05-28): fires after any successful save — Save AND Save As, since
+            // both routes funnel through this single method. Honours the EnableSaveCue per-
+            // profile flag; the cue is silent if the user has unticked it in Preferences or if
+            // sounds\save.wav doesn't exist and no custom override has been set.
+            if (settings.LoadEnableSaveCue()) saveSound?.Play();
             // Refresh the unsaved-changes baseline so this saved state becomes the new
             // "no changes" reference. The Title field changes on save-as, so the next
             // diff comparison must use the new state as baseline, not the pre-save one.
@@ -5153,16 +5200,162 @@ public sealed class MainForm : Form
     // tab — see BuildProfilesPrefsTab + SwitchSelectedProfile / RenameSelectedProfile /
     // DeleteSelectedProfile.
 
-    private void TryLoadCueSound(string fileName, out System.Media.SoundPlayer? player)
+    /// <summary>Builds the live tooltip shown over the system-tray icon — sums up peer count
+    /// and send / receive routing into a single readable line. Kept under the 127-character
+    /// NotifyIcon limit by construction; the tray controller truncates with an ellipsis as a
+    /// belt-and-braces if a future addition ever pushes it over.
+    ///
+    /// Examples:
+    ///   * RemSound — not connected
+    ///   * RemSound — recording for 2:34 — not connected
+    ///   * RemSound — 2 peers, sending (WASAPI), receiving (WASAPI)
+    ///   * RemSound — recording for 1:23:45, 2 peers, sending (WASAPI), receiving (WASAPI)
+    /// </summary>
+    private string BuildTrayTooltip()
+    {
+        // Healthy-peer count. Heartbeats define "connected" — a peer ticked in the list but
+        // never reachable doesn't count, because the user cares about who they can actually
+        // talk to right now, not who they intend to.
+        var healthyPeers = 0;
+        if (heartbeatService is not null)
+        {
+            foreach (var ph in heartbeatService.GetAllPeerHealth())
+            {
+                if (ph.State == PeerHealthState.Healthy) healthyPeers++;
+            }
+        }
+        // Recording timer — only included when a recording is actually running. Slots in
+        // right after the "RemSound" leader as Ed asked, so it reads as a status on the
+        // app itself rather than a property of the peer list.
+        string? recordingPart = null;
+        if (recordingController.IsRecording && recordingController.RecordingStartedUtc is { } startedUtc)
+        {
+            recordingPart = $"recording for {FormatRecordingElapsed(DateTime.UtcNow - startedUtc)}";
+        }
+        if (healthyPeers == 0 && !sendMyAudioCheckbox.Checked && !receiveAudioCheckbox.Checked)
+        {
+            return recordingPart is null
+                ? "RemSound — not connected"
+                : $"RemSound — {recordingPart} — not connected";
+        }
+
+        var parts = new List<string> { "RemSound" };
+        if (recordingPart is not null) parts.Add(recordingPart);
+        var peerText = healthyPeers switch
+        {
+            0 => "no peers",
+            1 => "1 peer",
+            _ => $"{healthyPeers} peers",
+        };
+        parts.Add(peerText);
+
+        // Direction lines — only added when the corresponding direction is actually on. The
+        // lane label (WASAPI / ASIO / WASAPI + ASIO) is derived from which device-list ticks
+        // are active, NOT from the audio-mode setting alone: in BothIndependent a user can
+        // still have ticked WASAPI inputs only, in which case the tray should honestly say
+        // "WASAPI" rather than "WASAPI + ASIO".
+        if (sendMyAudioCheckbox.Checked)
+        {
+            var hasWasapiSend = AnyChecked(sendInputDevicesList) || AnyChecked(sendOutputDevicesList);
+            var hasAsioSend = AnyChecked(asioSendDevicesList);
+            parts.Add($"sending ({DescribeLanes(hasWasapiSend, hasAsioSend)})");
+        }
+        if (receiveAudioCheckbox.Checked)
+        {
+            var hasWasapiReceive = AnyChecked(receiveOutputDevicesList);
+            var hasAsioReceive = AnyChecked(asioReceiveOutputDevicesList);
+            parts.Add($"receiving ({DescribeLanes(hasWasapiReceive, hasAsioReceive)})");
+        }
+        return string.Join(", ", parts);
+    }
+
+    /// <summary>Convenience for BuildTrayTooltip — true if the given CheckedListBox has at
+    /// least one ticked item. Defensive against null lists (the layout builders run async on
+    /// startup, so the tooltip refresh CAN fire one tick before they exist).</summary>
+    private static bool AnyChecked(CheckedListBox? list)
+    {
+        if (list is null) return false;
+        return list.CheckedItems.Count > 0;
+    }
+
+    /// <summary>Compact duration formatter for the tray tooltip's "recording for X" segment.
+    /// Under an hour shows MM:SS; from an hour on it shows H:MM:SS — the same shape Windows
+    /// uses for media-player elapsed-time displays, so it reads naturally to people who
+    /// don't otherwise know it's a custom format.</summary>
+    private static string FormatRecordingElapsed(TimeSpan elapsed)
+    {
+        // Negative elapsed (clock skew across a sleep cycle) gets clamped to zero — better
+        // than displaying "-00:01" mid-tooltip.
+        if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+        return elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}"
+            : $"{elapsed.Minutes:D2}:{elapsed.Seconds:D2}";
+    }
+
+    /// <summary>Pretty-print "WASAPI", "ASIO", "WASAPI + ASIO", or "no devices" depending
+    /// on which of the two flags are set. "no devices" covers the awkward case where the
+    /// user has the send/receive checkbox on but hasn't ticked anything for the engine to
+    /// chew on — better to say so in the tooltip than imply silent activity.</summary>
+    private static string DescribeLanes(bool wasapi, bool asio) =>
+        (wasapi, asio) switch
+        {
+            (true, true) => "WASAPI + ASIO",
+            (true, false) => "WASAPI",
+            (false, true) => "ASIO",
+            _ => "no devices",
+        };
+
+    /// <summary>Well-known cue identifiers used as keys into
+    /// <see cref="AppConfig.CustomCuePaths"/>. Stable strings — don't rename without writing
+    /// a migration, because users' Preferences-set custom paths are stored under these keys
+    /// in <c>remsound.config.json</c>. Centralised here so the Preferences dialog and the
+    /// MainForm load path agree on the spellings.</summary>
+    internal static class CueId
+    {
+        public const string Connect = "connect";
+        public const string Disconnect = "disconnect";
+        public const string RecordStart = "record-start";
+        public const string RecordStop = "record-stop";
+        public const string Save = "save";
+        public const string ProfileSwitch = "profile-switch";
+    }
+
+    /// <summary>Load one cue sound. Resolution order:
+    /// (1) if the active profile has a custom path for <paramref name="cueId"/> AND the
+    ///     referenced file exists, use that — the user-supplied override.
+    /// (2) otherwise the default WAV in <c>sounds\</c> next to RemSound.exe, named
+    ///     <paramref name="defaultFileName"/>.
+    /// (3) otherwise null — the cue silently doesn't play. New cues without a shipped
+    ///     default WAV (e.g. save.wav and profile.wav before the project owner supplies
+    ///     them) land here and the rest of the app keeps working.
+    ///
+    /// Custom paths are per-profile (changed from machine-wide in v3.0.3 development) so
+    /// each profile can carry its own cue palette. The settings cache mirrors the active
+    /// profile's CustomCuePaths dictionary and is the runtime source of truth.</summary>
+    private void TryLoadCueSound(string cueId, string defaultFileName, out System.Media.SoundPlayer? player)
     {
         player = null;
         try
         {
-            var path = Path.Combine(AppContext.BaseDirectory, fileName);
-            if (!File.Exists(path))
+            string? path = null;
+            var customPath = settings.LoadCustomCuePath(cueId);
+            if (!string.IsNullOrWhiteSpace(customPath) && File.Exists(customPath))
             {
-                logFile.Event($"cue sound missing: {fileName} (looked at {path})");
-                return;
+                path = customPath;
+                logFile.Event($"cue sound '{cueId}': using custom path {customPath}");
+            }
+            else
+            {
+                var defaultPath = Path.Combine(AppContext.BaseDirectory, "sounds", defaultFileName);
+                if (File.Exists(defaultPath))
+                {
+                    path = defaultPath;
+                }
+                else
+                {
+                    logFile.Event($"cue sound '{cueId}': default missing ({defaultPath}) and no custom override set — cue will be silent");
+                    return;
+                }
             }
             var sp = new System.Media.SoundPlayer(path);
             sp.LoadAsync();
@@ -5170,8 +5363,22 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            logFile.Event($"cue sound load failed for {fileName}: {ex.GetType().Name}: {ex.Message}");
+            logFile.Event($"cue sound load failed for '{cueId}': {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>Re-load all cue sounds. Called by PreferencesDialog after the user picks a
+    /// new custom WAV for any cue — re-runs <see cref="TryLoadCueSound"/> for the lot so
+    /// the cached SoundPlayer instances point at the right file from the next play onward.
+    /// </summary>
+    public void ReloadAllCueSounds()
+    {
+        TryLoadCueSound(CueId.Connect, "connect.wav", out connectSound);
+        TryLoadCueSound(CueId.Disconnect, "disconnect.wav", out disconnectSound);
+        TryLoadCueSound(CueId.RecordStart, "record start.wav", out recordStartSound);
+        TryLoadCueSound(CueId.RecordStop, "record stop.wav", out recordStopSound);
+        TryLoadCueSound(CueId.Save, "save.wav", out saveSound);
+        TryLoadCueSound(CueId.ProfileSwitch, "profile.wav", out profileSwitchSound);
     }
 
     /// <summary>

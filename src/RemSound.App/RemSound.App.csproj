@@ -14,7 +14,7 @@
          tag_name on the latest GitHub release; bump it on every public release. The
          AssemblyVersion / FileVersion default to this value, and Assembly.GetName().Version
          is what the About dialog and the updater both read. -->
-    <Version>3.0.2</Version>
+    <Version>3.1.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -57,24 +57,37 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Peer-state notification sounds. Copied next to RemSound.exe so SoundPlayer can find
-         them via AppContext.BaseDirectory. -->
-    <Content Include="..\..\connect.wav">
-      <Link>connect.wav</Link>
+    <!-- All cue sounds live in a sounds\ subfolder under the publish output (moved out of
+         the install-root flat layout 2026-05-28). Default cue WAVs ship inside that folder;
+         user-supplied custom cue paths set in Preferences override the defaults at runtime.
+         Filenames containing a space (e.g. "record start.wav") are preserved verbatim on
+         copy so the load-by-filename path in TryLoadCueSound finds them exactly as written. -->
+    <Content Include="..\..\sounds\connect.wav">
+      <Link>sounds\connect.wav</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="..\..\disconnect.wav">
-      <Link>disconnect.wav</Link>
+    <Content Include="..\..\sounds\disconnect.wav">
+      <Link>sounds\disconnect.wav</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <!-- Recording start/stop cues. Filenames contain a space — preserve on copy so the
-         load-by-filename path in TryLoadCueSound finds them exactly as written. -->
-    <Content Include="..\..\record start.wav">
-      <Link>record start.wav</Link>
+    <Content Include="..\..\sounds\record start.wav">
+      <Link>sounds\record start.wav</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="..\..\record stop.wav">
-      <Link>record stop.wav</Link>
+    <Content Include="..\..\sounds\record stop.wav">
+      <Link>sounds\record stop.wav</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- New cues introduced 2026-05-28: save.wav fires after a successful Save / Save As;
+         profile.wav fires immediately after a profile finishes loading. Both default WAVs
+         to be supplied by the project owner; absent files are gracefully ignored at load
+         time (the cue just doesn't play) so the build is fine without them. -->
+    <Content Include="..\..\sounds\save.wav" Condition="Exists('..\..\sounds\save.wav')">
+      <Link>sounds\save.wav</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\sounds\profile.wav" Condition="Exists('..\..\sounds\profile.wav')">
+      <Link>sounds\profile.wav</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <!-- User manual. F1 anywhere in the app opens this via the user's default browser

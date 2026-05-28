@@ -408,6 +408,60 @@ public sealed class RemSoundSettingsStore
         Save(s);
     }
 
+    public bool LoadEnableSaveCue() =>
+        Try(() => Load()?.EnableSaveCue) ?? true;
+
+    public void SaveEnableSaveCue(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.EnableSaveCue = value;
+        Save(s);
+    }
+
+    public bool LoadEnableProfileSwitchCue() =>
+        Try(() => Load()?.EnableProfileSwitchCue) ?? true;
+
+    public void SaveEnableProfileSwitchCue(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.EnableProfileSwitchCue = value;
+        Save(s);
+    }
+
+    /// <summary>The user's custom WAV path for a given cue, or null when they're using the
+    /// default. Per-profile (lives on <see cref="Profile.CustomCuePaths"/>) so different
+    /// profiles can carry different cue palettes.</summary>
+    public string? LoadCustomCuePath(string cueId)
+    {
+        return Try(() =>
+        {
+            var s = Load();
+            if (s?.CustomCuePaths is { } dict && dict.TryGetValue(cueId, out var path)
+                && !string.IsNullOrWhiteSpace(path))
+            {
+                return path;
+            }
+            return (string?)null;
+        });
+    }
+
+    /// <summary>Set a custom WAV path for a given cue. Pass null or empty to clear the
+    /// override (the cue reverts to the bundled default in <c>sounds\</c>).</summary>
+    public void SaveCustomCuePath(string cueId, string? path)
+    {
+        var s = Load() ?? new Settings();
+        s.CustomCuePaths ??= new Dictionary<string, string>();
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            s.CustomCuePaths.Remove(cueId);
+        }
+        else
+        {
+            s.CustomCuePaths[cueId] = path;
+        }
+        Save(s);
+    }
+
     /// <summary>The whole recording-settings bag for the current profile. Loaded as a
     /// CLONE so callers can mutate the returned object without inadvertently writing
     /// back to the cache. Save flushes the object atomically.</summary>
@@ -531,6 +585,12 @@ public sealed class RemSoundSettingsStore
             EnableDisconnectCue = profile.EnableDisconnectCue,
             EnableRecordStartCue = profile.EnableRecordStartCue,
             EnableRecordStopCue = profile.EnableRecordStopCue,
+            EnableSaveCue = profile.EnableSaveCue,
+            EnableProfileSwitchCue = profile.EnableProfileSwitchCue,
+            // Defensive copy so cache mutations don't leak into the in-memory Profile graph
+            // (and vice-versa). Profile is loaded once at startup; the cache evolves through
+            // the session and is written back via CopyTo on save.
+            CustomCuePaths = profile.CustomCuePaths is null ? new() : new Dictionary<string, string>(profile.CustomCuePaths),
             RecordingSettings = profile.RecordingSettings?.Clone() ?? new RecordingSettings(),
         };
     }
@@ -581,6 +641,11 @@ public sealed class RemSoundSettingsStore
         profile.EnableDisconnectCue = s.EnableDisconnectCue;
         profile.EnableRecordStartCue = s.EnableRecordStartCue;
         profile.EnableRecordStopCue = s.EnableRecordStopCue;
+        profile.EnableSaveCue = s.EnableSaveCue;
+        profile.EnableProfileSwitchCue = s.EnableProfileSwitchCue;
+        profile.CustomCuePaths = s.CustomCuePaths is null
+            ? new Dictionary<string, string>()
+            : new Dictionary<string, string>(s.CustomCuePaths);
         if (s.RecordingSettings is RecordingSettings rs) profile.RecordingSettings = rs.Clone();
     }
 
@@ -646,6 +711,9 @@ public sealed class RemSoundSettingsStore
         public bool? EnableDisconnectCue { get; set; }
         public bool? EnableRecordStartCue { get; set; }
         public bool? EnableRecordStopCue { get; set; }
+        public bool? EnableSaveCue { get; set; }
+        public bool? EnableProfileSwitchCue { get; set; }
+        public Dictionary<string, string>? CustomCuePaths { get; set; }
         public RecordingSettings? RecordingSettings { get; set; }
     }
 

@@ -33,6 +33,12 @@ internal sealed class RecordingController
 
     public bool IsRecording => active is not null;
 
+    /// <summary>UTC clock at which the current recording started, or null when nothing is
+    /// recording. Captured by <see cref="Start"/> and cleared by <see cref="Stop"/>. Used
+    /// by the system-tray tooltip builder in MainForm to surface "recording for MM:SS"
+    /// alongside the peer count. 2026-05-28.</summary>
+    public DateTime? RecordingStartedUtc { get; private set; }
+
     /// <summary>Optional callback fired when the user starts or stops a recording. The
     /// MainForm hooks this to flip the menu item text "Start recording" ↔ "Stop recording"
     /// and announce the change to NVDA.</summary>
@@ -64,6 +70,7 @@ internal sealed class RecordingController
         // whether to actually write the samples.
         sender.OnSentSamples = active.WriteSent;
         receiver.OnReceivedSamples = active.WriteReceived;
+        RecordingStartedUtc = DateTime.UtcNow;
         diagnostic($"recording: started → {active.FilePath} (source={s.Source}, format={s.FileFormat}, channels={s.ChannelMode})");
         RecordingStateChanged?.Invoke(true);
     }
@@ -81,6 +88,7 @@ internal sealed class RecordingController
         receiver.OnReceivedSamples = null;
 
         active = null;
+        RecordingStartedUtc = null;
         try
         {
             recorder.Stop();

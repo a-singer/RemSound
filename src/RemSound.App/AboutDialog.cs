@@ -20,6 +20,83 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v3.1
+
+        Two big rounds of work on audio cues and the system
+        tray, plus a handful of smaller fixes.
+
+        New audio cue sounds:
+          * Profile saved. Plays a short cue whenever a
+            profile is saved (Ctrl+S or File menu Save as).
+            Gives you an audible "yes, that took" so you
+            don't have to look at the screen.
+          * Profile switched. Plays a short cue whenever a
+            profile finishes loading - at startup and after
+            you pick a different profile. It plays the new
+            profile's cue, not the old one's, so if you
+            give each profile a different switched-to
+            sound you can tell at a glance which profile
+            you're now on.
+
+        Per-profile custom cue sounds:
+          * The Audio cue sounds list in Preferences now has
+            six entries (Connect, Disconnect, Recording
+            start, Recording stop, Profile saved, Profile
+            switched), each with a tick to enable or
+            silence it.
+          * Two new buttons sit under the list. Play
+            previews the currently-highlighted cue through
+            your default Windows output. Browse opens a
+            file picker so you can replace the default
+            sound with any WAV file from your own disk.
+            Right-clicking Browse offers "Use default
+            sound" to undo the swap.
+          * Both the tick states AND the custom sound
+            choices are saved with the active profile, so
+            different profiles can carry different cue
+            palettes. A "quiet listening" profile can have
+            all cues off; a "studio" profile can use a
+            distinct set of sounds.
+          * The default WAV files have moved from sitting
+            loose next to RemSound.exe into a new sounds
+            subfolder, keeping the install folder tidier.
+
+        System tray icon redesigned:
+          * Hovering shows a live summary - peer count,
+            send / receive mode (WASAPI, ASIO, or both),
+            and how long any current recording has been
+            running. Refreshes every second.
+          * Right-click menu reworked. The items are now
+            Show RemSound (W), Enable sending (S, ticks
+            reflect state), Enable receiving (R, same),
+            Profiles (P, submenu of your recent profiles
+            with number-key shortcuts), and Exit (X).
+          * Show RemSound now reliably brings the window
+            forward and focuses it, fixing a case where
+            screen reader users had to Alt+Tab to actually
+            reach the restored window.
+          * Enable sending and Enable receiving toggle the
+            state instead of always switching it on, so
+            you can use them to turn off too.
+          * The Profiles submenu lets you switch profiles
+            from the tray without re-opening the main
+            window. Number keys 1..5 jump straight to a
+            slot.
+
+        Bug fixes:
+          * The tray icon's initial hover text was reading
+            as "RemSound RemSound" on screen readers
+            because the tooltip text matched the process
+            name. Now reads cleanly as "RemSound - starting
+            up" at first, then the live state takes over.
+          * Recent profiles in both menus no longer
+            announce a "Recent profile N:" prefix - they
+            just read the profile name. The number-key
+            shortcuts still work.
+
+        No wire format change. v3.1 talks to other v3.0.x
+        machines exactly as v3.0 / v3.0.1 / v3.0.2 did.
+
         RemSound v3.0.2
 
         Hot-fix for a slow memory leak in the receive side. If

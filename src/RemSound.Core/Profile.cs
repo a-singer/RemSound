@@ -97,11 +97,25 @@ public sealed class Profile
     /// falls back to the legacy <see cref="MuteConnectionCues"/> migration path; once the
     /// user touches the new UI we write a concrete <c>true</c>/<c>false</c> and the legacy
     /// field stops mattering. Defaults to "play the sound" (true) for both cases — the
-    /// audio cues are part of the normal user feedback loop, not opt-in. 2026-05-15.</summary>
+    /// audio cues are part of the normal user feedback loop, not opt-in. 2026-05-15.
+    ///
+    /// EnableSaveCue / EnableProfileSwitchCue added 2026-05-28 alongside the new
+    /// save.wav / profile.wav defaults. Same nullable + default-true semantics as the rest.</summary>
     public bool? EnableConnectCue { get; set; }
     public bool? EnableDisconnectCue { get; set; }
     public bool? EnableRecordStartCue { get; set; }
     public bool? EnableRecordStopCue { get; set; }
+    public bool? EnableSaveCue { get; set; }
+    public bool? EnableProfileSwitchCue { get; set; }
+
+    /// <summary>Per-cue custom WAV file overrides, keyed by the well-known cue id (<c>connect</c>,
+    /// <c>disconnect</c>, <c>record-start</c>, <c>record-stop</c>, <c>save</c>,
+    /// <c>profile-switch</c>) and valued with the absolute filesystem path to the user's chosen
+    /// WAV. Per-profile (moved here from AppConfig 2026-05-28) so a "live monitoring" profile
+    /// can have one set of custom sounds and a "recording" profile a different set. Missing
+    /// keys mean "use the default sound shipped in the sounds\ folder next to RemSound.exe".
+    /// Empty dictionary on a fresh profile.</summary>
+    public Dictionary<string, string> CustomCuePaths { get; set; } = new();
     public int MaxLatencyMs { get; set; } = 80;
     public int Smoothness { get; set; } = 3;
     public bool ContinuousAutoTuneEnabled { get; set; }

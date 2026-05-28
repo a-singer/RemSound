@@ -43,6 +43,7 @@ ul, ol { padding-left: 1.4em; }
 <li><a href="#hotkeys">Global hotkeys (mute, volume, tray, recording)</a></li>
 <li><a href="#remote-control">Remote control: adjusting a peer's listening volume from your end</a></li>
 <li><a href="#startup">Startup behaviour</a></li>
+<li><a href="#audio-cues">Audio cue sounds</a></li>
 <li><a href="#updates">Updating RemSound</a></li>
 <li><a href="#recording">Recording to a file</a></li>
 <li><a href="#logs">Logs and diagnostics</a></li>
@@ -212,6 +213,31 @@ ul, ol { padding-left: 1.4em; }
 <tr><td><strong>Audio profile</strong></td><td>Codec, packet size, lock-to-audio-clock, latency, continuous auto-tune, buffer smoothness, artefact sound. Split into an <em>Audio send parameters</em> group and an <em>Audio receive parameters</em> group.</td></tr>
 </table>
 
+<h3>The system tray icon and its menu</h3>
+
+<p>When RemSound is <strong>minimised to the tray</strong> (via <strong>File &rarr; Minimise to tray</strong>, the &ldquo;Show or hide window&rdquo; global hotkey, or by starting minimised on launch), the main window hides and an icon appears in your Windows system tray (the small icons cluster next to the clock).</p>
+
+<p><strong>Hovering over the tray icon</strong> shows a short summary of what RemSound is doing right now &mdash; the number of healthy peers, whether you're sending or receiving and in which mode (WASAPI, ASIO, or both), and how long any current recording has been running. The summary refreshes every second. Examples:</p>
+
+<ul>
+<li><em>RemSound &mdash; not connected</em></li>
+<li><em>RemSound &mdash; 2 peers, sending (WASAPI), receiving (WASAPI)</em></li>
+<li><em>RemSound &mdash; recording for 5:23, 1 peer, sending (WASAPI + ASIO), receiving (WASAPI + ASIO)</em></li>
+</ul>
+
+<p><strong>Right-clicking the tray icon</strong> opens a small menu with everything you might want to reach without re-opening the main window:</p>
+
+<table>
+<tr><th>Item</th><th>Shortcut</th><th>What it does</th></tr>
+<tr><td><strong>Show RemSound</strong></td><td>W</td><td>Brings the main window back to the front and gives it focus. Double-clicking the tray icon does the same thing.</td></tr>
+<tr><td><strong>Enable sending</strong> (tickable)</td><td>S</td><td>Toggles &ldquo;Send my audio&rdquo; on or off, the same way as the checkbox on the Audio inputs and outputs tab. The tick reflects the current state &mdash; ticked means sending, unticked means not.</td></tr>
+<tr><td><strong>Enable receiving</strong> (tickable)</td><td>R</td><td>Toggles &ldquo;Receive audio&rdquo; on or off. Same tick-reflects-state rule.</td></tr>
+<tr><td><strong>Profiles &rarr;</strong></td><td>P</td><td>A submenu listing your recent profiles, most recent first. Each row has a single-digit shortcut: while the submenu is open, press <strong>1</strong> for the most recent, <strong>2</strong> for the next, and so on up to <strong>5</strong>. Selecting one switches the active profile, exactly the same way as the File menu's Recent profiles submenu. Greyed out as &ldquo;(No recent profiles)&rdquo; when you haven't loaded any yet.</td></tr>
+<tr><td><strong>Exit</strong></td><td>X</td><td>Closes RemSound entirely.</td></tr>
+</table>
+
+<p><strong>Keyboard access:</strong> the tray icon is reachable through standard Windows shortcuts &mdash; <strong>Windows + B</strong> moves focus to the notification area, arrow keys navigate, Enter activates, and the application context-menu key (or Shift+F10) opens the right-click menu without a mouse.</p>
+
 <h2 id="menu-bar">5. Menus (File, Record, Options, Help)</h2>
 
 <p>There are four menus on the main window: <strong>File (Alt+F)</strong>, <strong>Record (Alt+K)</strong>, <strong>Options (Alt+O)</strong> and <strong>Help (Alt+H)</strong>. The Record menu opens with Alt+K rather than Alt+R because Alt+R is already used by the <strong>Receive audio</strong> checkbox on the main window. The menu's title is shown as &ldquo;Record (Alt+K)&rdquo; so you can find the shortcut even though there is no K in the word.</p>
@@ -223,12 +249,12 @@ ul, ol { padding-left: 1.4em; }
 <table>
 <tr><th>Item</th><th>Shortcut</th><th>What it does</th></tr>
 <tr><td><strong>Open profile&hellip;</strong></td><td>Ctrl+O, or Alt+F, O</td><td>Opens a Windows file picker showing your profiles folder. Pick a profile, and RemSound reloads using it (the window closes and reopens with all that profile's device choices, peers and settings restored). To delete a profile, right-click its entry inside the file picker and choose Delete &mdash; that lets Windows handle the deletion.</td></tr>
-<tr><td><strong>Recent profiles &rarr;</strong></td><td>Alt+F, R</td><td>A submenu listing the last five profiles you've opened, most recent first. Each row has a single-digit shortcut: while the submenu is open, press <strong>1</strong> for the most recent, <strong>2</strong> for the next, and so on up to <strong>5</strong>. Or just select the one you want. It reloads the profile the same way Open profile does. If a recent profile's file has been deleted or moved away, it's left out of the submenu (it stays in the list in case the file comes back later &mdash; for example when you reconnect an external drive). If the list is empty, you see a greyed-out &ldquo;(No recent profiles)&rdquo; entry.</td></tr>
+<tr><td><strong>Recent profiles &rarr;</strong></td><td>Alt+F, R</td><td>A submenu listing the last five profiles you've opened, most recent first. Each row has a single-digit shortcut: while the submenu is open, press <strong>1</strong> for the most recent, <strong>2</strong> for the next, and so on up to <strong>5</strong>. Or just select the one you want. It reloads the profile the same way Open profile does. If a recent profile's file has been deleted or moved away, it's left out of the submenu (it stays in the list in case the file comes back later &mdash; for example when you reconnect an external drive). If the list is empty, you see a greyed-out &ldquo;(No recent profiles)&rdquo; entry. The same list appears in the system-tray icon's <strong>Profiles</strong> submenu, with the same number shortcuts, so you can switch profiles without re-opening the main window.</td></tr>
 <tr><td><strong>Save</strong></td><td>Ctrl+S</td><td>Updates the current profile with your current settings. If there's no current profile (you're on the blank template), this becomes Save as automatically.</td></tr>
 <tr><td><strong>Save as&hellip;</strong></td><td>Alt+F, A</td><td>Asks for a name and saves a copy. Use it to save your current setup under a new name, or to save for the first time from the blank template.</td></tr>
 <tr><td><strong>Rename current profile&hellip;</strong></td><td>Alt+F, M</td><td>Renames the current profile's file and updates the window title. Does nothing on the blank template (there's no profile to rename).</td></tr>
 <tr><td><strong>Lock profile (read-only)</strong> (tickable)</td><td>Alt+F, L</td><td>When ticked, the current profile is loaded for use but RemSound will not save any of your changes back to it. The window title shows &ldquo;(read-only)&rdquo; so you can tell at a glance. Save (Ctrl+S) politely refuses with a hint to use Save as instead, and closing RemSound never asks &ldquo;save changes?&rdquo; &mdash; it just closes. Anything you've changed during the session is forgotten when RemSound closes; the file on disk is left exactly as it was. The lock setting is saved on the profile itself, so it sticks across launches. See <a href="#profile-lock">Locking a profile</a> for the full story.</td></tr>
-<tr><td><strong>Minimise to tray</strong></td><td>Alt+F, N</td><td>Hides the window down to the system tray (the small icons near the clock). To bring the window back, click the tray icon or use the &ldquo;Show or hide window&rdquo; global hotkey (set in the Keyboard shortcuts dialog, default Ctrl+Shift+F10).</td></tr>
+<tr><td><strong>Minimise to tray</strong></td><td>Alt+F, N</td><td>Hides the window down to the system tray (the small icons near the clock). The tray icon's hover summary tells you what RemSound is doing, and right-clicking it gives you Show RemSound, Enable sending, Enable receiving, your Profiles submenu, and Exit &mdash; see <a href="#main-window">The system tray icon and its menu</a> for the full rundown. To bring the window back, double-click the tray icon, pick &ldquo;Show RemSound&rdquo; from its menu, or use the &ldquo;Show or hide window&rdquo; global hotkey (set in the Keyboard shortcuts dialog, default Ctrl+Shift+F10).</td></tr>
 <tr><td><strong>Exit</strong></td><td>Alt+F, X (or Alt+F4)</td><td>Closes RemSound. If you have unsaved profile changes (and the profile isn't locked), it asks you first.</td></tr>
 </table>
 
@@ -252,7 +278,7 @@ ul, ol { padding-left: 1.4em; }
 <tr><td><strong>Recording settings&hellip;</strong></td><td>Alt+O, S</td><td>Opens the Recording settings dialog. Up to five lists: <em>Recording source</em> (Alt+S), <em>File format</em> (Alt+F), <em>Audio format attributes</em> (Alt+A), <em>FLAC compression level</em> (Alt+L &mdash; only shown when FLAC is chosen), and <em>Channels</em> (Alt+C). The attributes list changes to match the format you pick. OK saves to the current profile; Cancel discards.</td></tr>
 <tr><td><strong>Keyboard shortcuts&hellip;</strong></td><td>Ctrl+K, or Alt+O, K</td><td>Opens the global hotkey dialog (mute, volume, show/hide window, start/stop recording, remote-control commands).</td></tr>
 <tr><td><strong>Startup behaviour&hellip;</strong></td><td>Alt+O, T</td><td>Opens the Startup behaviour dialog. Choose whether to launch automatically with Windows, which profile to load by default, and whether to start hidden in the tray.</td></tr>
-<tr><td><strong>Preferences&hellip;</strong></td><td>Ctrl+P, or Alt+O, P</td><td>Opens the Preferences dialog. This holds the settings that stay the same on this computer no matter which profile is loaded: the profiles folder, the <strong>Audio cue sounds (Alt+N)</strong> checklist (one tickable item per cue: connect, disconnect, recording start, recording stop), whether to accept remote volume commands, whether to check for updates on startup, how often to check for updates after that, a manual check-for-updates button, whether to install updates quietly, whether to ask your router to open the audio port for you (UPnP), whether to keep logs, and a button to write logs now. Esc or the Close button dismisses it.</td></tr>
+<tr><td><strong>Preferences&hellip;</strong></td><td>Ctrl+P, or Alt+O, P</td><td>Opens the Preferences dialog. Settings here are a mix of machine-level (the profiles folder, updates, logging, UPnP) and per-profile (the audio cue list and its tick states). It holds: the profiles folder; the <strong>Audio cue sounds (Alt+N)</strong> list with Play and Browse buttons (see <a href="#audio-cues">Audio cue sounds</a>); whether to accept remote volume commands; whether to check for updates on startup; how often to check after that; a manual check-for-updates button; whether to install updates quietly; whether to ask your router to open the audio port for you (UPnP); whether to keep logs; and a button to write logs now. Esc or the Close button dismisses it.</td></tr>
 </table>
 
 <h3>Help menu</h3>
@@ -799,7 +825,67 @@ Use whatever key combinations you prefer (for example Ctrl+Shift+Up / Ctrl+Shift
 <strong>Where these are stored:</strong> the start-minimised choice and the start-with-profile name are kept in a small settings file on this computer. The auto-start toggle is kept in Windows' standard startup list &mdash; you turn it on or off from this dialog, or from Task Manager &rarr; Startup.
 </div>
 
-<h2 id="updates">17. Updating RemSound</h2>
+<h2 id="audio-cues">17. Audio cue sounds</h2>
+
+<p>RemSound plays a short sound at moments where you might want an audible confirmation that something just happened. These are called <strong>cue sounds</strong>. Six events have a cue:</p>
+
+<table>
+<tr><th>Cue</th><th>Plays when</th></tr>
+<tr><td><strong>Connect sound</strong></td><td>A peer goes from &ldquo;trying&rdquo; or &ldquo;unreachable&rdquo; to actually connected.</td></tr>
+<tr><td><strong>Disconnect sound</strong></td><td>A previously-connected peer drops off (network blip, peer closed RemSound, computer went to sleep, etc).</td></tr>
+<tr><td><strong>Recording start sound</strong></td><td>You start a recording.</td></tr>
+<tr><td><strong>Recording stop sound</strong></td><td>You stop a recording.</td></tr>
+<tr><td><strong>Profile saved sound</strong></td><td>A profile is saved &mdash; whether via File &rarr; Save or File &rarr; Save as.</td></tr>
+<tr><td><strong>Profile switched sound</strong></td><td>A profile finishes loading. Plays at startup if you started with a profile, and after every profile switch &mdash; using the new profile's cue, not the old one's.</td></tr>
+</table>
+
+<p>All six cues play through your default Windows sound output, which is separate from the audio RemSound is sending or receiving. They don't appear in a normal recording. (The exception: if your sending side is capturing the very output device the cues play through, then they get captured along with everything else from that device.)</p>
+
+<h3>Turning each cue on or off</h3>
+
+<p>Open <strong>File &rarr; Preferences</strong> (or Ctrl+P). The <strong>Audio cue sounds (Alt+N)</strong> list shows all six cues with a tickbox next to each. Tick to play the cue when the corresponding event happens; untick to silence it.</p>
+
+<p>Use the up and down arrow keys to move between cues; press <strong>Space</strong> to toggle the highlighted cue's tick on or off.</p>
+
+<p>The tick settings are <strong>saved with the active profile</strong>, so different profiles can have different combinations of cues on. For example, a &ldquo;quiet listening&rdquo; profile might have all cues off, while a &ldquo;live monitoring&rdquo; profile keeps them on. When you save the profile (Ctrl+S), the new settings travel with it.</p>
+
+<h3>Previewing and choosing a different sound</h3>
+
+<p>Below the list are two buttons that act on whichever cue is currently highlighted in the list:</p>
+
+<ul>
+<li><strong>Play [cue name] (Alt+P)</strong> &mdash; previews the cue's currently-configured sound through your default Windows output, so you can hear it without having to trigger the event. Works regardless of whether the cue is ticked (so you can listen before deciding to enable it).</li>
+<li><strong>Browse for [cue name]&hellip; (Alt+B)</strong> &mdash; opens a Windows file picker so you can choose your own WAV file for this cue, replacing the default. RemSound only accepts <code>.wav</code> files. Once picked, the button's label changes to &ldquo;(custom)&rdquo; to remind you the cue is using your file rather than the default. The next time the event fires, your custom sound plays.</li>
+</ul>
+
+<p>Both buttons' labels update as you arrow through the list, so you always know which cue you're about to act on.</p>
+
+<p>Custom sound choices are <strong>saved with the active profile</strong>, the same way the tick states are. Different profiles can have completely different cue palettes &mdash; a &ldquo;studio&rdquo; profile might use one set of sounds, a &ldquo;broadcast&rdquo; profile another. The custom files themselves stay where you picked them on your disk; the profile just remembers their paths.</p>
+
+<h3>Going back to the default sound</h3>
+
+<p>To revert a cue to its default sound, <strong>right-click</strong> the <em>Browse for [cue name]&hellip;</em> button and pick <strong>Use default sound</strong>. The custom path is forgotten and the cue goes back to playing the default WAV that ships with RemSound. The right-click option is greyed out when the cue is already using its default. (Alternatively, click <em>Browse</em> and pick a file from inside RemSound's own <code>sounds</code> folder &mdash; RemSound recognises that as &ldquo;use default&rdquo; and clears the override automatically.)</p>
+
+<h3>Where the default sounds live</h3>
+
+<p>The default WAV files are in the <code>sounds</code> folder next to <code>RemSound.exe</code>. If you don't pick a custom file for a cue, RemSound plays the matching default from there:</p>
+
+<ul>
+<li><code>sounds\connect.wav</code> &mdash; connect cue</li>
+<li><code>sounds\disconnect.wav</code> &mdash; disconnect cue</li>
+<li><code>sounds\record start.wav</code> &mdash; recording start cue</li>
+<li><code>sounds\record stop.wav</code> &mdash; recording stop cue</li>
+<li><code>sounds\save.wav</code> &mdash; profile saved cue</li>
+<li><code>sounds\profile.wav</code> &mdash; profile switched cue</li>
+</ul>
+
+<p>If a cue's WAV file is missing &mdash; either the default file doesn't exist or a custom path points at a file you've since deleted &mdash; the cue stays silent rather than producing an error. RemSound logs a note in the diagnostic log (if logging is on) so you can see what happened.</p>
+
+<div class="note">
+<strong>Tip for sound designers:</strong> the defaults are deliberately short and simple so they stay out of the way. If you'd like the cues to feel more in-character with a particular profile, the custom-sound feature is designed for exactly that. Keep WAV files short (well under a second usually works best) so cues don't overlap with each other on a busy day.
+</div>
+
+<h2 id="updates">18. Updating RemSound</h2>
 
 <p>RemSound can check for a newer version on a schedule you choose, prompt you to install it, and either ask first or do it quietly. There's also a one-press &ldquo;check now&rdquo; button so you don't have to wait for the timer.</p>
 
@@ -861,7 +947,7 @@ Use whatever key combinations you prefer (for example Ctrl+Shift+Up / Ctrl+Shift
 
 <p>To see which version you're on without checking for updates, open <strong>Help &rarr; About RemSound</strong> (Alt+H, A). The dialog shows the version number and the release notes for the version you're running, in a scrollable read-only box. Close (or Esc) dismisses it.</p>
 
-<h2 id="recording">18. Recording to a file</h2>
+<h2 id="recording">19. Recording to a file</h2>
 
 <p>RemSound can save the sound passing through it to a file on your computer &mdash; useful for keeping a copy of a music session, capturing a long jam for editing later, or just saving a one-off voice exchange you want to come back to.</p>
 
@@ -891,9 +977,7 @@ Use whatever key combinations you prefer (for example Ctrl+Shift+Up / Ctrl+Shift
 
 <h3>Start and stop sound cues</h3>
 
-<p>RemSound plays a short ding when a recording starts and another when it stops, so you have an audible confirmation that the toggle actually took effect. The cues are <code>record start.wav</code> and <code>record stop.wav</code> in the RemSound install folder &mdash; you can drop in your own sounds to customise them, as long as you keep the same filenames.</p>
-
-<p>Each cue can be turned off on its own via <strong>Preferences &rarr; Audio cue sounds (Alt+N)</strong>. The same checklist also controls the connect and disconnect cues. The cues play through your default Windows output device, separately from the recording, so a normal RemSound recording doesn't contain the cue. The one exception: if your sending side is capturing the very same output device the cue plays through, then the cue gets captured along with everything else from that device. In that case you'll have to live with the start cue appearing in the file, unless you turn it off.</p>
+<p>RemSound plays a short ding when a recording starts and another when it stops, so you have an audible confirmation that the toggle actually took effect. These are two of the six cues described in <a href="#audio-cues">Audio cue sounds</a>. You can turn either or both off, replace them with your own WAV files, and preview them from Preferences. The defaults live at <code>sounds\record start.wav</code> and <code>sounds\record stop.wav</code> next to <code>RemSound.exe</code>.</p>
 
 <h3>Where recordings go</h3>
 
@@ -930,7 +1014,7 @@ Use whatever key combinations you prefer (for example Ctrl+Shift+Up / Ctrl+Shift
 
 <p>OK (Alt+O) saves your choices to the current profile. Cancel (Alt+N) or Esc discards them. Settings are saved with the profile as usual &mdash; changes here mark the profile as having unsaved changes, and you'll be asked about them on exit if you haven't saved.</p>
 
-<h2 id="logs">19. Logs and diagnostics</h2>
+<h2 id="logs">20. Logs and diagnostics</h2>
 
 <p>If logging is turned on (the <strong>Enable logs</strong> checkbox in the Preferences dialog &mdash; Options &rarr; Preferences, or Ctrl+P &mdash; on by default), RemSound writes a log file each session into a <code>logs</code> folder next to the RemSound program. One file per launch.</p>
 
@@ -954,7 +1038,7 @@ Use whatever key combinations you prefer (for example Ctrl+Shift+Up / Ctrl+Shift
 <li><strong>OpusUnrecoveredGaps</strong> &mdash; a running total of multi-packet losses that Opus couldn't repair. Each one is an audible click. It stays at 0 on a clean connection; small numbers are normal over the internet.</li>
 </ul>
 
-<h2 id="troubleshooting">20. Troubleshooting</h2>
+<h2 id="troubleshooting">21. Troubleshooting</h2>
 
 <h3>I don't hear my friend</h3>
 <ol>
@@ -1023,7 +1107,7 @@ Use whatever key combinations you prefer (for example Ctrl+Shift+Up / Ctrl+Shift
 </ul>
 <p>If none of those apply, just fall back to Tailscale &mdash; it works without involving the router at all.</p>
 
-<h2 id="glossary">21. Glossary</h2>
+<h2 id="glossary">22. Glossary</h2>
 
 <table>
 <tr><th>Term</th><th>Meaning</th></tr>

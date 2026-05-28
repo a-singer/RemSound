@@ -30,7 +30,7 @@ Inside RemSound there's just one main decision: which quality and delay you want
 ## How to install it
 
 1. Go to the [latest release](https://github.com/Ednunp/RemSound/releases/latest).
-2. Download the file called `RemSound-v3.0.2.zip` (the version number changes over time — pick whichever is newest).
+2. Download the file called `RemSound-v3.1.zip` (the version number changes over time — pick whichever is newest).
 3. Extract the zip into a folder of your choice.
 4. Double-click `RemSound.exe` and away you go.
 

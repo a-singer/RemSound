@@ -46,14 +46,41 @@ $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("remsound-release-" + [g
 $syncScript = Join-Path $repo 'sync-manual.py'
 if (Test-Path $syncScript) {
     Write-Host "Syncing MANUAL.md from readme.html..." -ForegroundColor Cyan
-    # Prefer the user-local Python 3.11 install; fall back to whichever 'python' resolves
-    # on PATH if that's not present. py.exe is the official Windows launcher and is the
-    # most reliable single command, so try it first.
+    # Look for a real Python interpreter — must actually RUN, not just exist. Windows ships
+    # "Microsoft Store" execution aliases for 'py' and 'python' that fail with exit 9009 and
+    # a "go install from the Store" message instead of running anything, so a plain
+    # Get-Command check isn't enough. Test each candidate with 'python --version' first and
+    # only treat a 0-exit result as a real install. Falls back to a couple of known user-
+    # local install paths if no PATH-resolved candidate works.
+    # Find a real Python interpreter. Tricky on Windows because:
+    #   - The 'py' launcher passes --version queries but can refuse to run scripts when its
+    #     registry-based interpreter lookup misses (seen on this dev box: 'py --version'
+    #     prints 3.11.9 but 'py sync-manual.py' falls through to the Microsoft Store stub).
+    #   - The 'python' command is by default an execution alias to the Microsoft Store install
+    #     prompt — it accepts the call, exits with 9009, and prints "go install from the Store".
+    # So we run an actual one-line script via -c with each candidate and accept the candidate
+    # only if the script ran (output matches our expected sentinel). User-local Python install
+    # paths come first because they're the most reliable way to skip past the Store alias.
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python311\python.exe'),
+        'python3.11', 'python3.12', 'python3.13',
+        'py', 'python3', 'python'
+    )
     $pythonCmd = $null
-    foreach ($candidate in @('py', 'python', 'python3')) {
-        if (Get-Command $candidate -ErrorAction SilentlyContinue) { $pythonCmd = $candidate; break }
+    foreach ($candidate in $candidates) {
+        if (-not $candidate) { continue }
+        try {
+            $sentinel = & $candidate -c "print('PYOK')" 2>&1
+            if ($LASTEXITCODE -eq 0 -and ($sentinel -join '') -match 'PYOK') {
+                $pythonCmd = $candidate
+                break
+            }
+        } catch { continue }
     }
-    if (-not $pythonCmd) { throw "Python not found on PATH - cannot sync MANUAL.md. Install Python 3.x and re-run." }
+    if (-not $pythonCmd) { throw "Python not found - cannot sync MANUAL.md. Install Python 3.x and re-run." }
+    Write-Host "Using Python: $pythonCmd" -ForegroundColor DarkGray
     & $pythonCmd $syncScript
     if ($LASTEXITCODE -ne 0) { throw "sync-manual.py failed (exit $LASTEXITCODE)" }
 

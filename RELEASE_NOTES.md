@@ -1,32 +1,40 @@
-# RemSound v3.1.1
+# RemSound v3.1.2
 
-Hot-fix for one small but annoying bug introduced in v3.1.
+A small accessibility fix for the system tray icon, plus a clearer "check for updates" message for Windows 7 users. Minor update — safe to take, nothing else changes.
 
-## What was happening
+## The tray icon's double announcement (screen reader users)
 
-If the v3.1 auto-update fired while RemSound was set to start minimised to the tray, the tray icon's hover tooltip could get stuck saying **"RemSound — starting up"** indefinitely, instead of switching to the live "X peers, sending, receiving" summary after a second or so. The workaround was to show the main window and then minimise it again — that cleared the stuck text.
+If you run RemSound minimised to the tray with a screen reader, you may have noticed the tray icon reading out **two states one after the other** every time you landed on it — for example "no peers connected" and then immediately "1 peer connected". It always happened in that same order, and showing the window then minimising it again was the only thing that cleared it.
 
-## Why it happened
+### Why it happened
 
-Windows registers a tray icon's tooltip text with the shell at the exact moment the icon becomes visible. RemSound was setting an initial "starting up" string at construction time, and the shell tended to keep showing that text on hover even after the live state had been computed and pushed through. The hide-then-re-show workaround forced the shell to rebuild its registration of the icon, which picked up whatever the current live text was.
+Windows stamps a tray icon with its name at the exact moment the icon appears. On a fresh start — say, just after you log in — the icon appears a second or so before your other machine has reconnected, so the honest state at that instant really is "no peers". Windows remembers that as the icon's name and only ever refreshes the little hover bubble afterwards, never the stamped name. So your screen reader read the frozen name ("no peers") followed by the live bubble ("1 peer") — two readings of what should be one thing.
 
-## The fix
+### The fix
 
-The right tooltip text is now computed once, just before the icon becomes visible for the first time, so Windows registers the icon with the correct live summary from the start. From there, the same 1-second refresh keeps it current — same as before.
+RemSound now re-stamps the icon itself whenever something real changes — a peer connecting or dropping, sending or receiving switching on or off, or a recording starting or stopping. That's the automatic version of the old "show the window then minimise again" trick. Your screen reader now hears a single, current state.
+
+## Recording shows as "recording" in the tray
+
+While a recording is running, the tray summary now simply says **"recording"** rather than counting the seconds. A live timer would have forced the icon to flicker every second or left a screen reader announcing a stale time — neither was good. If you want the exact length, it's on the main window.
+
+## Clearer update message on Windows 7
+
+On a Windows 7 machine that can't make a secure (HTTPS) connection to the update server, **Check for updates** used to report "you're already on the latest version" — which was wrong and confusing. It now tells you plainly that the secure connection failed, names the Windows updates that fix it, and gives you a direct link to download the new version by hand if you'd rather. Windows 10 and 11 were never affected.
 
 ## Nothing else has changed
 
-Same wire format, same codec list, same audio cues, same everything else from v3.1. If you didn't see the stuck-tooltip issue, this update is small and silent — but worth taking because the underlying cause was a real Windows shell behaviour and the fix is solid.
+Same wire format, same codec list, same audio cues, same everything else from v3.1. v3.1.2 talks to v3.0.x and v3.1.x peers exactly as before.
 
 ## Install
 
-1. Download `RemSound-v3.1.1.zip` from this release.
+1. Download `RemSound-v3.1.2.zip` from this release.
 2. Close RemSound.
 3. Extract the zip **over your existing RemSound folder**, overwriting program files when prompted. The zip is program files only — it will not touch your profiles, settings or recordings.
 4. Run `RemSound.exe`.
 
 ## Upgrading
 
-**v1.9 through v3.1:** Help → Check for updates works — it will fetch and install v3.1.1 automatically. If you've ticked "Check for updates on startup" and "Silently install updates", v3.1.1 installs itself shortly after launch.
+**v1.9 through v3.1.1:** Help → Check for updates works — it will fetch and install v3.1.2 automatically. If you've ticked "Check for updates on startup" and "Silently install updates", v3.1.2 installs itself shortly after launch.
 
-**v1.8 and earlier:** the auto-updater in those versions has a fault that prevents it from installing updates, so Check for updates will download v3.1.1 but not apply it. Install v3.1.1 by hand using the steps above — just this once. From the build you install onward, updates are automatic.
+**v1.8 and earlier:** the auto-updater in those versions has a fault that prevents it from installing updates, so Check for updates will download v3.1.2 but not apply it. Install v3.1.2 by hand using the steps above — just this once. From the build you install onward, updates are automatic.

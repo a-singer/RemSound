@@ -5292,14 +5292,15 @@ public sealed class MainForm : Form
                 if (ph.State == PeerHealthState.Healthy) healthyPeers++;
             }
         }
-        // Recording timer — only included when a recording is actually running. Slots in
-        // right after the "RemSound" leader as Ed asked, so it reads as a status on the
-        // app itself rather than a property of the peer list.
-        string? recordingPart = null;
-        if (recordingController.IsRecording && recordingController.RecordingStartedUtc is { } startedUtc)
-        {
-            recordingPart = $"recording for {FormatRecordingElapsed(DateTime.UtcNow - startedUtc)}";
-        }
+        // Recording status — a plain "recording" flag while a capture is running, with no
+        // elapsed timer. A live timer would have to rewrite the tooltip every second, which
+        // fights the tray icon's re-stamp-on-change behaviour: it would either flicker the
+        // icon once a second or leave a screen reader announcing a stale time next to the live
+        // one. Recording starting and stopping are real state changes that re-stamp cleanly;
+        // the second-by-second count is intentionally left to the main window. Slots in right
+        // after the "RemSound" leader so it reads as a status on the app itself rather than a
+        // property of the peer list.
+        string? recordingPart = recordingController.IsRecording ? "recording" : null;
         if (healthyPeers == 0 && !sendMyAudioCheckbox.Checked && !receiveAudioCheckbox.Checked)
         {
             return recordingPart is null
@@ -5344,20 +5345,6 @@ public sealed class MainForm : Form
     {
         if (list is null) return false;
         return list.CheckedItems.Count > 0;
-    }
-
-    /// <summary>Compact duration formatter for the tray tooltip's "recording for X" segment.
-    /// Under an hour shows MM:SS; from an hour on it shows H:MM:SS — the same shape Windows
-    /// uses for media-player elapsed-time displays, so it reads naturally to people who
-    /// don't otherwise know it's a custom format.</summary>
-    private static string FormatRecordingElapsed(TimeSpan elapsed)
-    {
-        // Negative elapsed (clock skew across a sleep cycle) gets clamped to zero — better
-        // than displaying "-00:01" mid-tooltip.
-        if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
-        return elapsed.TotalHours >= 1
-            ? $"{(int)elapsed.TotalHours}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}"
-            : $"{elapsed.Minutes:D2}:{elapsed.Seconds:D2}";
     }
 
     /// <summary>Pretty-print "WASAPI", "ASIO", "WASAPI + ASIO", or "no devices" depending

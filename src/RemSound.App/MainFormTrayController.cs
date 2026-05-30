@@ -40,6 +40,13 @@ internal sealed class MainFormTrayController : IDisposable
     private readonly Func<string> buildTooltip;
     private readonly Action exit;
 
+    /// <summary>The tooltip text the icon was last (re-)registered with. We compare against
+    /// this so we only re-register on a real state change — a peer connecting or dropping, a
+    /// lane switching, a recording starting or stopping. The tray tooltip has no per-second
+    /// element (recording shows a plain "recording" flag, not a ticking timer), so the text
+    /// only changes on those real events and the icon never flickers. Null until first shown.</summary>
+    private string? lastRegistrationText;
+
     private readonly ToolStripMenuItem sendingItem;
     private readonly ToolStripMenuItem receivingItem;
     private readonly ToolStripMenuItem profilesItem;
@@ -152,6 +159,38 @@ internal sealed class MainFormTrayController : IDisposable
         // NotifyIcon.Text throws on the same string-assigning path under some shell
         // conditions (rare race during a session-end). Best-effort: swallow.
         try { trayIcon.Text = text; } catch { /* harmless */ }
+
+        // Keep the icon's *registered* name — the text a screen reader announces — in step
+        // with the live state. Windows stamps a tray icon's accessible name at the moment the
+        // icon is added (NIM_ADD) and afterwards only refreshes the little hover bubble, not
+        // that stamped name. So if the icon appears at launch before the first peer has
+        // connected, the name is frozen as "no peers"; when the peer links up a second later
+        // the bubble updates to "1 peer" but the frozen name stays — and NVDA reads BOTH (the
+        // stale name, then the live bubble), which is the confusing double announcement.
+        //
+        // The cure is to re-add the icon (hide then re-show = NIM_DELETE + NIM_ADD) whenever
+        // the text changes, which re-stamps the name with the current text. This is exactly
+        // what the old "show the window then minimise again" workaround did by hand. The tray
+        // tooltip has no per-second element (recording shows a plain "recording" flag, not a
+        // ticking timer), so the text only changes on real events and this never flickers.
+        if (!trayIcon.Visible)
+        {
+            // The first call arrives from Minimize() a moment before the icon is shown — just
+            // record the baseline so the NIM_ADD that immediately follows is our reference.
+            lastRegistrationText = text;
+            return;
+        }
+        if (text == lastRegistrationText) return;
+        // Don't yank the icon out from under an open right-click menu (that would dismiss it
+        // mid-navigation). Leave the record stale so the next tick re-stamps once it closes.
+        if (trayIcon.ContextMenuStrip?.Visible == true) return;
+        lastRegistrationText = text;
+        try
+        {
+            trayIcon.Visible = false;
+            trayIcon.Visible = true;
+        }
+        catch { /* harmless — the 1 Hz snapshot tick will try again next second */ }
     }
 
     public void Toggle()

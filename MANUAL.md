@@ -188,11 +188,11 @@ Tab| What it's for
 
 When RemSound is **minimised to the tray** (via **File → Minimise to tray**, the “Show or hide window” global hotkey, or by starting minimised on launch), the main window hides and an icon appears in your Windows system tray (the small icons cluster next to the clock).
 
-**Hovering over the tray icon** shows a short summary of what RemSound is doing right now — the number of healthy peers, whether you're sending or receiving and in which mode (WASAPI, ASIO, or both), and how long any current recording has been running. The summary refreshes every second. Examples:
+**Hovering over the tray icon** shows a short summary of what RemSound is doing right now — the number of healthy peers, whether you're sending or receiving and in which mode (WASAPI, ASIO, or both), and whether a recording is running. The summary keeps itself up to date as things change. It tells you a recording is in progress, but not its exact length — for that, glance at the main window. Examples:
 
   * _RemSound — not connected_
   * _RemSound — 2 peers, sending (WASAPI), receiving (WASAPI)_
-  * _RemSound — recording for 5:23, 1 peer, sending (WASAPI + ASIO), receiving (WASAPI + ASIO)_
+  * _RemSound — recording, 1 peer, sending (WASAPI + ASIO), receiving (WASAPI + ASIO)_
 
 
 

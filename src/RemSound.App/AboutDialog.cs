@@ -20,6 +20,44 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v3.1.2
+
+        A small accessibility fix for the system tray
+        icon, plus a clearer "check for updates" message
+        for Windows 7.
+
+        The tray icon's double announcement: if you use a
+        screen reader, the tray icon could read out two
+        states one after the other — for example "no peers"
+        and then "1 peer" — every time you landed on it. It
+        always happened in that same order. Windows stamps
+        a tray icon's name at the moment the icon appears,
+        which on a fresh start is a second before your other
+        machine has reconnected — so the name was frozen as
+        "no peers" while only the hover text caught up to
+        "1 peer". RemSound now refreshes the icon itself
+        whenever something real changes — a peer connecting
+        or dropping, sending or receiving switching on or
+        off, a recording starting or stopping — so the
+        screen reader hears a single, current state.
+
+        Recording in the tray: while a recording is running
+        the tray now simply says "recording" rather than
+        counting the seconds. A live timer would have made
+        the icon flicker or read out a stale time; the exact
+        length is on the main window if you need it.
+
+        Windows 7 update message: on a Windows 7 machine
+        that can't make a secure connection to the update
+        server, "Check for updates" used to say "you're on
+        the latest version", which was misleading. It now
+        explains that the secure connection failed and points
+        to the Windows updates that fix it, with a manual
+        download link as a fallback. Windows 10 and 11 were
+        never affected.
+
+        Everything else from v3.1 is unchanged.
+
         RemSound v3.1.1
 
         Hot-fix for a small but annoying bug with the system

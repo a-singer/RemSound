@@ -6,6 +6,12 @@ namespace RemSound.App;
 
 internal static class Program
 {
+    // The MainForm currently open in the loop below, or null between profile-switch
+    // iterations. Tracked so the single-instance coordinator's activation callback (which
+    // fires on a background thread when a second copy asks us to surface) can reach the live
+    // window. volatile for cross-thread visibility; RestoreFromTray marshals to the UI thread.
+    private static volatile MainForm? activeMainForm;
+
     [STAThread]
     private static void Main()
     {
@@ -17,6 +23,51 @@ internal static class Program
         GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
 
         ApplicationConfiguration.Initialize();
+
+        // Single-instance guard. RemSound must never run as two copies at once: with the
+        // auto-updater relaunching the app, a copy that didn't exit cleanly used to leave two
+        // (then more) copies running, each playing received audio — Andre's "stacked and
+        // stacked", deafening-audio runaway (2026-05-30). The lock makes that structurally
+        // impossible. Acquired BEFORE anything user-visible so a second copy bows out (or
+        // takes over a stuck one) before it ever touches audio devices or the network.
+        using var instance = new SingleInstanceCoordinator();
+        if (!instance.TryAcquire(TimeSpan.Zero))
+        {
+            // If we can't even ask the user (dialog failed to show), the safe answer is "don't
+            // start a second copy" — bowing out is always safer than risking a duplicate.
+            SingleInstanceDecision decision;
+            try { decision = SingleInstanceDialog.Ask(); }
+            catch { return; }
+
+            switch (decision)
+            {
+                case SingleInstanceDecision.SwitchToRunning:
+                    SingleInstanceCoordinator.SignalExistingToActivate();
+                    return;
+                case SingleInstanceDecision.Cancel:
+                    return;
+                case SingleInstanceDecision.ForceClose:
+                    var cleared = SingleInstanceCoordinator.ForceCloseOtherInstances();
+                    // Take the lock now the others should be gone. Allow a few seconds in case
+                    // a killed copy is slow to release the abandoned mutex / its audio devices.
+                    if (!instance.TryAcquire(TimeSpan.FromSeconds(5)))
+                    {
+                        MessageBox.Show(
+                            cleared
+                                ? "RemSound closed the other copy but couldn't start cleanly. Please launch RemSound again."
+                                : "RemSound couldn't close the copy that's already running — it may be running as administrator. Close it from Task Manager (or restart Windows), then try again.",
+                            "RemSound is already running",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    break;
+            }
+        }
+
+        // We hold the single-instance lock. Listen for a later copy asking us to surface, and
+        // route that request to whichever main window is open at the time.
+        instance.StartActivationListener();
+        instance.ActivateRequested += () => activeMainForm?.RestoreFromTray();
 
         // F1 anywhere = open the bundled manual. Installed *before* the first ShowDialog so
         // it works on the profile picker (the very first thing the user sees). The filter
@@ -124,8 +175,12 @@ internal static class Program
                 // look hung. No-op for WASAPI-only profiles (construction is near-instant).
                 var splash = AsioLoadingSplash.StartIfNeeded(profile);
                 using var form = new MainForm(store, profile, title, nextPath);
+                // Expose the live window to the single-instance activation callback (a second
+                // copy choosing "switch to the running copy" signals us to surface this form).
+                activeMainForm = form;
                 splash?.Dismiss();
                 Application.Run(form);
+                activeMainForm = null;
 
                 if (form.ReloadFromScratch)
                 {

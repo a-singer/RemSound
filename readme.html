@@ -238,6 +238,16 @@ ul, ol { padding-left: 1.4em; }
 
 <p><strong>Keyboard access:</strong> the tray icon is reachable through standard Windows shortcuts &mdash; <strong>Windows + B</strong> moves focus to the notification area, arrow keys navigate, Enter activates, and the application context-menu key (or Shift+F10) opens the right-click menu without a mouse.</p>
 
+<h3>Only one copy of RemSound runs at a time</h3>
+
+<p>RemSound only ever runs as a single copy. If you try to open it while it's already running &mdash; for example by double-clicking it when it's already sitting in the system tray &mdash; it won't start a second one. Instead it asks what you'd like to do:</p>
+
+<ul>
+<li><strong>Switch to the running copy</strong> &mdash; brings the copy that's already running back to the front. This is the default and usually what you want. Remember it may be minimised to the system tray, down by the clock.</li>
+<li><strong>Force the running copy to close and start fresh</strong> &mdash; only needed if the running copy is stuck or not responding. It closes that copy and starts a new one. If the stuck copy was in the middle of a recording, that recording is lost &mdash; so this is the &ldquo;get me out of trouble&rdquo; option, not an everyday one.</li>
+<li><strong>Cancel</strong> &mdash; do nothing.</li>
+</ul>
+
 <h2 id="menu-bar">5. Menus (File, Record, Options, Help)</h2>
 
 <p>There are four menus on the main window: <strong>File (Alt+F)</strong>, <strong>Record (Alt+K)</strong>, <strong>Options (Alt+O)</strong> and <strong>Help (Alt+H)</strong>. The Record menu opens with Alt+K rather than Alt+R because Alt+R is already used by the <strong>Receive audio</strong> checkbox on the main window. The menu's title is shown as &ldquo;Record (Alt+K)&rdquo; so you can find the shortcut even though there is no K in the word.</p>

@@ -493,12 +493,43 @@ public sealed class MainForm : Form
     private bool unsavedChanges;
     // Skip MarkProfileDirty calls while we're programmatically applying a loaded profile.
     private bool applyingProfile;
+    // Set true the instant an auto-update hands off and we're about to exit to let the
+    // installer restart us. While this is set, the close path skips EVERY prompt — the
+    // update is a deliberate, unattended action and no dialog (least of all the unsaved-
+    // changes prompt, whose default button is Cancel) may be allowed to abort the restart.
+    // This was the second link in Andre's runaway: a stray Enter/Escape on the save prompt
+    // cancelled the update's exit, so the new version never came up cleanly.
+    private bool updatingInProgress;
+    // Set once an install has actually begun (download + stage + helper launch). Guards against
+    // firing the installer twice from a single process: the ~4 s startup check and the periodic
+    // background poll can both surface the same release in quick succession, and without this
+    // each would stage and spawn its own helper. Cross-PROCESS duplication is prevented by the
+    // single-instance lock in Program.Main; this is the within-process half of that protection.
+    private bool updateInstallStarted;
     /// <summary>Set when the user changed the profiles FOLDER (not just switched profile)
     /// via the Manage Profiles dialog. Program.cs reads this after the form closes; if true,
     /// it re-runs the entire profile selection flow under the new folder rather than the
     /// cheap "switch within current folder" path. Mutually exclusive with
     /// <see cref="NextProfileTitleToLoad"/> in practice.</summary>
     public bool ReloadFromScratch { get; private set; }
+
+    /// <summary>Bring this window to the front, restoring it from the system tray if it's
+    /// parked there. Called when the user launches a SECOND copy of RemSound and the single-
+    /// instance guard chooses "switch to the running copy" — the second copy signals this one
+    /// to surface instead of starting another process. Safe to call from any thread: it
+    /// marshals to the UI thread itself. Reuses the tray controller's Restore (Show +
+    /// SetForegroundWindow), which works whether the window is in the tray or just behind
+    /// other windows.</summary>
+    public void RestoreFromTray()
+    {
+        if (IsDisposed) return;
+        try
+        {
+            if (InvokeRequired) { BeginInvoke(new Action(RestoreFromTray)); return; }
+            trayController.Restore();
+        }
+        catch { /* best-effort — surfacing the window is a convenience, not load-critical */ }
+    }
 
     public MainForm() : this(null, null, null, null) { }
 
@@ -2042,14 +2073,29 @@ public sealed class MainForm : Form
         // mid-session update would drop the session AND leave the user back at the picker —
         // the session never resumes by itself. Null/empty title (blank template, no profile
         // saved yet) skips the sentinel and the relaunch falls through to normal startup.
+        // Don't let two near-simultaneous checks both stage an install and spawn two helpers.
+        if (updateInstallStarted)
+        {
+            logFile.Event($"updater: install already in progress; ignoring repeat request for {info.Tag}");
+            return;
+        }
+        updateInstallStarted = true;
+
         var ok = await updater.DownloadAndStageInstallAsync(info, currentProfileTitle).ConfigureAwait(true);
         if (!ok)
         {
+            // Nothing was staged — allow a later attempt rather than wedging the updater off
+            // for the rest of the session.
+            updateInstallStarted = false;
             MessageBox.Show(this,
                 $"Could not download or stage the update. Try again later, or visit the release page in your browser:\n\n{info.ReleaseUrl}",
                 "Update failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
+        // The helper is staged and launched. We MUST now exit cleanly so it can replace our
+        // files and restart us — set updatingInProgress so the close path skips every prompt;
+        // no dialog (least of all the unsaved-changes prompt) may be allowed to cancel this.
+        updatingInProgress = true;
         logFile.Event($"updater: install helper launched for {info.Tag}, exiting");
         Application.Exit();
     }
@@ -4977,6 +5023,13 @@ public sealed class MainForm : Form
     {
         var profile = new Profile { Title = title };
         settings.CopyTo(profile);
+        // Carry the active read-only (lock) flag into the saved snapshot. Without this line a
+        // deliberate save of a locked profile — e.g. the "save through the lock" flow Andre
+        // uses — would write the profile back with ReadOnly defaulting to false, silently
+        // UNLOCKING it on disk. Next launch the profile would no longer be read-only, the
+        // unsaved-changes prompt would start firing again, and (worse) that prompt could block
+        // an unattended auto-update from restarting. The lock flag must survive every save.
+        profile.ReadOnly = currentProfileReadOnly;
         profile.Volume = volumeBar.Value;
         profile.Muted = receiver.IsMuted;
         profile.ReceiveAudioOn = receiveAudioCheckbox.Checked;
@@ -6181,7 +6234,7 @@ public sealed class MainForm : Form
         // is what unblocks NVDA-less or remote-session-dropped shutdowns from deadlocking
         // on a dialog the user can't reach.
         var skipPrompt = !string.IsNullOrEmpty(NextProfileTitleToLoad) || ReloadFromScratch
-            || currentProfileReadOnly;
+            || currentProfileReadOnly || updatingInProgress;
 
         if (!skipPrompt && profileStore is not null && unsavedChanges)
         {

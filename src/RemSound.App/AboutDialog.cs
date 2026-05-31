@@ -20,6 +20,37 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v3.1.3
+
+        An important reliability fix. After an update, a
+        chain of small faults could line up and leave
+        RemSound misbehaving — in the worst case, more than
+        one copy running at once with the sound getting
+        louder and louder. This release breaks that chain.
+
+        Only one copy at a time: RemSound now refuses to run
+        as two copies at once. If you open it while it's
+        already running, it offers to switch you to the copy
+        that's already going (it may be down in the system
+        tray), or — if that copy is stuck — to force it
+        closed and start fresh. This makes the "stacking
+        copies" runaway impossible.
+
+        Updates can't be blocked any more: when RemSound
+        updates itself and restarts, nothing is allowed to
+        get in the way of that restart. Previously an
+        "unsaved changes?" question could pop up at that
+        moment and quietly cancel the update.
+
+        Locked profiles stay locked: marking a profile as
+        read-only now survives saving it. Before, if you
+        deliberately saved a locked profile the lock was
+        silently lost — which brought back the "save your
+        changes?" question and, in turn, could trip up an
+        update. Locked means locked.
+
+        Everything else from v3.1 is unchanged.
+
         RemSound v3.1.2
 
         A small accessibility fix for the system tray

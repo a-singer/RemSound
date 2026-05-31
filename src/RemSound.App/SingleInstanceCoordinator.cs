@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace RemSound.App;
 
@@ -113,10 +114,31 @@ internal sealed class SingleInstanceCoordinator : IDisposable
         }
     }
 
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AllowSetForegroundWindow(int dwProcessId);
+
     /// <summary>Signal whichever copy currently owns the lock to bring itself to the front.
-    /// Called by a SECOND copy that chose "switch to the running copy".</summary>
+    /// Called by a SECOND copy that chose "switch to the running copy".
+    ///
+    /// Windows blocks <c>SetForegroundWindow</c> from a process that didn't receive the most
+    /// recent user input. When the user launches this second copy from (say) an Explorer
+    /// window and clicks "switch", the input belongs to US, not the running copy — so the
+    /// running copy's own SetForegroundWindow is denied and its window only flashes in the
+    /// taskbar instead of coming forward (the bug Ed reported). The documented fix is for the
+    /// process that currently holds the foreground right — us, right now — to hand it to the
+    /// running copy via <see cref="AllowSetForegroundWindow"/> BEFORE signalling. We then
+    /// linger briefly so the running copy can raise itself while the grant is fresh and the
+    /// foreground hasn't churned from us exiting.</summary>
     public static void SignalExistingToActivate()
     {
+        // Grant every other RemSound process the one-shot right to pull itself to the front.
+        foreach (var p in OtherInstances(Environment.ProcessId))
+        {
+            try { AllowSetForegroundWindow(p.Id); } catch { /* best-effort */ }
+            p.Dispose();
+        }
+
         try
         {
             if (EventWaitHandle.TryOpenExisting(ActivateEventName, out var ev))
@@ -128,6 +150,12 @@ internal sealed class SingleInstanceCoordinator : IDisposable
         {
             // Best-effort — if the signal can't be delivered the user can click the tray icon.
         }
+
+        // Stay alive a beat so the running copy can raise itself while we're still the
+        // foreground process and the grant is fresh. If we vanished instantly the foreground
+        // would churn and the grant could be consumed before it's used. Invisible to the user —
+        // our dialog has already closed and we have no window.
+        try { Thread.Sleep(600); } catch { /* ignore */ }
     }
 
     /// <summary>Force every OTHER RemSound process to terminate. Returns true if no other

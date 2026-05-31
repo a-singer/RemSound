@@ -20,6 +20,34 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v3.2
+
+        A new audio cue, plus the reliability work from
+        the recent updates, rolled into one release.
+
+        New "Update sound" cue: RemSound now plays a short
+        sound just before it closes to install an update —
+        for both manual updates and silent background ones.
+        So a silent update no longer takes you by surprise;
+        you hear it coming. Like every cue it's per-profile,
+        can be muted, and you can swap in your own sound,
+        all from File → Preferences → Audio cue sounds.
+
+        Only one copy at a time: RemSound refuses to run as
+        two copies at once. Open it while it's already
+        running and it offers to switch you to the copy
+        that's already going (now reliably bringing that
+        window to the front, even from the system tray), or
+        — if that copy is stuck — to force it closed and
+        start fresh.
+
+        Updates can't be blocked or doubled up: nothing can
+        get in the way of an update's restart any more, and
+        a single copy can't kick off two installs at once.
+
+        Locked profiles stay locked: marking a profile as
+        read-only now survives saving it.
+
         RemSound v3.1.3
 
         An important reliability fix. After an update, a

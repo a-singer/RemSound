@@ -102,6 +102,8 @@ internal sealed class PreferencesDialog : Form
             s => s.LoadEnableSaveCue(), (s, v) => s.SaveEnableSaveCue(v)),
         new("Profile switched sound", MainForm.CueId.ProfileSwitch,
             s => s.LoadEnableProfileSwitchCue(), (s, v) => s.SaveEnableProfileSwitchCue(v)),
+        new("Update sound", MainForm.CueId.Update,
+            s => s.LoadEnableUpdateCue(), (s, v) => s.SaveEnableUpdateCue(v)),
     ];
 
     private readonly AccessibleCheckBox acceptRemoteVolumeBox = new()
@@ -595,6 +597,7 @@ internal sealed class PreferencesDialog : Form
             MainForm.CueId.RecordStop => "record stop.wav",
             MainForm.CueId.Save => "save.wav",
             MainForm.CueId.ProfileSwitch => "profile.wav",
+            MainForm.CueId.Update => "update.wav",
             _ => null,
         };
         if (defaultFileName is null) return null;

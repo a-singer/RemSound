@@ -107,10 +107,14 @@ public sealed class Profile
     public bool? EnableRecordStopCue { get; set; }
     public bool? EnableSaveCue { get; set; }
     public bool? EnableProfileSwitchCue { get; set; }
+    /// <summary>Plays the update cue just before an update starts installing (manual or
+    /// silent). Null = unset → defaults to on, so a silent background update still gives an
+    /// audible heads-up. Added 2026-05-31.</summary>
+    public bool? EnableUpdateCue { get; set; }
 
     /// <summary>Per-cue custom WAV file overrides, keyed by the well-known cue id (<c>connect</c>,
     /// <c>disconnect</c>, <c>record-start</c>, <c>record-stop</c>, <c>save</c>,
-    /// <c>profile-switch</c>) and valued with the absolute filesystem path to the user's chosen
+    /// <c>profile-switch</c>, <c>update</c>) and valued with the absolute filesystem path to the user's chosen
     /// WAV. Per-profile (moved here from AppConfig 2026-05-28) so a "live monitoring" profile
     /// can have one set of custom sounds and a "recording" profile a different set. Missing
     /// keys mean "use the default sound shipped in the sounds\ folder next to RemSound.exe".

@@ -428,6 +428,16 @@ public sealed class RemSoundSettingsStore
         Save(s);
     }
 
+    public bool LoadEnableUpdateCue() =>
+        Try(() => Load()?.EnableUpdateCue) ?? true;
+
+    public void SaveEnableUpdateCue(bool value)
+    {
+        var s = Load() ?? new Settings();
+        s.EnableUpdateCue = value;
+        Save(s);
+    }
+
     /// <summary>The user's custom WAV path for a given cue, or null when they're using the
     /// default. Per-profile (lives on <see cref="Profile.CustomCuePaths"/>) so different
     /// profiles can carry different cue palettes.</summary>
@@ -587,6 +597,7 @@ public sealed class RemSoundSettingsStore
             EnableRecordStopCue = profile.EnableRecordStopCue,
             EnableSaveCue = profile.EnableSaveCue,
             EnableProfileSwitchCue = profile.EnableProfileSwitchCue,
+            EnableUpdateCue = profile.EnableUpdateCue,
             // Defensive copy so cache mutations don't leak into the in-memory Profile graph
             // (and vice-versa). Profile is loaded once at startup; the cache evolves through
             // the session and is written back via CopyTo on save.
@@ -643,6 +654,7 @@ public sealed class RemSoundSettingsStore
         profile.EnableRecordStopCue = s.EnableRecordStopCue;
         profile.EnableSaveCue = s.EnableSaveCue;
         profile.EnableProfileSwitchCue = s.EnableProfileSwitchCue;
+        profile.EnableUpdateCue = s.EnableUpdateCue;
         profile.CustomCuePaths = s.CustomCuePaths is null
             ? new Dictionary<string, string>()
             : new Dictionary<string, string>(s.CustomCuePaths);
@@ -713,6 +725,7 @@ public sealed class RemSoundSettingsStore
         public bool? EnableRecordStopCue { get; set; }
         public bool? EnableSaveCue { get; set; }
         public bool? EnableProfileSwitchCue { get; set; }
+        public bool? EnableUpdateCue { get; set; }
         public Dictionary<string, string>? CustomCuePaths { get; set; }
         public RecordingSettings? RecordingSettings { get; set; }
     }

@@ -326,6 +326,7 @@ public sealed class MainForm : Form
     // Save As; Profile fires immediately after a profile finishes loading in MainForm.
     private System.Media.SoundPlayer? saveSound;
     private System.Media.SoundPlayer? profileSwitchSound;
+    private System.Media.SoundPlayer? updateSound;
     // Labels for the three send/receive device lists, captured at layout time so they can be
     // re-titled when the user toggles between WASAPI mode (Windows devices) and ASIO mode
     // (driver channel pairs). null until BuildLayout has run.
@@ -892,6 +893,7 @@ public sealed class MainForm : Form
         TryLoadCueSound(CueId.RecordStop, "record stop.wav", out recordStopSound);
         TryLoadCueSound(CueId.Save, "save.wav", out saveSound);
         TryLoadCueSound(CueId.ProfileSwitch, "profile.wav", out profileSwitchSound);
+        TryLoadCueSound(CueId.Update, "update.wav", out updateSound);
 
         LoadAudioDevices();
         // Apply persisted ASIO mode from settings — switches sender/receiver backends so the
@@ -2080,6 +2082,14 @@ public sealed class MainForm : Form
             return;
         }
         updateInstallStarted = true;
+
+        // Update cue — an audible heads-up that an update is going in, played just before it
+        // starts. Fires for every install path (manual, background-silent, startup-silent), so
+        // a silent background update isn't completely silent: the user hears that RemSound is
+        // about to close and update. Played before the download so it sounds well before the
+        // app vanishes; the download comfortably outlasts the short cue. Honours the per-profile
+        // EnableUpdateCue flag set in Preferences.
+        if (settings.LoadEnableUpdateCue()) updateSound?.Play();
 
         var ok = await updater.DownloadAndStageInstallAsync(info, currentProfileTitle).ConfigureAwait(true);
         if (!ok)
@@ -5426,6 +5436,7 @@ public sealed class MainForm : Form
         public const string RecordStop = "record-stop";
         public const string Save = "save";
         public const string ProfileSwitch = "profile-switch";
+        public const string Update = "update";
     }
 
     /// <summary>Load one cue sound. Resolution order:
@@ -5487,6 +5498,7 @@ public sealed class MainForm : Form
         TryLoadCueSound(CueId.RecordStop, "record stop.wav", out recordStopSound);
         TryLoadCueSound(CueId.Save, "save.wav", out saveSound);
         TryLoadCueSound(CueId.ProfileSwitch, "profile.wav", out profileSwitchSound);
+        TryLoadCueSound(CueId.Update, "update.wav", out updateSound);
     }
 
     /// <summary>

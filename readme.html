@@ -837,7 +837,7 @@ Use whatever key combinations you prefer (for example Ctrl+Shift+Up / Ctrl+Shift
 
 <h2 id="audio-cues">17. Audio cue sounds</h2>
 
-<p>RemSound plays a short sound at moments where you might want an audible confirmation that something just happened. These are called <strong>cue sounds</strong>. Six events have a cue:</p>
+<p>RemSound plays a short sound at moments where you might want an audible confirmation that something just happened. These are called <strong>cue sounds</strong>. Seven events have a cue:</p>
 
 <table>
 <tr><th>Cue</th><th>Plays when</th></tr>
@@ -847,13 +847,14 @@ Use whatever key combinations you prefer (for example Ctrl+Shift+Up / Ctrl+Shift
 <tr><td><strong>Recording stop sound</strong></td><td>You stop a recording.</td></tr>
 <tr><td><strong>Profile saved sound</strong></td><td>A profile is saved &mdash; whether via File &rarr; Save or File &rarr; Save as.</td></tr>
 <tr><td><strong>Profile switched sound</strong></td><td>A profile finishes loading. Plays at startup if you started with a profile, and after every profile switch &mdash; using the new profile's cue, not the old one's.</td></tr>
+<tr><td><strong>Update sound</strong></td><td>An update is about to install &mdash; it plays just before RemSound closes to update itself. Handy when updates install silently in the background, so you're not caught off guard when RemSound restarts. Plays whether you ran the update by hand or it installed on its own.</td></tr>
 </table>
 
-<p>All six cues play through your default Windows sound output, which is separate from the audio RemSound is sending or receiving. They don't appear in a normal recording. (The exception: if your sending side is capturing the very output device the cues play through, then they get captured along with everything else from that device.)</p>
+<p>All seven cues play through your default Windows sound output, which is separate from the audio RemSound is sending or receiving. They don't appear in a normal recording. (The exception: if your sending side is capturing the very output device the cues play through, then they get captured along with everything else from that device.)</p>
 
 <h3>Turning each cue on or off</h3>
 
-<p>Open <strong>File &rarr; Preferences</strong> (or Ctrl+P). The <strong>Audio cue sounds (Alt+N)</strong> list shows all six cues with a tickbox next to each. Tick to play the cue when the corresponding event happens; untick to silence it.</p>
+<p>Open <strong>File &rarr; Preferences</strong> (or Ctrl+P). The <strong>Audio cue sounds (Alt+N)</strong> list shows all seven cues with a tickbox next to each. Tick to play the cue when the corresponding event happens; untick to silence it.</p>
 
 <p>Use the up and down arrow keys to move between cues; press <strong>Space</strong> to toggle the highlighted cue's tick on or off.</p>
 
@@ -987,7 +988,7 @@ Use whatever key combinations you prefer (for example Ctrl+Shift+Up / Ctrl+Shift
 
 <h3>Start and stop sound cues</h3>
 
-<p>RemSound plays a short ding when a recording starts and another when it stops, so you have an audible confirmation that the toggle actually took effect. These are two of the six cues described in <a href="#audio-cues">Audio cue sounds</a>. You can turn either or both off, replace them with your own WAV files, and preview them from Preferences. The defaults live at <code>sounds\record start.wav</code> and <code>sounds\record stop.wav</code> next to <code>RemSound.exe</code>.</p>
+<p>RemSound plays a short ding when a recording starts and another when it stops, so you have an audible confirmation that the toggle actually took effect. These are two of the seven cues described in <a href="#audio-cues">Audio cue sounds</a>. You can turn either or both off, replace them with your own WAV files, and preview them from Preferences. The defaults live at <code>sounds\record start.wav</code> and <code>sounds\record stop.wav</code> next to <code>RemSound.exe</code>.</p>
 
 <h3>Where recordings go</h3>
 

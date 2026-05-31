@@ -14,7 +14,7 @@
          tag_name on the latest GitHub release; bump it on every public release. The
          AssemblyVersion / FileVersion default to this value, and Assembly.GetName().Version
          is what the About dialog and the updater both read. -->
-    <Version>3.1.3</Version>
+    <Version>3.2.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -88,6 +88,13 @@
     </Content>
     <Content Include="..\..\sounds\profile.wav" Condition="Exists('..\..\sounds\profile.wav')">
       <Link>sounds\profile.wav</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- update.wav (2026-05-31): plays just before an update starts installing, so a silent
+         background update still gives an audible heads-up. Per-profile mute + custom-sound
+         override available in Preferences, same as the other cues. -->
+    <Content Include="..\..\sounds\update.wav" Condition="Exists('..\..\sounds\update.wav')">
+      <Link>sounds\update.wav</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <!-- User manual. F1 anywhere in the app opens this via the user's default browser

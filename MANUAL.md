@@ -787,7 +787,7 @@ Toggle| What it does
 
 ## 17. Audio cue sounds
 
-RemSound plays a short sound at moments where you might want an audible confirmation that something just happened. These are called **cue sounds**. Six events have a cue:
+RemSound plays a short sound at moments where you might want an audible confirmation that something just happened. These are called **cue sounds**. Seven events have a cue:
 
 Cue| Plays when
 ---|---
@@ -797,12 +797,13 @@ Cue| Plays when
 **Recording stop sound**|  You stop a recording.
 **Profile saved sound**|  A profile is saved — whether via File → Save or File → Save as.
 **Profile switched sound**|  A profile finishes loading. Plays at startup if you started with a profile, and after every profile switch — using the new profile's cue, not the old one's.
+**Update sound**|  An update is about to install — it plays just before RemSound closes to update itself. Handy when updates install silently in the background, so you're not caught off guard when RemSound restarts. Plays whether you ran the update by hand or it installed on its own.
 
-All six cues play through your default Windows sound output, which is separate from the audio RemSound is sending or receiving. They don't appear in a normal recording. (The exception: if your sending side is capturing the very output device the cues play through, then they get captured along with everything else from that device.)
+All seven cues play through your default Windows sound output, which is separate from the audio RemSound is sending or receiving. They don't appear in a normal recording. (The exception: if your sending side is capturing the very output device the cues play through, then they get captured along with everything else from that device.)
 
 ### Turning each cue on or off
 
-Open **File → Preferences** (or Ctrl+P). The **Audio cue sounds (Alt+N)** list shows all six cues with a tickbox next to each. Tick to play the cue when the corresponding event happens; untick to silence it.
+Open **File → Preferences** (or Ctrl+P). The **Audio cue sounds (Alt+N)** list shows all seven cues with a tickbox next to each. Tick to play the cue when the corresponding event happens; untick to silence it.
 
 Use the up and down arrow keys to move between cues; press **Space** to toggle the highlighted cue's tick on or off.
 
@@ -932,7 +933,7 @@ Format| What you get| When to pick it
 
 ### Start and stop sound cues
 
-RemSound plays a short ding when a recording starts and another when it stops, so you have an audible confirmation that the toggle actually took effect. These are two of the six cues described in Audio cue sounds. You can turn either or both off, replace them with your own WAV files, and preview them from Preferences. The defaults live at `sounds\record start.wav` and `sounds\record stop.wav` next to `RemSound.exe`.
+RemSound plays a short ding when a recording starts and another when it stops, so you have an audible confirmation that the toggle actually took effect. These are two of the seven cues described in Audio cue sounds. You can turn either or both off, replace them with your own WAV files, and preview them from Preferences. The defaults live at `sounds\record start.wav` and `sounds\record stop.wav` next to `RemSound.exe`.
 
 ### Where recordings go
 

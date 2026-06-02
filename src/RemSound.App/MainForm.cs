@@ -307,26 +307,29 @@ public sealed class MainForm : Form
     // Last time TryAdoptLiveHeartbeatAddress re-pointed the sender at a peer's live address.
     // Gives a fresh endpoint time to prove healthy before another swap can fire (anti-thrash).
     private DateTime lastAddressAdoptionUtc = DateTime.MinValue;
-    // Tracks the most recent PeerHealthState we observed for each peer endpoint, so we can
-    // detect transitions and play the appropriate cue. Connect: any state → Healthy.
-    // Disconnect: any state → Unreachable. Stale doesn't fire (it's a transient).
-    private readonly Dictionary<string, PeerHealthState> previousPeerHealthStates = new(StringComparer.OrdinalIgnoreCase);
-    private System.Media.SoundPlayer? connectSound;
-    private System.Media.SoundPlayer? disconnectSound;
+    // Tracks whether each peer was last considered CONNECTED, for the connect/disconnect cues.
+    // "Connected" now means audio is actually flowing OR the heartbeat is healthy — not the
+    // heartbeat alone (see DetectAndAnnouncePeerHealthTransitions). The bool, rather than the
+    // raw health state, gives natural hysteresis: once connected we stay connected until audio
+    // genuinely stops AND the heartbeat goes unreachable, so a heartbeat blip while audio keeps
+    // playing never fires a false disconnect cue. 2026-05-31 rewrite.
+    private readonly Dictionary<string, bool> peerConnectedState = new(StringComparer.OrdinalIgnoreCase);
+    private CuePlayer? connectSound;
+    private CuePlayer? disconnectSound;
     // Recording start/stop cues. Played via SoundPlayer to the default Windows output —
     // same path as connect/disconnect. They don't pass through our recording taps (those
     // sit on the internal sender mix bus and receiver render path), so they don't appear
     // in normal recordings. A user who has a WASAPI loopback of the same output device as
     // a capture source would still get them, but that's their loopback configuration, not
     // anything the recorder is doing.
-    private System.Media.SoundPlayer? recordStartSound;
-    private System.Media.SoundPlayer? recordStopSound;
+    private CuePlayer? recordStartSound;
+    private CuePlayer? recordStopSound;
     // Profile-save and profile-switch cues, added 2026-05-28 alongside the move of all
     // default WAVs into a sounds\ subfolder. Save fires after a successful File → Save /
     // Save As; Profile fires immediately after a profile finishes loading in MainForm.
-    private System.Media.SoundPlayer? saveSound;
-    private System.Media.SoundPlayer? profileSwitchSound;
-    private System.Media.SoundPlayer? updateSound;
+    private CuePlayer? saveSound;
+    private CuePlayer? profileSwitchSound;
+    private CuePlayer? updateSound;
     // Labels for the three send/receive device lists, captured at layout time so they can be
     // re-titled when the user toggles between WASAPI mode (Windows devices) and ASIO mode
     // (driver channel pairs). null until BuildLayout has run.
@@ -458,6 +461,24 @@ public sealed class MainForm : Form
     // it shouldn't block shutdown when his screen reader can't reach the dirty-prompt.
     // Toggled via File → Lock profile (read-only) and persisted on the profile JSON.
     private bool currentProfileReadOnly;
+    // The active profile's encryption password, in PLAIN text (the profile JSON stores it
+    // lightly scrambled — see RemSoundCrypto.Obfuscate). "" = no password set. Two peers can
+    // exchange audio only when their profile passwords match. Set from the loaded profile in
+    // the constructor, changed via File → Change this profile's password, and carried back into
+    // every save by BuildCurrentProfile. 2026-05-31 (always-on encryption, in development).
+    private string currentProfilePassword = "";
+    // The AES key + fingerprint derived from currentProfilePassword, cached so the slow key
+    // derivation only runs when the password actually changes. Pushed down to the sender and
+    // receiver by RecomputeAudioCrypto. Null when no password is set (then no audio flows).
+    private byte[]? currentAudioKey;
+    private byte[]? currentAudioFingerprint;
+    private string? lastDerivedPassword;
+    // Re-entrancy guard for the "you need a password to stream" gate, so programmatically
+    // un-ticking the send/receive box (when the user cancels the password prompt) doesn't
+    // re-fire the gate. And a record of which peers we've already warned about a password
+    // mismatch / out-of-date version, so the warning shows once per change, not every second.
+    private bool suppressStreamingPasswordGate;
+    private readonly Dictionary<System.Net.IPAddress, PeerSecurityStatus> lastSecurityWarned = new();
     // The actual menu item — kept as a field so profile-load (or read-only toggle) can
     // sync .Checked without rebuilding the menu. CheckOnClick lets the menu item flip
     // itself on every click; the CheckedChanged handler reads the new value and runs
@@ -568,6 +589,8 @@ public sealed class MainForm : Form
         // template (profile == null) implicitly starts as not-read-only; users still have
         // the menu toggle available if they want to lock the working state mid-session.
         currentProfileReadOnly = profile?.ReadOnly ?? false;
+        // Unscramble the profile's stored password into the in-memory plain-text working value.
+        currentProfilePassword = RemSoundCrypto.Deobfuscate(profile?.Password);
         // Push the profile's settings-shaped fields (codec, hotkeys, smoothness, etc.) into
         // the in-memory settings cache BEFORE the rest of the constructor body reads from it.
         // Control states (device ticks, checkboxes, volume) come later in OnShown.
@@ -902,8 +925,8 @@ public sealed class MainForm : Form
         ApplyAsioMode();
 
         // --- Wire main-form events ---
-        receiveAudioCheckbox.CheckedChanged += (_, _) => { HandleCapabilityChange(); MarkProfileDirty(); };
-        sendMyAudioCheckbox.CheckedChanged += (_, _) => { HandleCapabilityChange(); MarkProfileDirty(); };
+        receiveAudioCheckbox.CheckedChanged += (_, _) => OnStreamingCheckboxChanged(receiveAudioCheckbox);
+        sendMyAudioCheckbox.CheckedChanged += (_, _) => OnStreamingCheckboxChanged(sendMyAudioCheckbox);
         volumeBar.Scroll += (_, _) => { receiver.Volume = volumeBar.Value / 100f; MarkProfileDirty(); };
         WireCheckedListAccessibility(receiveOutputDevicesList, receiveOutputDevicesStatusLabel, "receive output device");
         receiveOutputDevicesList.ItemCheck += (_, _) => { if (!suppressDeviceCheckChange) { BeginInvoke(ApplyReceiveDevices); MarkProfileDirty(); } };
@@ -1164,10 +1187,59 @@ public sealed class MainForm : Form
                     }
                 });
             }
+
+            // If the user opted in, show the About box once on the first launch after an update
+            // installed, so they see what's new. BeginInvoke so it opens after Shown completes.
+            BeginInvoke(new Action(MaybeShowWhatsNewAfterUpdate));
         };
 
         statusTimer.Start();
         deviceRefreshTimer.Start();
+    }
+
+    /// <summary>If the user opted in (<see cref="AppConfig.ShowWhatsNewAfterUpdate"/>) and the
+    /// running version changed since the last launch we recorded, open the About box once so
+    /// they see what changed in the update just installed. Always records the current version
+    /// so the change is detected exactly once. A fresh install (no version recorded yet) does
+    /// NOT count as an update. 2026-05-31.</summary>
+    private void MaybeShowWhatsNewAfterUpdate()
+    {
+        if (IsDisposed) return;
+        var current = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "";
+
+        AppConfig cfg;
+        try { cfg = AppConfig.Load(); }
+        catch { return; }
+
+        var versionChanged = !string.IsNullOrEmpty(cfg.LastWhatsNewVersion)
+            && cfg.LastWhatsNewVersion != current;
+
+        if (cfg.ShowWhatsNewAfterUpdate && versionChanged)
+        {
+            try
+            {
+                logFile.Event($"what's new: opening About after update {cfg.LastWhatsNewVersion} -> {current}");
+                using var dlg = new AboutDialog();
+                dlg.ShowDialog(this);
+            }
+            catch (Exception ex)
+            {
+                logFile.Event($"what's new: failed to open About: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        // Record the current version so the next change is detected once. Reload first so we
+        // don't clobber a concurrent config write (e.g. the startup update-check timestamp).
+        if (cfg.LastWhatsNewVersion != current)
+        {
+            try
+            {
+                var fresh = AppConfig.Load();
+                fresh.LastWhatsNewVersion = current;
+                fresh.Save();
+            }
+            catch { /* harmless — at worst we re-show next launch */ }
+        }
     }
 
     // ===================== UI layout =====================
@@ -1307,6 +1379,15 @@ public sealed class MainForm : Form
             OnLockProfileToggled(lockProfileMenuItem.Checked);
         };
 
+        // Change this profile's encryption password. Alt+F, P — 'p' is free in the File menu
+        // (O / R / S / A / M / L / N / X are taken). Opens a small dialog showing the current
+        // password (in plain text, so a screen reader can read it) with OK / Cancel.
+        var changePasswordItem = new ToolStripMenuItem("Change this profile's &password...")
+        {
+            AccessibleName = "Change this profile's password",
+        };
+        changePasswordItem.Click += (_, _) => ChangeProfilePassword();
+
         var minimiseItem = new ToolStripMenuItem("Mi&nimise to tray")
         {
             // No global ShortcutKeys binding — the in-app menu mnemonic (Alt+F → N now —
@@ -1333,6 +1414,7 @@ public sealed class MainForm : Form
             saveAsItem,
             renameItem,
             lockProfileMenuItem,
+            changePasswordItem,
             new ToolStripSeparator(),
             minimiseItem,
             new ToolStripSeparator(),
@@ -1383,11 +1465,20 @@ public sealed class MainForm : Form
         };
         prefsItem.Click += (_, _) => OpenPreferencesDialog();
 
+        // Password manager — list every profile with its password, edit any of them in one place.
+        // 'w' mnemonic (pass&words) is free in the Options menu (s / K / t / P are taken).
+        var profilePasswordsItem = new ToolStripMenuItem("Profile pass&words...")
+        {
+            AccessibleName = "Profile passwords",
+        };
+        profilePasswordsItem.Click += (_, _) => OpenProfilePasswordManager();
+
         optionsMenu.DropDownItems.AddRange(new ToolStripItem[]
         {
             recordingSettingsItem,
             keyboardItem,
             startupBehaviourItem,
+            profilePasswordsItem,
             new ToolStripSeparator(),
             prefsItem,
         });
@@ -2834,7 +2925,15 @@ public sealed class MainForm : Form
             else
             {
                 var label = selectedPeerLabels.GetValueOrDefault(id, ep.Address.ToString());
-                var ghost = new PeerAnnouncement(id, $"{label} (offline)", ep.Port, true, true, DateTime.UtcNow, ep.Address);
+                // Don't call a peer "offline" just because DISCOVERY briefly lost sight of it —
+                // if audio is still arriving from it, or its heartbeat is healthy, it's plainly
+                // still connected. Discovery beacons are easy to miss for a second; the audio
+                // stream and heartbeat are the real signal. Only tag "(offline)" when it's gone
+                // by every measure. 2026-06-02 (Ed's "offline but still sending audio" report).
+                var stillThere = receiver.IsAudioFlowingFrom(ep.Address, TimeSpan.FromSeconds(3))
+                    || IsEndpointHeartbeatHealthy(ep);
+                var suffix = stillThere ? "" : " (offline)";
+                var ghost = new PeerAnnouncement(id, $"{label}{suffix}", ep.Port, true, true, DateTime.UtcNow, ep.Address);
                 desired.Add((new PeerListItem(ghost), id));
             }
         }
@@ -3157,6 +3256,10 @@ public sealed class MainForm : Form
         // HeartbeatService sends via sender.SendVia (wired in Connect) so heartbeat shares
         // the audio NAT pinhole on the audio port — no separate socket, no +2 port.
         heartbeatService?.SetTrackedPeers(endpoints);
+
+        // Push the current profile-password key + fingerprint down to the sender and receiver so
+        // audio is encrypted/decrypted with it. Cheap when the password hasn't changed.
+        RecomputeAudioCrypto();
 
         // Sender does NOT depend on a peer being currently online. As long as the user has ticked
         // "Send my audio" AND a capture device, we keep capturing and emitting UDP. If no peer is
@@ -3898,15 +4001,27 @@ public sealed class MainForm : Form
         foreach (var peer in byEndpoint.Values) knownPeers[peer.InstanceId] = peer;
 
         // If a selected peer's announced address changed (DHCP renewal, network switch),
-        // update the cached endpoint so the sender follows the new IP.
+        // update the cached endpoint so the sender follows the new IP — BUT only when the
+        // endpoint we're currently using has actually stopped working.
+        //
+        // Why the guard: a peer reachable at two addresses at once — e.g. a VPN address AND a
+        // LAN address — announces itself from both, and discovery reports whichever it heard
+        // last. Blindly following that made the tracked endpoint ping-pong between the two
+        // every couple of seconds. Because this one endpoint feeds the audio sender, the
+        // heartbeat, AND the receiver's allow-list, the ping-pong meant a chunk of audio was
+        // aimed at — or accepted only from — an address that doesn't actually reach the peer,
+        // heard as heavy crackle (Tech Singer's Win7-over-VPN report, 2026-05-31). Keeping the
+        // endpoint pinned while it's still passing heartbeats stops the thrash. A genuine move
+        // (DHCP renewal, Wi-Fi switch) makes the old endpoint go unreachable first, at which
+        // point the guard lets the move through; TryAdoptLiveHeartbeatAddress backs it up.
         foreach (var (id, oldEndpoint) in selectedPeerEndpoints.ToList())
         {
             if (!knownPeers.TryGetValue(id, out var peer)) continue;
             var newEndpoint = new IPEndPoint(peer.Address, peer.AudioPort);
-            if (!newEndpoint.Equals(oldEndpoint))
+            if (!newEndpoint.Equals(oldEndpoint) && !IsEndpointHeartbeatHealthy(oldEndpoint))
             {
                 selectedPeerEndpoints[id] = newEndpoint;
-                logFile.Event($"peer {peer.Name} endpoint moved {oldEndpoint} -> {newEndpoint}");
+                logFile.Event($"peer {peer.Name} endpoint moved {oldEndpoint} -> {newEndpoint} (old endpoint not healthy)");
             }
             selectedPeerLabels[id] = peer.Name;
         }
@@ -3955,6 +4070,23 @@ public sealed class MainForm : Form
     private void PushAllowedReceiveSenders()
     {
         receiver.SetAllowedSenders(SelectedSendEndpoints());
+    }
+
+    /// <summary>True if the heartbeat currently considers <paramref name="endpoint"/> healthy —
+    /// i.e. we're getting pongs back from exactly that address+port right now. Used to keep the
+    /// audio target pinned to a proven-good endpoint instead of chasing a multi-homed peer's
+    /// other (possibly unreachable) advertised address every discovery refresh. 2026-05-31.</summary>
+    private bool IsEndpointHeartbeatHealthy(IPEndPoint endpoint)
+    {
+        if (heartbeatService is null) return false;
+        foreach (var h in heartbeatService.GetAllPeerHealth())
+        {
+            if (h.State == PeerHealthState.Healthy && h.AudioEndpoint.Equals(endpoint))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>
@@ -4335,6 +4467,9 @@ public sealed class MainForm : Form
         // send / receive routing (WASAPI / ASIO / both). 1 Hz cadence is fine — the user is
         // hovering, not staring at a counter — and BuildTrayTooltip is allocation-cheap.
         trayController.SetTooltip(BuildTrayTooltip());
+        // Surface any password mismatch / out-of-date peer the receiver has spotted (once per
+        // change). Cheap when everything matches.
+        CheckPeerSecurity();
         // Periodic native-memory reaper. SustainedLowLatency GC mode (set in Program.Main)
         // explicitly avoids gen2 collections to keep audio scheduling smooth — but that same
         // suppression means finalizers for IDisposable wrappers that didn't get explicit
@@ -5013,6 +5148,20 @@ public sealed class MainForm : Form
             try { baselineProfileJson = SerializeCurrentStateAsProfile(); }
             catch { /* baseline failure shouldn't block save */ }
             unsavedChanges = false;
+            // A freshly created profile has no password yet, and encryption is always on — so
+            // ask for one now and write it straight into the file we just saved. Skipping (empty
+            // or Cancel) leaves it passwordless; the streaming gate will ask again when needed.
+            if (string.IsNullOrEmpty(currentProfilePassword))
+            {
+                var pw = ProfilePasswordDialog.Show(this, title, "");
+                if (!string.IsNullOrEmpty(pw))
+                {
+                    currentProfilePassword = pw;
+                    RecomputeAudioCrypto();
+                    PersistPasswordOnly(pw);
+                    AppendLogEntry($"profile password set on creation for \"{title}\"");
+                }
+            }
             // No confirmation popup here. The Save-As dialog the user just dismissed is itself
             // the explicit, user-driven "I am saving to this path" — a follow-up "Saved." popup
             // is pure friction (one more Enter press, one more NVDA read of the same fact).
@@ -5040,6 +5189,9 @@ public sealed class MainForm : Form
         // unsaved-changes prompt would start firing again, and (worse) that prompt could block
         // an unattended auto-update from restarting. The lock flag must survive every save.
         profile.ReadOnly = currentProfileReadOnly;
+        // Likewise the encryption password (stored scrambled) — carried through every save so a
+        // routine Save never wipes it (same bug class the ReadOnly line above fixes).
+        profile.Password = RemSoundCrypto.Obfuscate(currentProfilePassword);
         profile.Volume = volumeBar.Value;
         profile.Muted = receiver.IsMuted;
         profile.ReceiveAudioOn = receiveAudioCheckbox.Checked;
@@ -5200,6 +5352,179 @@ public sealed class MainForm : Form
     /// in-session edits. 2026-05-22.</summary>
     private static string SerializeProfileForDirtyDiff(Profile profile) =>
         JsonSerializer.Serialize(profile, new JsonSerializerOptions { WriteIndented = true });
+
+    /// <summary>File → Change this profile's password. Shows the current password (plain text,
+    /// for the screen reader) in a dialog; on OK, updates the in-memory value and writes JUST
+    /// the password back to the profile file straight away — same immediate-persist approach as
+    /// the lock flag, since the password needs to be there next time the profile is loaded.
+    /// Requires a saved profile (a password is meaningless on the blank template, which has no
+    /// file to attach it to). 2026-05-31.</summary>
+    private void ChangeProfilePassword()
+    {
+        if (string.IsNullOrEmpty(currentProfileTitle) || string.IsNullOrEmpty(currentProfilePath))
+        {
+            MessageBox.Show(this,
+                "There's no saved profile to attach a password to yet. Save the current setup as a profile first (File → Save as), then set its password.",
+                AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var entered = ProfilePasswordDialog.Show(this, currentProfileTitle, currentProfilePassword);
+        if (entered is null) return; // cancelled
+        currentProfilePassword = entered;
+        RecomputeAudioCrypto();
+        PersistPasswordOnly(entered);
+        AppendLogEntry($"profile password changed for \"{currentProfileTitle}\" (now {(entered.Length == 0 ? "cleared" : "set")})");
+    }
+
+    /// <summary>Write JUST the (scrambled) password back to the profile file, leaving every
+    /// other in-session edit untouched — the same carve-out <see cref="PersistReadOnlyFlagOnly"/>
+    /// uses for the lock flag, so changing the password doesn't silently flush unrelated unsaved
+    /// changes. Read the JSON, set one field, write it back. Blank-template (no path) is a no-op.</summary>
+    private void PersistPasswordOnly(string plaintextPassword)
+    {
+        if (string.IsNullOrEmpty(currentProfilePath)) return;
+        if (!File.Exists(currentProfilePath)) return;
+        try
+        {
+            var json = File.ReadAllText(currentProfilePath);
+            var profile = JsonSerializer.Deserialize<Profile>(json);
+            if (profile is null) return;
+            profile.Password = RemSoundCrypto.Obfuscate(plaintextPassword);
+            var newJson = JsonSerializer.Serialize(profile, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(currentProfilePath, newJson);
+            // Refresh the dirty-diff baseline against the rewritten file so the password change
+            // we just persisted doesn't read back as an unsaved change on close.
+            try { baselineProfileJson = SerializeProfileForDirtyDiff(profile); }
+            catch { /* baseline refresh is best-effort */ }
+        }
+        catch (Exception ex)
+        {
+            AppendLogEntry($"failed to persist profile password: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Derive the audio key + fingerprint from the current profile password (cached so
+    /// the slow derivation only runs when the password actually changes) and push them down to
+    /// the sender and receiver. No password → null key → no audio flows (encryption is
+    /// mandatory). Called on password change, when audio is (re)configured, and on the streaming
+    /// gate. 2026-05-31.</summary>
+    private void RecomputeAudioCrypto()
+    {
+        if (currentProfilePassword != lastDerivedPassword)
+        {
+            if (string.IsNullOrEmpty(currentProfilePassword))
+            {
+                currentAudioKey = null;
+                currentAudioFingerprint = null;
+            }
+            else
+            {
+                currentAudioKey = RemSoundCrypto.DeriveKey(currentProfilePassword);
+                currentAudioFingerprint = RemSoundCrypto.Fingerprint(currentProfilePassword);
+            }
+            lastDerivedPassword = currentProfilePassword;
+        }
+        sender.AudioKey = currentAudioKey;
+        sender.AudioFingerprint = currentAudioFingerprint;
+        receiver.AudioKey = currentAudioKey;
+        receiver.AudioFingerprint = currentAudioFingerprint;
+    }
+
+    /// <summary>The "you need a password before any audio can flow" gate. Called when the user
+    /// ticks Send my audio or Receive audio. If the active profile has no password, prompt for
+    /// one; if they give one, set it (and offer to save it to the profile); if they cancel,
+    /// un-tick the box. Returns true if streaming may proceed.</summary>
+    private bool EnsureStreamingPassword(AccessibleCheckBox box)
+    {
+        if (!box.Checked) return true;                           // turning OFF never needs a password
+        if (!string.IsNullOrEmpty(currentProfilePassword)) return true; // already have one
+
+        var label = string.IsNullOrEmpty(currentProfileTitle) ? "this session" : currentProfileTitle;
+        var entered = ProfilePasswordDialog.Show(this, label, "");
+        if (string.IsNullOrEmpty(entered))
+        {
+            // No password → can't stream. Put the box back without re-firing this gate.
+            suppressStreamingPasswordGate = true;
+            box.Checked = false;
+            suppressStreamingPasswordGate = false;
+            return false;
+        }
+        currentProfilePassword = entered;
+        RecomputeAudioCrypto();
+        // Offer to remember it on the profile (if we're on a saved one).
+        if (!string.IsNullOrEmpty(currentProfileTitle) && !string.IsNullOrEmpty(currentProfilePath))
+        {
+            var save = MessageBox.Show(this,
+                $"Save this password to profile \"{currentProfileTitle}\" so you don't have to type it next time?",
+                AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (save == DialogResult.Yes) PersistPasswordOnly(currentProfilePassword);
+        }
+        return true;
+    }
+
+    /// <summary>Send/receive checkbox handler with the password gate in front of it. Replaces the
+    /// bare HandleCapabilityChange + MarkProfileDirty wiring.</summary>
+    private void OnStreamingCheckboxChanged(AccessibleCheckBox box)
+    {
+        if (suppressStreamingPasswordGate) return;
+        if (!EnsureStreamingPassword(box)) return;
+        HandleCapabilityChange();
+        MarkProfileDirty();
+    }
+
+    /// <summary>Once a second, surface any password mismatch / out-of-date peer the receiver has
+    /// detected from peers' advertised fingerprints — once per change, not every tick — so a
+    /// silent encrypted stream is never an unexplained mystery.</summary>
+    private void CheckPeerSecurity()
+    {
+        foreach (var kv in receiver.GetPeerSecurityStatuses())
+        {
+            var addr = kv.Key;
+            var status = kv.Value;
+            if (!IsSelectedPeerAddress(addr)) continue;
+            if (status is PeerSecurityStatus.Secure or PeerSecurityStatus.Unknown)
+            {
+                lastSecurityWarned.Remove(addr);
+                continue;
+            }
+            if (lastSecurityWarned.TryGetValue(addr, out var warned) && warned == status) continue;
+            lastSecurityWarned[addr] = status;
+            AppendLogEntry($"security: {status} with {addr}");
+            var msg = status == PeerSecurityStatus.PasswordMismatch
+                ? $"You and {addr} have different passwords, so no audio will pass between you.\n\nMake sure you've both set the same password (File → Change this profile's password)."
+                : $"{addr} is running an older version of RemSound that can't connect securely. They need to update before audio can flow between you.";
+            MessageBox.Show(this, msg, AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private bool IsSelectedPeerAddress(System.Net.IPAddress addr) =>
+        selectedPeerEndpoints.Values.Any(e => e.Address.Equals(addr));
+
+    /// <summary>Options → Profile passwords. Opens the password-manager list; if the user changed
+    /// any password, re-sync the active profile's password from disk (the manager wrote it there)
+    /// and re-derive the audio key so the live session uses the new password immediately.</summary>
+    private void OpenProfilePasswordManager()
+    {
+        if (profileStore is null)
+        {
+            MessageBox.Show(this, "Profile system not active in this run.", AppName,
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var changed = ProfilePasswordManagerDialog.Show(this, profileStore);
+        if (!changed) return;
+        if (!string.IsNullOrEmpty(currentProfilePath) && File.Exists(currentProfilePath))
+        {
+            try
+            {
+                var profile = JsonSerializer.Deserialize<Profile>(File.ReadAllText(currentProfilePath));
+                currentProfilePassword = RemSoundCrypto.Deobfuscate(profile?.Password);
+                RecomputeAudioCrypto();
+                AppendLogEntry("active profile password refreshed from the password manager");
+            }
+            catch { /* benign — worst case the change applies on next load */ }
+        }
+    }
 
     /// <summary>Serializes the current control state as if the user had just clicked Save.
     /// Used for the unsaved-changes-on-close diff. Mirrors <see cref="SaveCurrentStateToProfileFile"/>
@@ -5451,7 +5776,7 @@ public sealed class MainForm : Form
     /// Custom paths are per-profile (changed from machine-wide in v3.0.3 development) so
     /// each profile can carry its own cue palette. The settings cache mirrors the active
     /// profile's CustomCuePaths dictionary and is the runtime source of truth.</summary>
-    private void TryLoadCueSound(string cueId, string defaultFileName, out System.Media.SoundPlayer? player)
+    private void TryLoadCueSound(string cueId, string defaultFileName, out CuePlayer? player)
     {
         player = null;
         try
@@ -5476,9 +5801,9 @@ public sealed class MainForm : Form
                     return;
                 }
             }
-            var sp = new System.Media.SoundPlayer(path);
-            sp.LoadAsync();
-            player = sp;
+            // CuePlayer reads + plays the file on demand (NAudio), so no pre-load step — and it
+            // copes with any format, including the 96 kHz / 24-bit cue WAVs and custom user files.
+            player = new CuePlayer(path);
         }
         catch (Exception ex)
         {
@@ -5521,37 +5846,66 @@ public sealed class MainForm : Form
         var current = heartbeatService.GetAllPeerHealth();
 
         var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // How recently audio must have arrived to count the peer as "audibly connected". Audio
+        // arrives hundreds of times a second, so a 3-second gap is a genuine interruption, not
+        // jitter. Disconnect also requires the heartbeat to be Unreachable (5 s of no reply), so
+        // the heartbeat is the slower gate for a real, total loss.
+        var audioWindow = TimeSpan.FromSeconds(3);
         foreach (var ph in current)
         {
             var key = $"{ph.AudioEndpoint.Address}:{ph.AudioEndpoint.Port}";
             seenKeys.Add(key);
-            previousPeerHealthStates.TryGetValue(key, out var prior);
-            if (ph.State == PeerHealthState.Healthy && prior != PeerHealthState.Healthy)
+
+            var audioFlowing = receiver.IsAudioFlowingFrom(ph.AudioEndpoint.Address, audioWindow);
+            // Connected the moment audio arrives OR the heartbeat is solidly healthy; lost only
+            // when audio has stopped AND the heartbeat has gone unreachable. The middle ground
+            // (heartbeat Stale, or audio briefly paused) holds the previous state — hysteresis,
+            // so a heartbeat blip while audio keeps playing never fires a false disconnect.
+            var isConnected = audioFlowing || ph.State == PeerHealthState.Healthy;
+            var isLost = !audioFlowing && ph.State == PeerHealthState.Unreachable;
+            var wasConnected = peerConnectedState.TryGetValue(key, out var w) && w;
+
+            if (isConnected && !wasConnected)
             {
-                if (settings.LoadEnableConnectCue()) connectSound?.Play();
-                logFile.Event($"peer connected cue: {ph.AudioEndpoint} ({prior} → Healthy)");
+                var enabled = settings.LoadEnableConnectCue();
+                if (enabled) connectSound?.Play();
+                logFile.Event($"peer connected: {ph.AudioEndpoint} (audio={audioFlowing}, heartbeat={ph.State}) — connect cue {CueOutcome(enabled, connectSound)}");
+                peerConnectedState[key] = true;
             }
-            else if (ph.State == PeerHealthState.Unreachable
-                && (prior == PeerHealthState.Healthy || prior == PeerHealthState.Stale))
+            else if (isLost && wasConnected)
             {
-                if (settings.LoadEnableDisconnectCue()) disconnectSound?.Play();
-                logFile.Event($"peer disconnected cue: {ph.AudioEndpoint} ({prior} → Unreachable)");
+                var enabled = settings.LoadEnableDisconnectCue();
+                if (enabled) disconnectSound?.Play();
+                logFile.Event($"peer disconnected: {ph.AudioEndpoint} (audio stopped, heartbeat={ph.State}) — disconnect cue {CueOutcome(enabled, disconnectSound)}");
+                peerConnectedState[key] = false;
             }
-            previousPeerHealthStates[key] = ph.State;
+            else if (!peerConnectedState.ContainsKey(key))
+            {
+                // First sighting and neither clearly connected nor lost (e.g. address typed but
+                // no audio/pong yet) — seed the state without playing a cue.
+                peerConnectedState[key] = isConnected;
+            }
         }
 
-        // Peers that vanished from tracking entirely (user deselected). Play disconnect if they
-        // were healthy when last seen.
-        foreach (var key in previousPeerHealthStates.Keys.Where(k => !seenKeys.Contains(k)).ToList())
+        // Peers that vanished from tracking entirely (user deselected). Play disconnect only if
+        // they were connected when last seen — a peer that never connected stays quiet.
+        foreach (var key in peerConnectedState.Keys.Where(k => !seenKeys.Contains(k)).ToList())
         {
-            if (previousPeerHealthStates[key] == PeerHealthState.Healthy)
+            if (peerConnectedState[key])
             {
-                if (settings.LoadEnableDisconnectCue()) disconnectSound?.Play();
-                logFile.Event($"peer disconnected cue: {key} (deselected while Healthy)");
+                var enabled = settings.LoadEnableDisconnectCue();
+                if (enabled) disconnectSound?.Play();
+                logFile.Event($"peer disconnected: {key} (deselected while connected) — disconnect cue {CueOutcome(enabled, disconnectSound)}");
             }
-            previousPeerHealthStates.Remove(key);
+            peerConnectedState.Remove(key);
         }
     }
+
+    /// <summary>Describes what actually happened to a cue, for honest logging: "played", "muted
+    /// in settings", or "enabled but sound not loaded" — so the log never claims a cue rang when
+    /// no sound came out. 2026-06-02.</summary>
+    private static string CueOutcome(bool enabled, CuePlayer? sound) =>
+        !enabled ? "muted in settings" : sound is null ? "enabled but sound not loaded" : "played";
 
     private void NudgeVolume(int deltaPercent)
     {

@@ -20,6 +20,47 @@ internal sealed class AboutDialog : Form
     /// updates" path.</summary>
     private const string ReleaseNotes =
         """
+        RemSound v3.3
+
+        Your audio is now encrypted, end to end, so you no
+        longer need a VPN just to keep it private.
+
+        How it works: every profile has a password. You and
+        the person you're connecting to must use the SAME
+        password — then your audio is scrambled on the way
+        out and only unscrambled at the other end. Anyone in
+        between hears nothing usable. The password is what
+        lets you connect: matching passwords connect, and
+        you hear each other; different passwords mean no
+        audio (RemSound tells you when that happens).
+
+        Setting a password: when you create a profile it asks
+        for one. You can change it any time with File → Change
+        this profile's password, and you can see and edit the
+        passwords for ALL your profiles in one place under
+        Options → Profile passwords. If you try to start
+        sending or receiving on a profile that has no password
+        yet, RemSound asks you to set one first.
+
+        Adds almost no delay — the scrambling takes millionths
+        of a second per packet, far less than the audio itself.
+
+        Important: because the audio format changed, v3.3 can
+        only talk to other v3.3 (and later) copies. Anyone you
+        connect with needs to update to v3.3 too.
+
+        Also in this release: connect, disconnect and the
+        other cue sounds now play reliably whatever format the
+        WAV is in (they used to be hit-and-miss with high-
+        resolution files); the connect/disconnect cues now
+        follow the actual audio, so you won't hear a false
+        "disconnect" while sound is still playing; the system
+        tray icon sticks to a peer's working address instead
+        of hopping between a VPN and a LAN address (which could
+        cause crackle on some setups); and RemSound now offers
+        to show you what's new after each update (on by
+        default; turn it off in Preferences).
+
         RemSound v3.2
 
         A new audio cue, plus the reliability work from

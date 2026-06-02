@@ -155,6 +155,15 @@ internal sealed class PreferencesDialog : Form
         AutoSize = true,
     };
 
+    // After an update installs and RemSound restarts, opening the About box once lets the user
+    // see what changed. Off by default (opt-in). 'h' mnemonic — 'w' is taken by "Write logs now".
+    private readonly AccessibleCheckBox showWhatsNewAfterUpdateBox = new()
+    {
+        Text = "S&how what's new after each update",
+        AccessibleName = "Show what's new after each update",
+        AutoSize = true,
+    };
+
     // UPnP — automatic router port-forwarding via Mono.Nat. Off by default. The status label
     // is updated live from the RouterPortMapper.StatusChanged event so the user sees the
     // discovery result inline without having to close and reopen the dialog.
@@ -369,6 +378,13 @@ internal sealed class PreferencesDialog : Form
             cfg.SilentlyInstallUpdates = silentlyInstallUpdatesBox.Checked;
             try { cfg.Save(); } catch { /* harmless */ }
         };
+        showWhatsNewAfterUpdateBox.Checked = cfgForLoad.ShowWhatsNewAfterUpdate;
+        showWhatsNewAfterUpdateBox.CheckedChanged += (_, _) =>
+        {
+            var cfg = AppConfig.Load();
+            cfg.ShowWhatsNewAfterUpdate = showWhatsNewAfterUpdateBox.Checked;
+            try { cfg.Save(); } catch { /* harmless */ }
+        };
         checkForUpdatesNowButton.Click += (_, _) => checkForUpdatesNow();
 
         // UPnP toggle — persists immediately and tells MainForm to start / stop the mapper.
@@ -445,10 +461,11 @@ internal sealed class PreferencesDialog : Form
         updateFrequencyBox.TabIndex = 6;
         checkForUpdatesNowButton.TabIndex = 7;
         silentlyInstallUpdatesBox.TabIndex = 8;
-        upnpEnabledBox.TabIndex = 9;
-        loggingBox.TabIndex = 10;
-        writeLogsNowButton.TabIndex = 11;
-        closeButton.TabIndex = 12;
+        showWhatsNewAfterUpdateBox.TabIndex = 9;
+        upnpEnabledBox.TabIndex = 10;
+        loggingBox.TabIndex = 11;
+        writeLogsNowButton.TabIndex = 12;
+        closeButton.TabIndex = 13;
 
         // Group the frequency label + combo on one FlowLayoutPanel row so the visible label
         // sits inline next to the combo while keeping the combo as the focusable target.
@@ -500,10 +517,11 @@ internal sealed class PreferencesDialog : Form
         panel.Controls.Add(freqRow, 0, 4);
         panel.Controls.Add(checkForUpdatesNowButton, 0, 5);
         panel.Controls.Add(silentlyInstallUpdatesBox, 0, 6);
-        panel.Controls.Add(upnpEnabledBox, 0, 7);
-        panel.Controls.Add(upnpStatusLabel, 0, 8);
-        panel.Controls.Add(loggingBox, 0, 9);
-        panel.Controls.Add(writeLogsNowButton, 0, 10);
+        panel.Controls.Add(showWhatsNewAfterUpdateBox, 0, 7);
+        panel.Controls.Add(upnpEnabledBox, 0, 8);
+        panel.Controls.Add(upnpStatusLabel, 0, 9);
+        panel.Controls.Add(loggingBox, 0, 10);
+        panel.Controls.Add(writeLogsNowButton, 0, 11);
 
         var buttons = new FlowLayoutPanel
         {
@@ -624,8 +642,9 @@ internal sealed class PreferencesDialog : Form
         }
         try
         {
-            var sp = new System.Media.SoundPlayer(path);
-            sp.Play();
+            // CuePlayer (NAudio) rather than System.Media.SoundPlayer so the preview copes with
+            // any format — including 24-bit / 96 kHz files the basic player can't handle.
+            new CuePlayer(path).Play();
         }
         catch (Exception ex)
         {

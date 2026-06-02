@@ -83,6 +83,16 @@ public static class RemPacket
     /// before reading the Lane field; payloads shorter than that default Lane to
     /// <see cref="RenderRoute.Mixed"/>. Senders newer than 2026-05-11 always write this size.</summary>
     public const int FormatPayloadExtendedSize = 36;
+    /// <summary>Format payload size with the 8-byte password fingerprint appended (36 + 8). Sent
+    /// by encryption-capable builds (2026-05-31+) so a peer can tell whether its profile password
+    /// matches ours WITHOUT either side sending the password. Receivers read the fingerprint only
+    /// when <c>payload.Length &gt;= FormatPayloadWithFingerprintSize</c>; shorter payloads (older
+    /// senders) yield a null fingerprint, which the receiver reads as "this peer can't encrypt —
+    /// it needs to update". The fingerprint sits AFTER the 36-byte extended block, so it composes
+    /// with the existing Lane extension and stays backward-compatible.</summary>
+    public const int FormatPayloadWithFingerprintSize = 44;
+    /// <summary>Length of the password fingerprint carried in the extended format payload.</summary>
+    public const int PasswordFingerprintSize = 8;
     // KeepAlivePayloadSize removed 2026-05-23 — no code reads or writes this payload any more
     // (see top-of-file comment). RemPacketType.KeepAlive itself is retained for wire safety.
     /// <summary>
@@ -143,7 +153,7 @@ public static class RemPacket
     /// ignore the trailing 4 — see the <see cref="FormatPayloadSize"/> doc comment for the
     /// compatibility contract.
     /// </summary>
-    public static int WriteFormatPayload(Span<byte> destination, AudioFormatInfo format)
+    public static int WriteFormatPayload(Span<byte> destination, AudioFormatInfo format, ReadOnlySpan<byte> passwordFingerprint = default)
     {
         if (destination.Length < FormatPayloadExtendedSize)
         {
@@ -168,6 +178,14 @@ public static class RemPacket
         destination[33] = 0;
         destination[34] = 0;
         destination[35] = 0;
+        // Optional 8-byte password fingerprint at offset 36. Written only when the caller
+        // supplies one AND the destination has room — keeps the 36-byte path unchanged for any
+        // caller that doesn't pass a fingerprint.
+        if (passwordFingerprint.Length == PasswordFingerprintSize && destination.Length >= FormatPayloadWithFingerprintSize)
+        {
+            passwordFingerprint.CopyTo(destination.Slice(36, PasswordFingerprintSize));
+            return FormatPayloadWithFingerprintSize;
+        }
         return FormatPayloadExtendedSize;
     }
 
@@ -197,10 +215,22 @@ public static class RemPacket
     /// rather than rejected — better to play the audio in the default route than drop a
     /// stream because a future sender sent an unknown value.
     /// </summary>
-    public static bool TryReadFormat(ReadOnlySpan<byte> payload, out AudioFormatInfo format)
+    public static bool TryReadFormat(ReadOnlySpan<byte> payload, out AudioFormatInfo format) =>
+        TryReadFormat(payload, out format, out _);
+
+    /// <summary>As <see cref="TryReadFormat(ReadOnlySpan{byte}, out AudioFormatInfo)"/>, also
+    /// recovering the sender's 8-byte password fingerprint when present (payload long enough).
+    /// <paramref name="passwordFingerprint"/> is null when the sender didn't include one — i.e.
+    /// a pre-encryption build, which the receiver treats as "this peer needs to update".</summary>
+    public static bool TryReadFormat(ReadOnlySpan<byte> payload, out AudioFormatInfo format, out byte[]? passwordFingerprint)
     {
         format = new AudioFormatInfo(48000, 2, 32, 3, 8, 384000);
+        passwordFingerprint = null;
         if (payload.Length < FormatPayloadSize) return false;
+        if (payload.Length >= FormatPayloadWithFingerprintSize)
+        {
+            passwordFingerprint = payload.Slice(36, PasswordFingerprintSize).ToArray();
+        }
 
         var lane = RenderRoute.Mixed;
         if (payload.Length >= FormatPayloadExtendedSize)

@@ -1,41 +1,44 @@
-# RemSound v3.2
+# RemSound v3.3
 
-A new audio cue plus a round of reliability work. The headline is a sound that warns you an update is about to install — and underneath it, RemSound now flatly refuses to run as two copies at once.
+The big one: **your audio is now encrypted end to end.** Plus the connect/disconnect cues are fixed, and a handful of smaller reliability improvements.
 
-## New: an "Update sound" cue
+## Your audio is now encrypted
 
-RemSound now plays a short sound **just before it closes to install an update** — whether you started the update by hand or it installed silently in the background. So a silent update no longer catches you off guard: you hear that RemSound is about to restart.
+Everything RemSound sends is now scrambled as it leaves your computer and only unscrambled at the other end — so nobody in between can listen in, and you no longer need a VPN just to keep a private connection private.
 
-Like every other cue, it's **per-profile**, you can **mute** it, and you can **swap in your own WAV** — all from **File → Preferences → Audio cue sounds**, where it's the new seventh entry in the list. Preview it with the Play button, point it at your own sound with Browse, or right-click Browse to go back to the default.
+It works with a password on each profile:
 
-## Only one copy of RemSound at a time
+- **You and the person you connect to use the same password** → you hear each other.
+- **Different passwords** → no audio passes, and RemSound tells you so plainly instead of leaving you with silent confusion.
 
-RemSound now refuses to run as two copies at once. If you open it while it's already running, it asks what you'd like to do:
+Setting a password is easy: RemSound asks for one when you create a profile, you can change it any time with **File → Change this profile's password**, and you can see and edit the passwords for all your profiles in one place under **Options → Profile passwords**. If you start sending or receiving on a profile with no password, RemSound asks you to set one first. The encryption adds no delay you could ever notice.
 
-- **Switch to the copy that's already running** — brings it back to the front (even if it was minimised to the system tray, down by the clock).
-- **Force the running copy to close and start fresh** — for when a copy is stuck or not responding.
+### Important: everyone needs v3.3
 
-This closes off a problem where, after an update, RemSound could end up with several copies running at once, each playing audio and getting louder — the only way out being to force-close them all.
+Because the audio format changed to carry the encryption, **a v3.3 copy can only talk to other v3.3 (and later) copies.** Anyone you connect with needs to update to v3.3 too. If you try to connect to an older copy, RemSound will tell you they need to update.
 
-## Updates are more dependable
+## Connect and disconnect cues, fixed
 
-- **Nothing can interrupt an update's restart any more.** Previously an "unsaved changes?" question could pop up at the wrong moment and quietly cancel it.
-- **A locked (read-only) profile stays locked when you save it.** Before, deliberately saving a locked profile silently dropped the lock — which then brought the save question back and could trip up an update.
-- **A single copy can't kick off two updates at once.**
+- **Cues now play reliably, whatever the WAV format.** The old sound player couldn't handle high-resolution (24-bit / 96 kHz) files and would play them only sometimes — so cues, and the Preview button, were hit-and-miss. They now play every time, including any custom sound you supply.
+- **The connect/disconnect cues now follow the actual audio**, not just the background "are you there?" heartbeat. So you won't hear a false "disconnect" while the sound is still playing, and the connect ding lands when the audio actually starts.
 
-## Nothing else has changed
+## Smaller improvements
 
-Same wire format, same codec list, same audio cues (plus the new one), same everything else from v3.1. v3.2 talks to v3.0.x and v3.1.x peers exactly as before.
+- **No more crackle from address-hopping.** On setups where a peer is reachable two ways at once (e.g. a VPN and a local network), RemSound now sticks to the address that's actually working instead of flip-flopping between them.
+- **Honest "online/offline".** A peer is no longer shown "offline" just because a discovery beacon blinked — only when it's genuinely gone by every measure.
+- **See what's new after an update.** RemSound now opens its About box once after each update so you can see what changed. On by default; turn it off in Preferences.
 
 ## Install
 
-1. Download `RemSound-v3.2.zip` from this release.
+1. Download `RemSound-v3.3.zip` from this release.
 2. Close RemSound.
 3. Extract the zip **over your existing RemSound folder**, overwriting program files when prompted. The zip is program files only — it won't touch your profiles, settings or recordings.
 4. Run `RemSound.exe`.
 
+After updating, set a password on the profile(s) you use to connect (RemSound will prompt you), and make sure the people you connect with have also updated to v3.3 and are using the same password.
+
 ## Upgrading
 
-**v1.9 through v3.1.3:** Help → Check for updates works — it will fetch and install v3.2 automatically. If you've ticked "Check for updates on startup" and "Silently install updates", v3.2 installs itself shortly after launch (and you'll hear the new update cue as it does).
+**v1.9 through v3.2:** Help → Check for updates works — it will fetch and install v3.3 automatically. If you've ticked "Check for updates on startup" and "Silently install updates", v3.3 installs itself shortly after launch.
 
-**v1.8 and earlier:** the auto-updater in those versions has a fault that prevents it from installing updates, so Check for updates will download v3.2 but not apply it. Install v3.2 by hand using the steps above — just this once. From the build you install onward, updates are automatic.
+**v1.8 and earlier:** the auto-updater in those versions has a fault that prevents it installing updates, so Check for updates will download v3.3 but not apply it. Install v3.3 by hand using the steps above — just this once. From the build you install onward, updates are automatic.

@@ -19,6 +19,7 @@ internal sealed class StreamSession : IDisposable
     private readonly SessionPlayout sessionPlayout;
     private readonly ReceiverDiagnostics diagnostics;
     private readonly Action<int> onFramesQueued;
+    private readonly AudioDecryptor decryptor;
     private readonly PcmFrameAssembler pcmAssembler = new();
     private IOpusDecoder? opusDecoder;
     // Sequence-tracking for Opus FEC recovery. uint, so wrap-around is naturally
@@ -87,7 +88,8 @@ internal sealed class StreamSession : IDisposable
         AudioFormatInfo format,
         SessionPlayout sessionPlayout,
         ReceiverDiagnostics diagnostics,
-        Action<int> onFramesQueued)
+        Action<int> onFramesQueued,
+        AudioDecryptor decryptor)
     {
         Endpoint = endpoint;
         StreamId = streamId;
@@ -95,6 +97,7 @@ internal sealed class StreamSession : IDisposable
         this.sessionPlayout = sessionPlayout;
         this.diagnostics = diagnostics;
         this.onFramesQueued = onFramesQueued;
+        this.decryptor = decryptor;
 
         if (Codec == AudioTransportCodec.Opus)
         {
@@ -211,12 +214,18 @@ internal sealed class StreamSession : IDisposable
             return true; // pending or dropped due to mismatch — not an error condition
         }
 
-        // assembled is signed int24 LE, stereo. Convert to float32 and queue.
-        var sampleCount = assembled.Length / 3;
+        // The reassembled frame is ciphertext — decrypt it. An empty result means the peer's
+        // password doesn't match ours (or we have no key): drop silently. The app surfaces the
+        // mismatch from the fingerprint in the format packet, so it isn't a mystery to the user.
+        var assembledPlain = decryptor.TryDecrypt(assembled);
+        if (assembledPlain.IsEmpty) return false;
+
+        // assembledPlain is signed int24 LE, stereo. Convert to float32 and queue.
+        var sampleCount = assembledPlain.Length / 3;
         var floatBytes = sampleCount * sizeof(float);
         Span<byte> floatScratch = floatBytes <= 16 * 1024 ? stackalloc byte[floatBytes] : new byte[floatBytes];
         var floatSpan = MemoryMarshal.Cast<byte, float>(floatScratch);
-        PcmPack.Int24LEToFloat(assembled, floatSpan);
+        PcmPack.Int24LEToFloat(assembledPlain, floatSpan);
 
         // Discontinuity probe — what does the audio look like right after we decode it?
         // Compared to the sender's pre-encode probe, a higher value here would mean the
@@ -234,6 +243,12 @@ internal sealed class StreamSession : IDisposable
     private bool HandleOpus(uint sequence, ReadOnlySpan<byte> payload)
     {
         if (opusDecoder is null) return false;
+
+        // Decrypt the Opus payload up front; both the FEC pass and the normal decode below use
+        // the plaintext. An empty result = wrong password / no key set → drop (silence). The
+        // mismatch is surfaced to the user from the format-packet fingerprint. 2026-05-31.
+        payload = decryptor.TryDecrypt(payload);
+        if (payload.IsEmpty) return false;
 
         // Frame size in samples-per-channel comes directly off the wire in v3.0+ (was
         // SampleRate × ms / 1000 in v2.x). Floor at 120 = 2.5 ms = standard libopus

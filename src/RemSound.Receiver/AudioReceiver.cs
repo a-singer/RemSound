@@ -93,6 +93,54 @@ public sealed class AudioReceiver : IDisposable
     // OnHeartbeatReceived, regardless of the user's "Receive audio" tick state.
     private volatile bool playbackEnabled;
 
+    // Audio decryption (2026-05-31). One shared decryptor — all receive decode runs on the
+    // single network thread, so no per-session cipher is needed. AudioKey is the AES key derived
+    // from the local profile's password; AudioFingerprint is the short id of that password we
+    // compare against the fingerprints peers advertise in their format packets. Both are pushed
+    // down by the app and read on the network thread (hence volatile). peerSecurity records the
+    // latest match result per peer address for the app to surface ("passwords don't match" etc.).
+    private readonly AudioDecryptor decryptor = new();
+    private volatile byte[]? audioKey;
+    private volatile byte[]? audioFingerprint;
+    public byte[]? AudioKey { get => audioKey; set => audioKey = value; }
+    public byte[]? AudioFingerprint { get => audioFingerprint; set => audioFingerprint = value; }
+    private readonly object securityLock = new();
+    private readonly Dictionary<IPAddress, PeerSecurityStatus> peerSecurity = new();
+
+    /// <summary>Latest per-peer encryption status (whether their profile password matches ours),
+    /// derived from the fingerprint each peer advertises in its format packets. Keyed by source
+    /// address. The app polls this to tell the user about a password mismatch or an out-of-date
+    /// peer instead of leaving a silent stream a mystery.</summary>
+    public IReadOnlyList<KeyValuePair<IPAddress, PeerSecurityStatus>> GetPeerSecurityStatuses()
+    {
+        lock (securityLock)
+        {
+            return peerSecurity.ToList();
+        }
+    }
+
+    /// <summary>True if decoded audio from <paramref name="address"/> has been written to a
+    /// playout buffer within <paramref name="within"/>. The app uses this to drive the
+    /// connect/disconnect cues off the ACTUAL audio stream rather than the heartbeat alone —
+    /// so a heartbeat blip while audio keeps flowing never fires a false "disconnect" cue, and
+    /// the connect cue can fire the moment audio starts. Returns false when not receiving (no
+    /// sessions), so the caller falls back to the heartbeat for send-only setups. 2026-05-31.</summary>
+    public bool IsAudioFlowingFrom(IPAddress address, TimeSpan within)
+    {
+        var cutoff = DateTime.UtcNow - within;
+        lock (sessionsLock)
+        {
+            foreach (var session in sessions.Values)
+            {
+                if (session.Endpoint.Address.Equals(address) && session.LastWriteUtc >= cutoff)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     // Allowed-senders gate. The App ticks peer checkboxes; only those endpoints' audio reaches
     // the playout. A null set means "no filter" (legacy behaviour). An empty set means "block
     // everyone". Stored as IP addresses (not full IPEndPoint) because incoming packets carry
@@ -214,6 +262,30 @@ public sealed class AudioReceiver : IDisposable
     /// <summary>Cumulative count of audio/format packets dropped because the sender wasn't in
     /// the allow-list. Surfaced via diagnostics so we can confirm the filter is working.</summary>
     public long PacketsRejectedNotAllowed => Interlocked.Read(ref packetsRejectedNotAllowed);
+
+    private void UpdatePeerSecurity(IPAddress address, byte[]? peerFingerprint)
+    {
+        var myFp = audioFingerprint;
+        PeerSecurityStatus status;
+        if (peerFingerprint is null)
+        {
+            status = PeerSecurityStatus.PeerNeedsUpdate; // peer is on a pre-encryption build
+        }
+        else if (myFp is null)
+        {
+            status = PeerSecurityStatus.Unknown; // we have no password set ourselves yet
+        }
+        else
+        {
+            status = RemSoundCrypto.FingerprintsEqual(peerFingerprint, myFp)
+                ? PeerSecurityStatus.Secure
+                : PeerSecurityStatus.PasswordMismatch;
+        }
+        lock (securityLock)
+        {
+            peerSecurity[address] = status;
+        }
+    }
 
     private bool IsSenderAllowed(IPEndPoint remote)
     {
@@ -649,6 +721,7 @@ public sealed class AudioReceiver : IDisposable
         Stop();
         listener.Dispose();
         multiOutput.Dispose();
+        decryptor.Dispose();
     }
 
     /// <summary>
@@ -848,7 +921,7 @@ public sealed class AudioReceiver : IDisposable
         // honest — disabled-playback drops aren't a malformedness signal.
         if (!playbackEnabled) return;
 
-        if (!RemPacket.TryReadFormat(payload, out var format))
+        if (!RemPacket.TryReadFormat(payload, out var format, out var peerFingerprint))
         {
             Interlocked.Increment(ref packetsDropped);
             return;
@@ -863,6 +936,11 @@ public sealed class AudioReceiver : IDisposable
             Interlocked.Increment(ref packetsRejectedNotAllowed);
             return;
         }
+
+        // Record whether this (selected) peer's profile password matches ours, from the
+        // fingerprint they advertised in this format packet. The app reads this to tell the user
+        // about a password mismatch (or an out-of-date peer) instead of leaving silence a mystery.
+        UpdatePeerSecurity(remote.Address, peerFingerprint);
 
         SessionPlayout sp;
         StreamSession? newSession = null;
@@ -907,7 +985,7 @@ public sealed class AudioReceiver : IDisposable
                 isFormatChange = true;
             }
 
-            newSession = new StreamSession(remote, streamId, format, sp, diagnostics, _ => sp.NoteFramesQueued(playoutEngine.TargetLatencyMs));
+            newSession = new StreamSession(remote, streamId, format, sp, diagnostics, _ => sp.NoteFramesQueued(playoutEngine.TargetLatencyMs), decryptor);
             sessions[key] = newSession;
 
             // Same-lane streamId rotation: drop other sessions from this peer that share the
@@ -994,6 +1072,9 @@ public sealed class AudioReceiver : IDisposable
             Interlocked.Increment(ref packetsRejectedNotAllowed);
             return;
         }
+        // Make sure the decryptor reflects the current profile password before the session
+        // tries to decrypt (cheap reference check; rebuild only happens on a password change).
+        decryptor.EnsureKey(audioKey);
         StreamSession? session;
         lock (sessionsLock)
         {

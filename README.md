@@ -1,6 +1,6 @@
 # RemSound
 
-**Free Windows app for sending live audio between two computers — across a house, across a city, or anywhere your internet reaches. Low delay, great quality, fully accessible to screen-reader users.**
+**Free Windows app for sending live audio between two computers — across a house, across a city, or anywhere your internet reaches. Encrypted end to end, low delay, great quality, fully accessible to screen-reader users.**
 
 [**Download the latest version**](https://github.com/Ednunp/RemSound/releases/latest)  ·  [**Read the user manual**](MANUAL.md)
 
@@ -11,6 +11,12 @@ RemSound is for musicians, sound designers, podcasters, and anyone else who want
 You sit at one computer, RemSound captures whatever is playing — a track in your music software, a video call, system sound from anything else running — and sends it cleanly to another computer where it plays through speakers or headphones in real time. The person at the other end hears what you're hearing, with a delay measured in milliseconds rather than seconds.
 
 It's also fully accessible. The interface was designed with screen readers (NVDA in particular) in mind from day one. Every button has a keyboard shortcut, every status line is read out clearly, and there are no menus or controls that need a mouse to reach.
+
+## Private by default — your audio is encrypted
+
+Everything RemSound sends is **encrypted end to end**: scrambled the moment it leaves your computer and only unscrambled at the other end, so nobody in between — your internet provider, a shared Wi-Fi, anyone watching the line — can listen in. You no longer need a VPN just to keep a private connection private.
+
+It works with a simple shared password. You and the person you're connecting to use the **same password**, and only the two of you can hear the audio — get the password wrong and nothing comes through. RemSound stores a password on each profile and walks you through setting one. And it all adds no delay you'd ever notice.
 
 ## What you can do with it
 
@@ -30,7 +36,7 @@ Inside RemSound there's just one main decision: which quality and delay you want
 ## How to install it
 
 1. Go to the [latest release](https://github.com/Ednunp/RemSound/releases/latest).
-2. Download the file called `RemSound-v3.1.zip` (the version number changes over time — pick whichever is newest).
+2. Download the file called `RemSound-v3.3.zip` (the version number changes over time — pick whichever is newest).
 3. Extract the zip into a folder of your choice.
 4. Double-click `RemSound.exe` and away you go.
 

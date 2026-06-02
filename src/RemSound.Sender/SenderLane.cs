@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using RemSound.Core;
 
 namespace RemSound.Sender;
@@ -37,6 +38,16 @@ internal sealed class SenderLane
     private readonly float[] frameAccumulator = new float[MaxFrameStereoSamples];
     private int frameAccumulatorWritten;
     private readonly byte[] outboundScratch = new byte[2048];
+
+    // Audio encryption (always on as of the 2026-05-31 encryption feature). Each lane keeps its
+    // OWN AES-GCM cipher because AES-GCM isn't thread-safe and the two lanes run on separate
+    // capture threads. Rebuilt only when the key reference changes (rare — a password change);
+    // null when no password is set, in which case the lane sends nothing (mandatory encryption).
+    // cipherScratch holds the per-frame ciphertext (plaintext + 28 bytes overhead); 4096 covers
+    // the largest single frame (Opus 20 ms or PCM 5 ms) with room to spare.
+    private AesGcm? cryptoGcm;
+    private byte[]? cryptoKeyCached;
+    private readonly byte[] cipherScratch = new byte[4096];
 
     // Per-stream sequence counters. audioSequence is what the receiver's gap-detector and Opus
     // FEC look at — it must stay monotonic per stream. formatSequence is used for the periodic
@@ -262,8 +273,21 @@ internal sealed class SenderLane
         {
             PcmPack.FloatToInt24LE(stereoFloats, int24);
         }
+        EnsureCrypto();
+        if (cryptoGcm is null) return; // no password yet → never send audio in the clear
+        // Encrypt the whole PCM frame, then split the ciphertext across as many parts as the
+        // Ethernet payload budget needs (the +28-byte crypto overhead can push a 5 ms frame over
+        // a single datagram). The receiver reassembles the parts and then decrypts.
+        var ctLen = RemSoundCrypto.EncryptInto(cryptoGcm, int24, cipherScratch);
+        var maxPart = RemPacket.MaxAudioPayloadBytes;
+        var totalParts = (byte)((ctLen + maxPart - 1) / maxPart);
         pcmFrameId++;
-        SendPcmPart(pcmFrameId, partIndex: 0, totalParts: 1, int24);
+        for (byte part = 0; part < totalParts; part++)
+        {
+            var offset = part * maxPart;
+            var len = Math.Min(maxPart, ctLen - offset);
+            SendPcmPart(pcmFrameId, part, totalParts, cipherScratch.AsSpan(offset, len));
+        }
     }
 
     private void EmitOpusFrame(ReadOnlySpan<float> stereoFloats)
@@ -282,7 +306,10 @@ internal sealed class SenderLane
             if (len <= 0) return;
             opusBytes = opusEncoder.LastEncoded(len);
         }
-        SendAudio(opusBytes);
+        EnsureCrypto();
+        if (cryptoGcm is null) return; // no password yet → never send audio in the clear
+        var ctLen = RemSoundCrypto.EncryptInto(cryptoGcm, opusBytes, cipherScratch);
+        SendAudio(cipherScratch.AsSpan(0, ctLen));
     }
 
     // === wire path ===
@@ -312,10 +339,34 @@ internal sealed class SenderLane
         // belongs to. The Lane value carried here comes from the AudioFormatInfo constructed
         // above, which currently always sets Mixed for the default lane; Stage 4 will set
         // WasapiLane / AsioLane on the second lane in BothIndependent mode.
-        Span<byte> packet = stackalloc byte[RemPacket.HeaderSize + RemPacket.FormatPayloadExtendedSize];
+        Span<byte> packet = stackalloc byte[RemPacket.HeaderSize + RemPacket.FormatPayloadWithFingerprintSize];
         RemPacket.WriteHeader(packet, RemPacketType.Format, streamId, ++formatSequence);
-        RemPacket.WriteFormatPayload(packet[RemPacket.HeaderSize..], format);
-        owner.SendToAll(packet);
+        // Append our password fingerprint so the peer can tell whether its profile password
+        // matches ours without anyone sending the password. WriteFormatPayload returns 36 (no
+        // fingerprint set) or 44 (fingerprint written); we send exactly that many payload bytes.
+        var payloadLen = RemPacket.WriteFormatPayload(packet[RemPacket.HeaderSize..], format, owner.AudioFingerprint);
+        owner.SendToAll(packet[..(RemPacket.HeaderSize + payloadLen)]);
+    }
+
+    /// <summary>Rebuild this lane's AES-GCM cipher if the owner's audio key reference changed.
+    /// Cheap reference check on the hot path; the actual rebuild only happens on a password
+    /// change. Null key (no password) leaves the cipher null, which stops the lane sending.</summary>
+    private void EnsureCrypto()
+    {
+        var key = owner.AudioKey;
+        if (ReferenceEquals(key, cryptoKeyCached)) return;
+        cryptoGcm?.Dispose();
+        cryptoGcm = key is null ? null : RemSoundCrypto.CreateGcm(key);
+        cryptoKeyCached = key;
+    }
+
+    /// <summary>Release the AES-GCM cipher's native handle. Called from AudioSender.Dispose so
+    /// the handle doesn't leak on teardown (same native-handle discipline as the Opus encoder).</summary>
+    public void DisposeCrypto()
+    {
+        cryptoGcm?.Dispose();
+        cryptoGcm = null;
+        cryptoKeyCached = null;
     }
 
     private void SendPcmPart(uint frameId, byte partIndex, byte totalParts, ReadOnlySpan<byte> partBytes)

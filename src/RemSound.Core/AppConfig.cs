@@ -104,6 +104,20 @@ public sealed class AppConfig
     /// startup check; the periodic timer (if set) still runs.</summary>
     public bool CheckForUpdatesOnStartup { get; set; } = true;
 
+    /// <summary>If true, RemSound opens the About box (which leads with the latest release
+    /// notes) once on the first launch AFTER an update has been installed, so the user sees
+    /// "what's new" without going looking. Default false — opt-in. Detected by comparing the
+    /// running version against <see cref="LastWhatsNewVersion"/> at launch, so it only fires
+    /// when the version actually changed, never on an ordinary relaunch. On by default — it's a
+    /// discoverability aid (see what changed), not a data-persistence toggle, so the usual
+    /// "auto-options default off" rule doesn't really apply; users can untick it.</summary>
+    public bool ShowWhatsNewAfterUpdate { get; set; } = true;
+
+    /// <summary>The app version recorded at the last launch. Used only to detect "the version
+    /// changed since last run" for <see cref="ShowWhatsNewAfterUpdate"/>. Null until first
+    /// recorded, so a fresh install never counts as an update.</summary>
+    public string? LastWhatsNewVersion { get; set; }
+
     /// <summary>If true, RemSound tries to open the audio port (UDP 47830) on the local router
     /// using UPnP / NAT-PMP / PCP, so peers on the public internet can reach this machine
     /// without manual port forwarding. Default false — the toggle opt-in only, because some

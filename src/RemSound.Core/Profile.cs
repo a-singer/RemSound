@@ -36,6 +36,14 @@ public sealed class Profile
     /// any other in-session edits stay session-only. 2026-05-22.</summary>
     public bool ReadOnly { get; set; }
 
+    /// <summary>The profile's encryption password, stored LIGHTLY SCRAMBLED on disk (via
+    /// <see cref="RemSoundCrypto.Obfuscate"/> — not real encryption, just so it isn't legible at
+    /// a glance in a possibly-synced JSON file). Null/empty = no password set yet. Two peers can
+    /// exchange audio only when their profile passwords match, because the audio key is derived
+    /// from this. In memory the running value is the plain text; this field holds the scrambled
+    /// form. Added 2026-05-31 for the always-on encryption feature.</summary>
+    public string? Password { get; set; }
+
     // === Main form: send / receive ===
     public bool ReceiveAudioOn { get; set; }
     public bool SendAudioOn { get; set; }

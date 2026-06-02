@@ -92,6 +92,21 @@ public sealed class AudioSender : IDisposable
     // mode (= 120 samples) can be expressed cleanly. Only meaningful when codec == Opus.
     private volatile int opusFrameSamples = 480;
     private volatile bool muted;
+
+    // Audio encryption (2026-05-31). The key is derived from the active profile's password by
+    // the app and pushed down here; the lanes read it on their capture threads (hence volatile)
+    // and rebuild their ciphers when the reference changes. The fingerprint is a short, non-
+    // reversible id of the same password, sent in the format packet so a peer can detect a
+    // password mismatch. Null until a password is set — with no key the lanes send nothing.
+    private volatile byte[]? audioKey;
+    private volatile byte[]? audioFingerprint;
+    /// <summary>The AES key derived from the active profile's password (or null = no password).
+    /// Set by the app; read by the sender lanes. Pushing a new array (not mutating in place)
+    /// is what signals the lanes to rebuild their ciphers.</summary>
+    public byte[]? AudioKey { get => audioKey; set => audioKey = value; }
+    /// <summary>Short non-reversible fingerprint of the active password, advertised in the format
+    /// packet for peer password-match detection. Null = none.</summary>
+    public byte[]? AudioFingerprint { get => audioFingerprint; set => audioFingerprint = value; }
     private IPEndPoint[] receivers = [];
     private long packetsSent;
     private long bytesSent;
@@ -630,6 +645,8 @@ public sealed class AudioSender : IDisposable
         Stop();
         try { inboundCts?.Cancel(); } catch { /* ignore */ }
         try { inboundThread?.Join(500); } catch { /* ignore */ }
+        try { defaultLane.DisposeCrypto(); } catch { /* ignore */ }
+        try { asioLane.DisposeCrypto(); } catch { /* ignore */ }
         engine.Dispose();
         // Dispose the persistent ASIO LAST, after the engine that was borrowing it. The
         // composite's Dispose doesn't touch the persistent instance (it borrowed it); we

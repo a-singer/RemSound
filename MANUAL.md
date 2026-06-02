@@ -19,17 +19,18 @@ It was built for playing music together over the internet — a guitarist on one
   1. [ASIO and WASAPI](#9-asio-and-wasapi)
   1. [Peers — finding and connecting](#10-peers--finding-and-connecting)
   1. [How the network works (LAN, WAN, Tailscale)](#11-how-the-network-works-lan-wan-tailscale)
-  1. [Latency and audio quality](#12-latency-and-audio-quality)
-  1. [Keyboard shortcuts (within the main window)](#13-keyboard-shortcuts-within-the-main-window)
-  1. [Global hotkeys (work even when minimised)](#14-global-hotkeys-work-even-when-minimised)
-  1. [Remote control: adjusting a peer's listening volume from your end](#15-remote-control-adjusting-a-peers-listening-volume-from-your-end)
-  1. [Startup behaviour](#16-startup-behaviour)
-  1. [Audio cue sounds](#17-audio-cue-sounds)
-  1. [Updating RemSound](#18-updating-remsound)
-  1. [Recording to a file](#19-recording-to-a-file)
-  1. [Logs and diagnostics](#20-logs-and-diagnostics)
-  1. [Troubleshooting](#21-troubleshooting)
-  1. [Glossary](#22-glossary)
+  1. [Passwords and encryption](#12-passwords-and-encryption)
+  1. [Latency and audio quality](#13-latency-and-audio-quality)
+  1. [Keyboard shortcuts (within the main window)](#14-keyboard-shortcuts-within-the-main-window)
+  1. [Global hotkeys (work even when minimised)](#15-global-hotkeys-work-even-when-minimised)
+  1. [Remote control: adjusting a peer's listening volume from your end](#16-remote-control-adjusting-a-peers-listening-volume-from-your-end)
+  1. [Startup behaviour](#17-startup-behaviour)
+  1. [Audio cue sounds](#18-audio-cue-sounds)
+  1. [Updating RemSound](#19-updating-remsound)
+  1. [Recording to a file](#20-recording-to-a-file)
+  1. [Logs and diagnostics](#21-logs-and-diagnostics)
+  1. [Troubleshooting](#22-troubleshooting)
+  1. [Glossary](#23-glossary)
 
 
 ## 1. What RemSound does
@@ -516,7 +517,43 @@ Round-trip time| What you'll experience
 50–100 ms| Tailscale via a relay, or one end on Wi-Fi a long way off. Still usable, but you start to notice it for music.
 100 ms+| Something is wrong, or you're talking across the world. Playing music together is hard.
 
-## 12. Latency and audio quality
+## 12. Passwords and encryption
+
+From v3.3, **all the audio RemSound sends is encrypted** — scrambled as it leaves your computer and only unscrambled at the other end. Anyone in between (your internet provider, a shared Wi-Fi, anyone watching the connection) just sees noise. This means you no longer need a VPN simply to keep your audio private. And it adds no delay you could ever notice — the scrambling happens in millionths of a second, far less time than the audio itself takes.
+
+### How it works: a password per profile
+
+Every profile carries a **password** , and that password is the key. The rule is simple:
+
+  * **Same password on both ends →** you connect and hear each other.
+  * **Different passwords →** no audio passes, and RemSound tells you so (see below) rather than leaving you with mysterious silence.
+
+
+
+So the password does double duty: it both encrypts your audio and decides who you can talk to. You and the person you're connecting with simply agree a password — say it out loud, or text it to each other — and each set it on the profile you use to talk to one another. The profile names don't have to match; only the passwords do.
+
+### Setting and changing passwords
+
+Where| What it does
+---|---
+**When you create a profile**|  Saving a new profile (File → Save as) asks you for a password right then.
+**File → Change this profile's password** (Alt+F, P)| Changes the password on the profile you're using now. The box shows the current password in plain, readable text — so a screen reader reads the actual characters, not a row of dots — and you type a new one over it.
+**Options → Profile passwords**| A list of every profile with its password in an editable box: a one-stop password manager. Edit any of them and press OK to save them all.
+
+If you try to start sending or receiving on a profile that has no password yet, RemSound asks you to set one first (and offers to remember it on the profile so you don't type it again next time). Audio can't flow without a password — encryption is always on, there's no “off” switch.
+
+### When passwords don't match
+
+If you connect to someone whose password is different from yours, RemSound shows a clear message — _“ You and [name] have different passwords, so no audio will pass between you”_ — so you know exactly what to fix. If the other person is on an older version of RemSound that can't encrypt, you'll be told they need to update.
+
+### Two things worth knowing
+
+  * **Everyone needs v3.3 or newer.** Because the audio is now scrambled, a v3.3 copy can only talk to other v3.3 (and later) copies. Anyone you connect with needs to update too.
+  * **The password lives with the profile.** It's stored (lightly scrambled) inside the profile file, so it travels with the profile if you copy it to another machine or sync it through something like Dropbox. That's handy, but it means you should keep the profile file private — protect it the way you'd protect the password itself.
+
+
+
+## 13. Latency and audio quality
 
 Latency is the small delay between sound leaving one computer and arriving at the other. Five controls together shape the trade-off between latency and sound quality, all on the Audio profile tab:
 
@@ -615,7 +652,7 @@ PCM gives the very best sound with no quality loss at all, but it uses about ten
 
 Both Opus choices can automatically repair a single missing packet (see the section just above), so single drops are inaudible on both. PCM doesn't have that ability.
 
-## 13. Keyboard shortcuts (within the main window)
+## 14. Keyboard shortcuts (within the main window)
 
 Each tab has its own Alt+letter shortcuts. The same letter can do different things on different tabs without clashing — the shortcuts only work on the tab that's showing. Move between tabs with Ctrl+Tab and Ctrl+Shift+Tab.
 
@@ -696,7 +733,7 @@ Spacebar| Tick or untick an item in any device list, or toggle the focused check
 Up / Down| Move between items in any list
 Alt+F4| Close (the standard Windows shortcut)
 
-## 14. Global hotkeys (work even when minimised)
+## 15. Global hotkeys (work even when minimised)
 
 You set these up in the Keyboard shortcuts dialog (Ctrl+K, or Options → Keyboard shortcuts). The dialog is a single list of every hotkey you can set: **Enter** sets the highlighted row, **Del** clears it (back to _not set_), and **Escape** or the Close button closes the dialog. The defaults:
 
@@ -716,7 +753,7 @@ Send Windows global mute toggle to peers| Tell every connected peer to toggle th
 
 You can change any of these to whatever combination you prefer. Each accepts modifiers (Ctrl, Shift, Alt) plus one ordinary key.
 
-## 15. Remote control: adjusting a peer's listening volume from your end
+## 16. Remote control: adjusting a peer's listening volume from your end
 
 Here's the situation this is for: you're on your laptop, listening to sound coming from your desktop, and you've got NVDA Remote open so you can drive the desktop using your laptop's keyboard. Every key you press goes to the desktop — including any volume key on the laptop, which now never reaches the laptop itself. There's no way from inside that NVDA Remote session to nudge the laptop's listening volume without breaking out of the session.
 
@@ -763,7 +800,7 @@ The feature is symmetric: both computers can both send and accept. If you set up
 
 > **Tip for troubleshooting:** the log file (Preferences dialog → Enable logs) records every remote-control command sent and received, including `IGNORED` entries when an incoming command was turned down — either because the sender wasn't in your list of ticked peers, or because “Accept remote volume commands” was off. Handy for working out “why isn't my hotkey doing anything” without guessing.
 
-## 16. Startup behaviour
+## 17. Startup behaviour
 
 Open the **Startup behaviour** dialog from Options → Startup behaviour (Alt+O, T). It has three independent toggles, plus a profile picker that appears when the third one is on, and a Close button. Esc closes the dialog. Each tick is saved straight away — there's no OK or Apply button.
 
@@ -785,7 +822,7 @@ Toggle| What it does
 
 > **Where these are stored:** the start-minimised choice and the start-with-profile name are kept in a small settings file on this computer. The auto-start toggle is kept in Windows' standard startup list — you turn it on or off from this dialog, or from Task Manager → Startup.
 
-## 17. Audio cue sounds
+## 18. Audio cue sounds
 
 RemSound plays a short sound at moments where you might want an audible confirmation that something just happened. These are called **cue sounds**. Seven events have a cue:
 
@@ -843,7 +880,7 @@ If a cue's WAV file is missing — either the default file doesn't exist or a cu
 
 > **Tip for sound designers:** the defaults are deliberately short and simple so they stay out of the way. If you'd like the cues to feel more in-character with a particular profile, the custom-sound feature is designed for exactly that. Keep WAV files short (well under a second usually works best) so cues don't overlap with each other on a busy day.
 
-## 18. Updating RemSound
+## 19. Updating RemSound
 
 RemSound can check for a newer version on a schedule you choose, prompt you to install it, and either ask first or do it quietly. There's also a one-press “check now” button so you don't have to wait for the timer.
 
@@ -857,6 +894,7 @@ Setting| Shortcut| What it does
 **Then check every** (drop-down)| Alt+U| How often RemSound checks for a newer version in the background _after_ launch. Choices: _Never_ , _Every hour_ , _Every 6 hours_ , _Every 24 hours_. The default is _Every 24 hours_. Your choice is remembered between launches; if you set it to _Never_ and you've also unticked the startup check, the only way an update arrives is through the manual button below.
 **Check for updates now** (button)| Alt+N| Checks for a newer version straight away. If you're already up to date you get a small popup saying so. If there's a newer version, you get a confirmation dialog with the release notes and a Yes / No to install. The same button is in the Help menu (Alt+H, C).
 **Silently install updates when available** (checkbox)| Alt+I| When ticked, the background and startup checks install any available update without asking — RemSound downloads it, closes briefly, swaps the files, and reopens itself. Off by default. The startup check shows a brief notice first so you can see what's about to happen (see below). The _manual_ “Check for updates now” button always asks first, no matter how this checkbox is set.
+**Show what's new after each update** (checkbox)| Alt+H| When ticked, the first time RemSound opens after an update has installed, it pops up the About box — which starts with the notes for the version you just got — so you can see what changed. Off by default. It only happens once per update, never on an ordinary restart, and never on a fresh install.
 
 ### The brief notice before a silent update installs
 
@@ -904,7 +942,7 @@ A step-by-step record of every helper run is kept in a helper log file in the in
 
 To see which version you're on without checking for updates, open **Help → About RemSound** (Alt+H, A). The dialog shows the version number and the release notes for the version you're running, in a scrollable read-only box. Close (or Esc) dismisses it.
 
-## 19. Recording to a file
+## 20. Recording to a file
 
 RemSound can save the sound passing through it to a file on your computer — useful for keeping a copy of a music session, capturing a long jam for editing later, or just saving a one-off voice exchange you want to come back to.
 
@@ -970,7 +1008,7 @@ List| Shortcut| What goes in it
 
 OK (Alt+O) saves your choices to the current profile. Cancel (Alt+N) or Esc discards them. Settings are saved with the profile as usual — changes here mark the profile as having unsaved changes, and you'll be asked about them on exit if you haven't saved.
 
-## 20. Logs and diagnostics
+## 21. Logs and diagnostics
 
 If logging is turned on (the **Enable logs** checkbox in the Preferences dialog — Options → Preferences, or Ctrl+P — on by default), RemSound writes a log file each session into a `logs` folder next to the RemSound program. One file per launch.
 
@@ -994,7 +1032,7 @@ Logs are plain text and can be opened in any text editor, or in a spreadsheet. T
 
 
 
-## 21. Troubleshooting
+## 22. Troubleshooting
 
 ### I don't hear my friend
 
@@ -1077,7 +1115,7 @@ The most common reasons:
 
 If none of those apply, just fall back to Tailscale — it works without involving the router at all.
 
-## 22. Glossary
+## 23. Glossary
 
 Term| Meaning
 ---|---

@@ -46,7 +46,7 @@ struct AudioFormatInfo {
     let frameSamplesPerChannel: Int32
     let lane: UInt8
     
-    static fun decode(data: Data) -> AudioFormatInfo? {
+    static func decode(data: Data) -> AudioFormatInfo? {
         guard data.count >= 32 else { return nil }
         
         let sampleRate = data.withUnsafeBytes { $0.load(as: Int32.self).littleEndian }

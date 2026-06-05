@@ -46,18 +46,22 @@ class NetworkService: ObservableObject {
             let parameters = NWParameters.udp
             parameters.allowLocalEndpointReuse = true
             
-            let listener = try NWListener(using: parameters, on: NWEndpoint.Port(integerLiteral: Int(audioPort)))
+            let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: audioPort)!)
             self.listener = listener
             
-            listener.newConnectionHandler = { [weak self] connection in
+            listener.newConnectionHandler = { [weak self] (connection: NWConnection) in
                 connection.start(queue: .global())
                 self?.receivePackets(on: connection)
             }
             
-            listener.start(queue: .global())
+            listener.start(queue: DispatchQueue.global())
         } catch {
             print("Failed to start listener: \(error)")
         }
+    }
+    
+    func sendControlPacket(kind: UInt8, sequence: UInt32) {
+        // Implementation
     }
     
     private func receivePackets(on connection: NWConnection) {

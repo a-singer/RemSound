@@ -39,6 +39,15 @@ class AudioService {
         audioEngine.stop()
     }
     
+    func reconfigure(for format: AudioFormatInfo) {
+        // Implementation
+    }
+    
+    func setBufferDuration(_ duration: Double) {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setPreferredIOBufferDuration(duration)
+    }
+    
     func scheduleBuffer(pcmData: [Int16], format: AVAudioFormat) {
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcmData.count / Int(format.channelCount))) else { return }
         

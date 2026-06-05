@@ -22,19 +22,29 @@ jobs:
           cd ios
           xcodegen generate
 
-      - name: Build for Simulator
+      - name: Build for Generic iOS Device
         run: |
           cd ios
           xcodebuild build \
             -project RemReceiver.xcodeproj \
             -scheme RemReceiver \
-            -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -sdk iphoneos \
+            -configuration Release \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
+
+      - name: Package IPA
+        run: |
+          mkdir -p build/Payload
+          cp -r ~/Library/Developer/Xcode/DerivedData/*/Build/Products/Release-iphoneos/RemReceiver.app build/Payload/
+          cd build
+          zip -r RemReceiver.ipa Payload
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RemReceiver-Simulator-Build
-          path: ~/Library/Developer/Xcode/DerivedData/*/Build/Products/Debug-iphonesimulator/RemReceiver.app
+          name: RemReceiver-IPA
+          path: build/RemReceiver.ipa

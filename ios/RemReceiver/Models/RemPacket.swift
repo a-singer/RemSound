@@ -17,7 +17,7 @@ struct RemHeader {
     static let version: UInt8 = 1
     static let size = 12
     
-    static fun decode(data: Data) -> RemHeader? {
+    static func decode(data: Data) -> RemHeader? {
         guard data.count >= size else { return nil }
         
         let magic = data.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }

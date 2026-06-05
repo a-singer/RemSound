@@ -39,12 +39,17 @@ jobs:
       - name: Package IPA
         run: |
           mkdir -p build/Payload
-          cp -r ~/Library/Developer/Xcode/DerivedData/*/Build/Products/Release-iphoneos/RemReceiver.app build/Payload/
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "RemReceiver.app" -type d | head -n 1)
+          echo "Found App at: $APP_PATH"
+          cp -r "$APP_PATH" build/Payload/
           cd build
           zip -r RemReceiver.ipa Payload
+          echo "IPA Size:"
+          du -sh RemReceiver.ipa
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RemReceiver-IPA
+          name: RemReceiver-Sideloadable-IPA
           path: build/RemReceiver.ipa
+          retention-days: 7

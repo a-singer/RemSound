@@ -1,0 +1,20 @@
+name: RemReceiver
+options:
+  bundleIdPrefix: com.rem.receiver
+targets:
+  RemReceiver:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - RemReceiver
+    settings:
+      base:
+        INFOPLIST_FILE: RemReceiver/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.rem.receiver.ios
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_BITCODE: NO
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGN_ENTITLEMENTS: ""

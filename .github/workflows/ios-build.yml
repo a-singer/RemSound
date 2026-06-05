@@ -3,11 +3,6 @@ name: Build iOS Receiver
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'ios/**'
-      - '.github/workflows/ios-build.yml'
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -19,23 +14,27 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: 'latest-stable'
+      - name: Install xcodegen
+        run: brew install xcodegen
 
-      - name: Create Xcode Project
+      - name: Generate Xcode Project
         run: |
           cd ios
-          # Note: In a real environment, we'd use a tool like 'xcodegen' or 'tuist' 
-          # to generate the .xcodeproj from the source files we created.
-          # For now, we are providing the source structure.
-          echo "Source files are ready for Xcode compilation."
+          xcodegen generate
 
-      - name: Build and Archive
+      - name: Build for Simulator
         run: |
-          # This step would typically run xcodebuild.
-          # Since we are providing source code, this workflow verifies 
-          # the structure and prepares it for a runner.
-          echo "Building RemReceiver..."
-          # xcodebuild -project ios/RemReceiver.xcodeproj -scheme RemReceiver -sdk iphoneos build
+          cd ios
+          xcodebuild build \
+            -project RemReceiver.xcodeproj \
+            -scheme RemReceiver \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RemReceiver-Simulator-Build
+          path: ~/Library/Developer/Xcode/DerivedData/*/Build/Products/Debug-iphonesimulator/RemReceiver.app

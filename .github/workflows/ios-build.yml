@@ -17,6 +17,12 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
+      - name: Configure Git for SPM
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          # This helps bypass the credential prompt for public repositories
+          git config --global credential.helper ""
+
       - name: Generate Xcode Project
         run: |
           cd ios
@@ -25,11 +31,9 @@ jobs:
       - name: Resolve Package Dependencies
         run: |
           cd ios
-          # Using -scmProvider system helps with git authentication issues in CI
           xcodebuild -resolvePackageDependencies \
             -project RemReceiver.xcodeproj \
-            -scheme RemReceiver \
-            -scmProvider system
+            -scheme RemReceiver
 
       - name: Build for Generic iOS Device
         run: |
@@ -39,7 +43,6 @@ jobs:
             -scheme RemReceiver \
             -sdk iphoneos \
             -configuration Release \
-            -scmProvider system \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \

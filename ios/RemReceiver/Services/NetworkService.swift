@@ -24,7 +24,7 @@ class NetworkService: ObservableObject {
     }
     
     private func sendDiscoveryBroadcast(instanceId: String, deviceName: String) {
-        let broadcastEndpoint = NWEndpoint.hostPort(host: "255.255.255.255", port: NWEndpoint.Port(integerLiteral: discoveryPort))
+        let broadcastEndpoint = NWEndpoint.hostPort(host: "255.255.255.255", port: NWEndpoint.Port(rawValue: discoveryPort)!)
         let connection = NWConnection(to: broadcastEndpoint, using: .udp)
         
         let json: [String: Any] = [
@@ -37,7 +37,7 @@ class NetworkService: ObservableObject {
         
         guard let data = try? JSONSerialization.data(withJSONObject: json) else { return }
         
-        connection.start(queue: .global())
+        connection.start(queue: .main)
         connection.send(content: data, completion: .contentProcessed { _ in
             connection.cancel()
         })
@@ -52,13 +52,23 @@ class NetworkService: ObservableObject {
             self.listener = listener
             
             listener.newConnectionHandler = { [weak self] (connection: NWConnection) in
-                connection.start(queue: .global())
+                connection.start(queue: DispatchQueue.global())
                 self?.receivePackets(on: connection)
             }
             
             listener.start(queue: DispatchQueue.global())
         } catch {
             print("Failed to start listener: \(error)")
+        }
+    }
+    
+    func connect(to host: String) {
+        targetEndpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: audioPort)!)
+        
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+            guard let endpoint = self?.targetEndpoint else { return }
+            self?.sendHeartbeat(to: endpoint, sequence: 0)
         }
     }
     
@@ -79,20 +89,6 @@ class NetworkService: ObservableObject {
     }
     
     func sendHeartbeat(to endpoint: NWEndpoint, sequence: UInt32) {
-        // Implementation of heartbeat packet construction and sending
-    }
-}
- if let data = data, !data.isEmpty {
-                self?.onPacketReceived?(data, connection.endpoint)
-            }
-            
-            if error == nil {
-                self?.receivePackets(on: connection)
-            }
-        }
-    }
-    
-    func sendHeartbeat(to endpoint: NWEndpoint, sequence: UInt32) {
-        // Implementation of heartbeat packet construction and sending
+        // Implementation
     }
 }

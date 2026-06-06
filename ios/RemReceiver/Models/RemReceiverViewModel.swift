@@ -2,7 +2,7 @@ import Foundation
 import Network
 import AVFoundation
 import UIKit
-import SwiftOpus
+import Opus
 
 class RemReceiverViewModel: ObservableObject {
     @Published var isRunning = false
@@ -19,7 +19,7 @@ class RemReceiverViewModel: ObservableObject {
     
     private let networkService = NetworkService()
     private let audioService = AudioService()
-    private var opusDecoder: OpusDecoder?
+    private var opusDecoder: Opus.Decoder?
     private var sequence: UInt32 = 0
     private var encryptionKey: Data = Data(RemCrypto.emptyKey)
     private var currentFormat: AudioFormatInfo?
@@ -98,7 +98,8 @@ class RemReceiverViewModel: ObservableObject {
                 
                 if codecChanged || opusDecoder == nil {
                     if format.codec == 2 {
-                        opusDecoder = try? OpusDecoder(sampleRate: format.sampleRate, channels: format.channels)
+                        let audioFormat = AVAudioFormat(standardFormatWithSampleRate: Double(format.sampleRate), channels: AVAudioChannelCount(format.channels))!
+                        opusDecoder = try? Opus.Decoder(format: audioFormat)
                     }
                     self.audioService.reconfigure(for: format)
                 }
@@ -125,29 +126,41 @@ class RemReceiverViewModel: ObservableObject {
 
     private func processOpus(_ data: Data, format: AudioFormatInfo) {
         guard let decoder = opusDecoder else { return }
-        let frameSize = Int(format.frameSamplesPerChannel)
-        let channels = Int(format.channels)
-        
-        var output = [Int16](repeating: 0, count: frameSize * channels)
         do {
-            let decodedCount = try decoder.decode(data, outPcm: &output)
-            if decodedCount > 0 {
-                let multiplier = self.volume / 100.0
-                if multiplier != 1.0 {
-                    for i in 0..<output.count {
-                        var sample = Float(output[i]) * multiplier
-                        sample = max(-32768, min(32767, sample))
-                        output[i] = Int16(sample)
+            let pcmBuffer = try decoder.decode(data)
+            
+            // Apply volume if needed
+            let multiplier = self.volume / 100.0
+            if multiplier != 1.0 {
+                let channelCount = Int(pcmBuffer.format.channelCount)
+                let frameLength = Int(pcmBuffer.frameLength)
+                for ch in 0..<channelCount {
+                    let ptr = pcmBuffer.floatChannelData?[ch]
+                    for frame in 0..<frameLength {
+                        ptr?[frame] *= multiplier
                     }
                 }
-                
-                if let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
-                                                  sampleRate: Double(format.sampleRate),
-                                                  channels: AVAudioChannelCount(format.channels),
-                                                  interleaved: true) {
-                    audioService.scheduleBuffer(pcmData: output, format: audioFormat)
+            }
+            
+            // Convert to Int16 samples for AudioService if it expects Int16
+            // Or update AudioService to handle Float/PCMBuffer directly.
+            // My current AudioService.scheduleBuffer takes [Int16].
+            
+            var int16Samples = [Int16]()
+            let channels = Int(pcmBuffer.format.channelCount)
+            let frames = Int(pcmBuffer.frameLength)
+            int16Samples.reserveCapacity(frames * channels)
+            
+            for frame in 0..<frames {
+                for ch in 0..<channels {
+                    let floatSample = pcmBuffer.floatChannelData?[ch][frame] ?? 0
+                    let int16Sample = Int16(max(-32768, min(32767, floatSample * 32767)))
+                    int16Samples.append(int16Sample)
                 }
             }
+            
+            audioService.scheduleBuffer(pcmData: int16Samples, format: pcmBuffer.format)
+            
         } catch {
             print("Opus decode error: \(error)")
         }

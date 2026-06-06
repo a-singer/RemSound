@@ -245,10 +245,8 @@ class RemReceiverViewModel: ObservableObject {
         let multiplier = self.volume / 100.0
 
         guard let audioFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Double(format.sampleRate),
-            channels: AVAudioChannelCount(channelCount),
-            interleaved: false
+            standardFormatWithSampleRate: Double(format.sampleRate),
+            channels: AVAudioChannelCount(channelCount)
         ), let pcmBuffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: AVAudioFrameCount(frameCount)) else { return }
         pcmBuffer.frameLength = pcmBuffer.frameCapacity
 

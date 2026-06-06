@@ -79,10 +79,8 @@ class AudioService {
         LogService.shared.log("Reconfiguring audio for \(format.sampleRate)Hz, \(format.channels)ch, codec \(format.codec)")
         stop()
         guard let hwFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Double(format.sampleRate),
-            channels: AVAudioChannelCount(format.channels),
-            interleaved: false
+            standardFormatWithSampleRate: Double(format.sampleRate),
+            channels: AVAudioChannelCount(format.channels)
         ) else {
             LogService.shared.log("Ignoring invalid format: \(format.sampleRate)Hz \(format.channels)ch")
             return

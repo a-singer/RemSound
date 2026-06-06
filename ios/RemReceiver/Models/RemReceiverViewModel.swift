@@ -70,7 +70,13 @@ class RemReceiverViewModel: ObservableObject {
     
     private func start() {
         isRunning = true
-        status = "Connecting..."
+        if targetSender.isEmpty {
+            status = "Searching for Senders..."
+        } else {
+            status = "Connecting to \(targetSender)..."
+            // Start sending heartbeats to the specific host
+            networkService.connect(to: targetSender)
+        }
         audioService.start()
         networkService.startDiscovery(instanceId: UUID().uuidString, deviceName: "iOS Receiver")
     }

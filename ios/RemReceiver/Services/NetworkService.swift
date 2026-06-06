@@ -5,6 +5,8 @@ class NetworkService: ObservableObject {
     private var connection: NWConnection?
     private var listener: NWListener?
     private var discoveryTimer: Timer?
+    private var heartbeatTimer: Timer?
+    private var targetEndpoint: NWEndpoint?
     
     let audioPort: UInt16 = 47830
     let discoveryPort: UInt16 = 47821
@@ -67,6 +69,20 @@ class NetworkService: ObservableObject {
     private func receivePackets(on connection: NWConnection) {
         connection.receiveMessage { [weak self] data, context, isComplete, error in
             if let data = data, !data.isEmpty {
+                self?.onPacketReceived?(data, connection.endpoint)
+            }
+            
+            if error == nil {
+                self?.receivePackets(on: connection)
+            }
+        }
+    }
+    
+    func sendHeartbeat(to endpoint: NWEndpoint, sequence: UInt32) {
+        // Implementation of heartbeat packet construction and sending
+    }
+}
+ if let data = data, !data.isEmpty {
                 self?.onPacketReceived?(data, connection.endpoint)
             }
             

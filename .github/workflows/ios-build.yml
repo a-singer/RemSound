@@ -22,6 +22,15 @@ jobs:
           cd ios
           xcodegen generate
 
+      - name: Resolve Package Dependencies
+        run: |
+          cd ios
+          # Using -scmProvider system helps with git authentication issues in CI
+          xcodebuild -resolvePackageDependencies \
+            -project RemReceiver.xcodeproj \
+            -scheme RemReceiver \
+            -scmProvider system
+
       - name: Build for Generic iOS Device
         run: |
           cd ios
@@ -30,6 +39,7 @@ jobs:
             -scheme RemReceiver \
             -sdk iphoneos \
             -configuration Release \
+            -scmProvider system \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -40,6 +50,10 @@ jobs:
         run: |
           mkdir -p build/Payload
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "RemReceiver.app" -type d | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: RemReceiver.app not found"
+            exit 1
+          fi
           echo "Found App at: $APP_PATH"
           cp -r "$APP_PATH" build/Payload/
           cd build

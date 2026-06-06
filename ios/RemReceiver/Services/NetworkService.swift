@@ -11,16 +11,27 @@ class NetworkService: ObservableObject {
     let audioPort: UInt16 = 47830
     let discoveryPort: UInt16 = 47821
     
-    @Published var discoveredSenders: [String: String] = [:] // InstanceId: Name
+    @Published var discoveredSenders: [String: String] = [:]
     
     var onPacketReceived: ((Data, NWEndpoint) -> Void)?
     
     func startDiscovery(instanceId: String, deviceName: String) {
+        stop() // Ensure clean start
         discoveryTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             self?.sendDiscoveryBroadcast(instanceId: instanceId, deviceName: deviceName)
         }
-        
         startListening()
+    }
+    
+    func stop() {
+        discoveryTimer?.invalidate()
+        discoveryTimer = nil
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        listener?.cancel()
+        listener = nil
+        connection?.cancel()
+        connection = nil
     }
     
     private func sendDiscoveryBroadcast(instanceId: String, deviceName: String) {
@@ -73,7 +84,32 @@ class NetworkService: ObservableObject {
     }
     
     func sendControlPacket(kind: UInt8, sequence: UInt32) {
-        // Implementation
+        guard let endpoint = targetEndpoint else { return }
+        let connection = NWConnection(to: endpoint, using: .udp)
+        
+        var data = Data([0x52, 0x4D, 0x4E, 0x44, 1, 5, 0, 0]) // Magic, Ver, Type=Control, StreamID=1
+        var seq = sequence.littleEndian
+        data.append(Data(bytes: &seq, count: 4))
+        data.append(kind)
+        data.append(0) // Delta
+        
+        connection.start(queue: .global())
+        connection.send(content: data, completion: .contentProcessed { _ in
+            connection.cancel()
+        })
+    }
+    
+    func sendPong(to endpoint: NWEndpoint, sequence: UInt32) {
+        let connection = NWConnection(to: endpoint, using: .udp)
+        var data = Data([0x52, 0x4D, 0x4E, 0x44, 1, 4, 1, 0]) // Magic, Ver, Type=Heartbeat, StreamID=1
+        var seq = sequence.littleEndian
+        data.append(Data(bytes: &seq, count: 4))
+        data.append(0) // Pong bit or type
+        
+        connection.start(queue: .global())
+        connection.send(content: data, completion: .contentProcessed { _ in
+            connection.cancel()
+        })
     }
     
     private func receivePackets(on connection: NWConnection) {
@@ -89,6 +125,15 @@ class NetworkService: ObservableObject {
     }
     
     func sendHeartbeat(to endpoint: NWEndpoint, sequence: UInt32) {
-        // Implementation
+        let connection = NWConnection(to: endpoint, using: .udp)
+        var data = Data([0x52, 0x4D, 0x4E, 0x44, 1, 4, 1, 0]) 
+        var seq = sequence.littleEndian
+        data.append(Data(bytes: &seq, count: 4))
+        data.append(1) // Ping
+        
+        connection.start(queue: .global())
+        connection.send(content: data, completion: .contentProcessed { _ in
+            connection.cancel()
+        })
     }
 }

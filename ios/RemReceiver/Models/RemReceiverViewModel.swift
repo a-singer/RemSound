@@ -19,6 +19,7 @@ class RemReceiverViewModel: ObservableObject {
     
     private let networkService = NetworkService()
     private let audioService = AudioService()
+    private let frameAssembler = PcmFrameAssembler()
     private var opusDecoder: Opus.Decoder?
     private var sequence: UInt32 = 0
     private var encryptionKey: Data = Data(RemCrypto.emptyKey)
@@ -31,10 +32,8 @@ class RemReceiverViewModel: ObservableObject {
     }
     
     private func updateEncryptionKey() {
-        if password.isEmpty {
-            encryptionKey = Data(RemCrypto.emptyKey)
-        } else {
-            // Key derivation logic placeholder
+        if let key = RemCrypto.deriveKey(password: password) {
+            encryptionKey = key
         }
     }
     
@@ -68,6 +67,7 @@ class RemReceiverViewModel: ObservableObject {
     
     private func start() {
         isRunning = true
+        updateEncryptionKey() // Ensure key is fresh
         UIApplication.shared.isIdleTimerDisabled = true
         if targetSender.isEmpty {
             status = "Searching for Senders..."
@@ -84,6 +84,7 @@ class RemReceiverViewModel: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = false
         status = "Stopped"
         audioService.stop()
+        networkService.stop()
     }
     
     private func handlePacket(data: Data, from endpoint: NWEndpoint) {
@@ -112,24 +113,39 @@ class RemReceiverViewModel: ObservableObject {
         case .audio:
             guard let format = currentFormat else { return }
             let payload = data.suffix(from: RemHeader.size)
-            if let decrypted = RemCrypto.decrypt(key: encryptionKey, data: payload) {
-                if format.codec == 2 {
+            
+            if format.codec == 2 {
+                // Opus doesn't use fragmentation in this protocol usually, or uses it differently
+                if let decrypted = RemCrypto.decrypt(key: encryptionKey, data: payload) {
                     processOpus(decrypted, format: format)
-                } else {
-                    processPcm(decrypted, format: format)
+                }
+            } else {
+                // PCM Reassembly
+                guard payload.count > 6 else { return }
+                let frameId = payload.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
+                let partIndex = Int(payload[4])
+                let totalParts = Int(payload[5])
+                let partData = payload.suffix(from: 6)
+                
+                if let fullFrameEncrypted = frameAssembler.addPart(frameId: frameId, partIndex: partIndex, totalParts: totalParts, data: partData) {
+                    if let decrypted = RemCrypto.decrypt(key: encryptionKey, data: fullFrameEncrypted) {
+                        processPcm(decrypted, format: format)
+                    }
                 }
             }
+        case .heartbeat:
+            // Respond to Ping with Pong
+            networkService.sendPong(to: endpoint, sequence: header.sequence)
         default:
             break
         }
     }
 
     private func processOpus(_ data: Data, format: AudioFormatInfo) {
+        guard !isMuted else { return }
         guard let decoder = opusDecoder else { return }
         do {
             let pcmBuffer = try decoder.decode(data)
-            
-            // Apply volume if needed
             let multiplier = self.volume / 100.0
             if multiplier != 1.0 {
                 let channelCount = Int(pcmBuffer.format.channelCount)
@@ -141,10 +157,6 @@ class RemReceiverViewModel: ObservableObject {
                     }
                 }
             }
-            
-            // Convert to Int16 samples for AudioService if it expects Int16
-            // Or update AudioService to handle Float/PCMBuffer directly.
-            // My current AudioService.scheduleBuffer takes [Int16].
             
             var int16Samples = [Int16]()
             let channels = Int(pcmBuffer.format.channelCount)
@@ -158,15 +170,14 @@ class RemReceiverViewModel: ObservableObject {
                     int16Samples.append(int16Sample)
                 }
             }
-            
             audioService.scheduleBuffer(pcmData: int16Samples, format: pcmBuffer.format)
-            
         } catch {
             print("Opus decode error: \(error)")
         }
     }
 
     private func processPcm(_ data: Data, format: AudioFormatInfo) {
+        guard !isMuted else { return }
         let bytesPerSample = 3
         let sampleCount = data.count / bytesPerSample
         var samples = [Int16]()

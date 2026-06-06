@@ -39,8 +39,6 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>RemSound needs access to the microphone for low-latency audio timing.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>RemSound uses the local network to discover and receive audio from your Windows PC.</string>
 </dict>

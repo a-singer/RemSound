@@ -1,6 +1,10 @@
 name: RemReceiver
 options:
   bundleIdPrefix: com.rem.receiver
+packages:
+  SwiftOpus:
+    url: https://github.com/shogo4405/SwiftOpus.git
+    from: 1.1.0
 targets:
   RemReceiver:
     type: application
@@ -8,6 +12,8 @@ targets:
     deploymentTarget: "15.0"
     sources:
       - RemReceiver
+    dependencies:
+      - package: SwiftOpus
     settings:
       base:
         INFOPLIST_FILE: RemReceiver/Info.plist

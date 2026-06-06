@@ -1,6 +1,8 @@
 import Foundation
 import Network
 import AVFoundation
+import UIKit
+import SwiftOpus
 
 class RemReceiverViewModel: ObservableObject {
     @Published var isRunning = false
@@ -17,6 +19,7 @@ class RemReceiverViewModel: ObservableObject {
     
     private let networkService = NetworkService()
     private let audioService = AudioService()
+    private var opusDecoder: OpusDecoder?
     private var sequence: UInt32 = 0
     private var encryptionKey: Data = Data(RemCrypto.emptyKey)
     private var currentFormat: AudioFormatInfo?
@@ -28,12 +31,10 @@ class RemReceiverViewModel: ObservableObject {
     }
     
     private func updateEncryptionKey() {
-        // In a full implementation, this would call RemCrypto.deriveKey(password)
-        // For now, it ensures we don't use the empty key if a password is provided.
         if password.isEmpty {
             encryptionKey = Data(RemCrypto.emptyKey)
         } else {
-            // Placeholder for derivation logic
+            // Key derivation logic placeholder
         }
     }
     
@@ -46,20 +47,17 @@ class RemReceiverViewModel: ObservableObject {
     }
     
     func sendVolumeUp() {
-        // Send control packet for volume up (RemoteControlKind.VolumeUp)
         networkService.sendControlPacket(kind: 0, sequence: sequence)
         sequence += 1
     }
     
     func sendVolumeDown() {
-        // Send control packet for volume down (RemoteControlKind.VolumeDown)
         networkService.sendControlPacket(kind: 1, sequence: sequence)
         sequence += 1
     }
     
     func toggleMute() {
         isMuted.toggle()
-        // Send control packet for mute toggle (RemoteControlKind.MuteToggle)
         networkService.sendControlPacket(kind: 2, sequence: sequence)
         sequence += 1
     }
@@ -70,11 +68,11 @@ class RemReceiverViewModel: ObservableObject {
     
     private func start() {
         isRunning = true
+        UIApplication.shared.isIdleTimerDisabled = true
         if targetSender.isEmpty {
             status = "Searching for Senders..."
         } else {
             status = "Connecting to \(targetSender)..."
-            // Start sending heartbeats to the specific host
             networkService.connect(to: targetSender)
         }
         audioService.start()
@@ -83,6 +81,7 @@ class RemReceiverViewModel: ObservableObject {
     
     private func stop() {
         isRunning = false
+        UIApplication.shared.isIdleTimerDisabled = false
         status = "Stopped"
         audioService.stop()
     }
@@ -97,8 +96,10 @@ class RemReceiverViewModel: ObservableObject {
                 let codecChanged = self.currentFormat?.codec != format.codec
                 self.currentFormat = format
                 
-                if codecChanged {
-                    // Reconfigure decoder or audio track if the codec changed (e.g., PCM <-> Opus)
+                if codecChanged || opusDecoder == nil {
+                    if format.codec == 2 {
+                        opusDecoder = try? OpusDecoder(sampleRate: format.sampleRate, channels: format.channels)
+                    }
                     self.audioService.reconfigure(for: format)
                 }
                 
@@ -123,10 +124,60 @@ class RemReceiverViewModel: ObservableObject {
     }
 
     private func processOpus(_ data: Data, format: AudioFormatInfo) {
-        // Implementation for Opus decoding using a library like SwiftOpus
+        guard let decoder = opusDecoder else { return }
+        let frameSize = Int(format.frameSamplesPerChannel)
+        let channels = Int(format.channels)
+        
+        var output = [Int16](repeating: 0, count: frameSize * channels)
+        do {
+            let decodedCount = try decoder.decode(data, outPcm: &output)
+            if decodedCount > 0 {
+                let multiplier = self.volume / 100.0
+                if multiplier != 1.0 {
+                    for i in 0..<output.count {
+                        var sample = Float(output[i]) * multiplier
+                        sample = max(-32768, min(32767, sample))
+                        output[i] = Int16(sample)
+                    }
+                }
+                
+                if let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                                  sampleRate: Double(format.sampleRate),
+                                                  channels: AVAudioChannelCount(format.channels),
+                                                  interleaved: true) {
+                    audioService.scheduleBuffer(pcmData: output, format: audioFormat)
+                }
+            }
+        } catch {
+            print("Opus decode error: \(error)")
+        }
     }
 
     private func processPcm(_ data: Data, format: AudioFormatInfo) {
-        // Implementation for PCM reassembly and playout
+        let bytesPerSample = 3
+        let sampleCount = data.count / bytesPerSample
+        var samples = [Int16]()
+        samples.reserveCapacity(sampleCount)
+        
+        let multiplier = self.volume / 100.0
+        
+        for i in 0..<sampleCount {
+            let offset = i * bytesPerSample
+            let b0 = Int32(data[offset])
+            let b1 = Int32(data[offset + 1])
+            let b2 = Int32(Int8(bitPattern: data[offset + 2])) 
+            
+            let sample32 = (b2 << 16) | (b1 << 8) | b0
+            var sampleFloat = Float(sample32) * multiplier / 256.0
+            sampleFloat = max(-32768, min(32767, sampleFloat))
+            samples.append(Int16(sampleFloat))
+        }
+        
+        if let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                          sampleRate: Double(format.sampleRate),
+                                          channels: AVAudioChannelCount(format.channels),
+                                          interleaved: true) {
+            audioService.scheduleBuffer(pcmData: samples, format: audioFormat)
+        }
     }
 }

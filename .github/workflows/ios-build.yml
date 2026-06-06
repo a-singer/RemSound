@@ -17,21 +17,10 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
-      - name: Configure Git for SPM
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-
       - name: Generate Xcode Project
         run: |
           cd ios
           xcodegen generate
-
-      - name: Resolve Package Dependencies
-        run: |
-          cd ios
-          xcodebuild -resolvePackageDependencies \
-            -project RemReceiver.xcodeproj \
-            -scheme RemReceiver
 
       - name: Build for Generic iOS Device
         run: |

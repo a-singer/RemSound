@@ -5,6 +5,11 @@ import AVFoundation
 class RemReceiverViewModel: ObservableObject {
     @Published var isRunning = false
     @Published var targetSender: String = ""
+    @Published var password: String = "" {
+        didSet {
+            updateEncryptionKey()
+        }
+    }
     @Published var status: String = "Ready"
     @Published var volume: Float = 100.0
     @Published var bufferMs: Double = 50.0
@@ -19,6 +24,16 @@ class RemReceiverViewModel: ObservableObject {
     init() {
         networkService.onPacketReceived = { [weak self] data, endpoint in
             self?.handlePacket(data: data, from: endpoint)
+        }
+    }
+    
+    private func updateEncryptionKey() {
+        // In a full implementation, this would call RemCrypto.deriveKey(password)
+        // For now, it ensures we don't use the empty key if a password is provided.
+        if password.isEmpty {
+            encryptionKey = Data(RemCrypto.emptyKey)
+        } else {
+            // Placeholder for derivation logic
         }
     }
     

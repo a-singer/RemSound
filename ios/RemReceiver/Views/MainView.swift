@@ -13,6 +13,10 @@ struct MainView: View {
                         .accessibilityLabel("Sender address")
                         .accessibilityHint("Enter the IP address or Tailscale name of your Windows PC")
                     
+                    SecureField("Stream Password", text: $viewModel.password)
+                        .accessibilityLabel("Stream password")
+                        .accessibilityHint("Enter the same password as configured on your Windows sender")
+                    
                     Button(action: {
                         viewModel.toggleReceiver()
                     }) {

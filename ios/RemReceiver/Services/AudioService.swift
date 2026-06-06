@@ -85,8 +85,11 @@ class AudioService {
             LogService.shared.log("Ignoring invalid format: \(format.sampleRate)Hz \(format.channels)ch")
             return
         }
+        // Explicitly disconnect before reconnecting; avoids residual connection state after stop().
+        audioEngine.disconnectNodeOutput(playerNode)
         audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: hwFormat)
         currentFormat = format
+        LogService.shared.log("Audio graph reconnected \(format.sampleRate)Hz \(format.channels)ch")
         start()
     }
 

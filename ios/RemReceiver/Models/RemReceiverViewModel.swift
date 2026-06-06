@@ -218,15 +218,31 @@ class RemReceiverViewModel: ObservableObject {
     private func processOpus(_ data: Data, format: AudioFormatInfo) {
         guard !isLocalMuted, let decoder = opusDecoder else { return }
         do {
-            let pcmBuffer = try decoder.decode(data)
+            let decodedBuffer = try decoder.decode(data)
+            let channelCount = max(1, Int(format.channels))
+            let frameCount = Int(decodedBuffer.frameLength)
+            guard frameCount > 0 else { return }
+
+            // Re-wrap into a buffer built with our known standardFormatWithSampleRate format.
+            // swift-opus may construct its output buffer with a different AVAudioFormat initializer
+            // (no channel layout tag), which causes scheduleBuffer() to throw an uncatchable
+            // ObjC NSException when the connection format has kAudioChannelLayoutTag_Stereo.
+            guard let audioFormat = AVAudioFormat(
+                standardFormatWithSampleRate: Double(format.sampleRate),
+                channels: AVAudioChannelCount(channelCount)
+            ), let pcmBuffer = AVAudioPCMBuffer(
+                pcmFormat: audioFormat,
+                frameCapacity: AVAudioFrameCount(frameCount)
+            ) else { return }
+
+            pcmBuffer.frameLength = AVAudioFrameCount(frameCount)
             let multiplier = self.volume / 100.0
-            if multiplier != 1.0 {
-                for ch in 0..<Int(pcmBuffer.format.channelCount) {
-                    if let ptr = pcmBuffer.floatChannelData?[ch] {
-                        for frame in 0..<Int(pcmBuffer.frameLength) {
-                            ptr[frame] *= multiplier
-                        }
-                    }
+
+            for ch in 0..<channelCount {
+                guard let dst = pcmBuffer.floatChannelData?[ch],
+                      let src = decodedBuffer.floatChannelData?[ch] else { continue }
+                for frame in 0..<frameCount {
+                    dst[frame] = src[frame] * multiplier
                 }
             }
             audioService.scheduleBuffer(pcmBuffer)

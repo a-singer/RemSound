@@ -28,7 +28,9 @@ class LogService: ObservableObject {
             self.logs.insert(line, at: 0)
             if self.logs.count > self.maxMemLogs { self.logs.removeLast() }
         }
-        fileQueue.async { [weak self] in self?.writeToPersistentFile(line) }
+        // Synchronous write: ensures every log line reaches disk before execution continues,
+        // so the file accurately shows the crash site rather than the previous session's end.
+        fileQueue.sync { [weak self] in self?.writeToPersistentFile(line) }
     }
 
     private func writeToPersistentFile(_ message: String) {

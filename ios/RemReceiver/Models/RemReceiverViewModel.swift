@@ -6,16 +6,26 @@ import Opus
 
 class RemReceiverViewModel: ObservableObject {
     @Published var isRunning = false
-    @Published var targetSender: String = ""
-    @Published var password: String = "" {
-        didSet {
-            updateEncryptionKey()
+    @Published var targetSender: String = UserDefaults.standard.string(forKey: "targetSender") ?? "" {
+        didSet { UserDefaults.standard.set(targetSender, forKey: "targetSender") }
+    }
+    @Published var password: String = UserDefaults.standard.string(forKey: "password") ?? "" {
+        didSet { 
+            UserDefaults.standard.set(password, forKey: "password")
+            updateEncryptionKey() 
         }
     }
     @Published var status: String = "Ready"
-    @Published var volume: Float = 100.0
-    @Published var bufferMs: Double = 50.0
-    @Published var isMuted = false
+    @Published var volume: Float = UserDefaults.standard.float(forKey: "volume") == 0 ? 100.0 : UserDefaults.standard.float(forKey: "volume") {
+        didSet { UserDefaults.standard.set(volume, forKey: "volume") }
+    }
+    @Published var bufferMs: Double = UserDefaults.standard.double(forKey: "bufferMs") == 0 ? 50.0 : UserDefaults.standard.double(forKey: "bufferMs") {
+        didSet { 
+            UserDefaults.standard.set(bufferMs, forKey: "bufferMs")
+            updateBufferDuration()
+        }
+    }
+    @Published var isLocalMuted = false
     
     private let networkService = NetworkService()
     private let audioService = AudioService()
@@ -25,9 +35,21 @@ class RemReceiverViewModel: ObservableObject {
     private var encryptionKey: Data = Data(RemCrypto.emptyKey)
     private var currentFormat: AudioFormatInfo?
     
+    private var instanceId: String {
+        if let id = UserDefaults.standard.string(forKey: "instanceId") { return id }
+        let newId = UUID().uuidString
+        UserDefaults.standard.set(newId, forKey: "instanceId")
+        return newId
+    }
+    
     init() {
-        networkService.onPacketReceived = { [weak self] data, endpoint in
-            self?.handlePacket(data: data, from: endpoint)
+        networkService.onPacketReceived = { [weak self] data, host in
+            self?.handlePacket(data: data, from: host)
+        }
+        audioService.onInterruption = { [weak self] interrupted in
+            if !interrupted && self?.isRunning == true {
+                self?.audioService.start()
+            }
         }
     }
     
@@ -38,28 +60,16 @@ class RemReceiverViewModel: ObservableObject {
     }
     
     func toggleReceiver() {
-        if isRunning {
-            stop()
-        } else {
-            start()
-        }
+        isRunning ? stop() : start()
     }
     
-    func sendVolumeUp() {
-        networkService.sendControlPacket(kind: 0, sequence: sequence)
-        sequence += 1
-    }
+    func sendVolumeUp() { networkService.sendControlPacket(to: targetSender, kind: 0, sequence: sequence); sequence += 1 }
+    func sendVolumeDown() { networkService.sendControlPacket(to: targetSender, kind: 1, sequence: sequence); sequence += 1 }
+    func sendMuteToggle() { networkService.sendControlPacket(to: targetSender, kind: 2, sequence: sequence); sequence += 1 }
     
-    func sendVolumeDown() {
-        networkService.sendControlPacket(kind: 1, sequence: sequence)
-        sequence += 1
-    }
-    
-    func toggleMute() {
-        isMuted.toggle()
-        networkService.sendControlPacket(kind: 2, sequence: sequence)
-        sequence += 1
-    }
+    func sendSystemVolumeUp() { networkService.sendControlPacket(to: targetSender, kind: 3, sequence: sequence); sequence += 1 }
+    func sendSystemVolumeDown() { networkService.sendControlPacket(to: targetSender, kind: 4, sequence: sequence); sequence += 1 }
+    func sendSystemMuteToggle() { networkService.sendControlPacket(to: targetSender, kind: 5, sequence: sequence); sequence += 1 }
     
     func updateBufferDuration() {
         audioService.setBufferDuration(bufferMs / 1000.0)
@@ -67,16 +77,18 @@ class RemReceiverViewModel: ObservableObject {
     
     private func start() {
         isRunning = true
-        updateEncryptionKey() // Ensure key is fresh
+        updateEncryptionKey()
         UIApplication.shared.isIdleTimerDisabled = true
-        if targetSender.isEmpty {
-            status = "Searching for Senders..."
-        } else {
-            status = "Connecting to \(targetSender)..."
-            networkService.connect(to: targetSender)
+        status = targetSender.isEmpty ? "Searching..." : "Connecting to \(targetSender)..."
+        if !targetSender.isEmpty {
+            networkService.startHeartbeat(to: targetSender) { [weak self] in 
+                let s = self?.sequence ?? 0
+                self?.sequence += 1
+                return s
+            }
         }
         audioService.start()
-        networkService.startDiscovery(instanceId: UUID().uuidString, deviceName: "iOS Receiver")
+        networkService.startDiscovery(instanceId: instanceId, deviceName: UIDevice.current.name)
     }
     
     private func stop() {
@@ -87,7 +99,11 @@ class RemReceiverViewModel: ObservableObject {
         networkService.stop()
     }
     
-    private func handlePacket(data: Data, from endpoint: NWEndpoint) {
+    private func handlePacket(data: Data, from host: String) {
+        if targetSender.isEmpty && !host.isEmpty {
+            DispatchQueue.main.async { self.targetSender = host }
+        }
+        
         guard let header = RemHeader.decode(data: data) else { return }
         
         switch header.type {
@@ -95,113 +111,87 @@ class RemReceiverViewModel: ObservableObject {
             let payload = data.suffix(from: RemHeader.size)
             if let format = AudioFormatInfo.decode(data: payload) {
                 let codecChanged = self.currentFormat?.codec != format.codec
+                let rateChanged = self.currentFormat?.sampleRate != format.sampleRate
                 self.currentFormat = format
-                
-                if codecChanged || opusDecoder == nil {
+                if codecChanged || rateChanged || opusDecoder == nil {
                     if format.codec == 2 {
                         let audioFormat = AVAudioFormat(standardFormatWithSampleRate: Double(format.sampleRate), channels: AVAudioChannelCount(format.channels))!
                         opusDecoder = try? Opus.Decoder(format: audioFormat)
                     }
                     self.audioService.reconfigure(for: format)
                 }
-                
                 DispatchQueue.main.async {
-                    let codecName = format.codec == 2 ? "Opus" : "PCM"
-                    self.status = "Receiving \(codecName) (\(format.sampleRate)Hz)"
+                    self.status = "Receiving \(format.codec == 2 ? "Opus" : "PCM") (\(format.sampleRate)Hz)"
                 }
             }
         case .audio:
             guard let format = currentFormat else { return }
             let payload = data.suffix(from: RemHeader.size)
-            
             if format.codec == 2 {
-                // Opus doesn't use fragmentation in this protocol usually, or uses it differently
                 if let decrypted = RemCrypto.decrypt(key: encryptionKey, data: payload) {
                     processOpus(decrypted, format: format)
                 }
             } else {
-                // PCM Reassembly
                 guard payload.count > 6 else { return }
                 let frameId = payload.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
                 let partIndex = Int(payload[4])
                 let totalParts = Int(payload[5])
                 let partData = payload.suffix(from: 6)
-                
-                if let fullFrameEncrypted = frameAssembler.addPart(frameId: frameId, partIndex: partIndex, totalParts: totalParts, data: partData) {
-                    if let decrypted = RemCrypto.decrypt(key: encryptionKey, data: fullFrameEncrypted) {
+                if let fullFrame = frameAssembler.addPart(frameId: frameId, partIndex: partIndex, totalParts: totalParts, data: partData) {
+                    if let decrypted = RemCrypto.decrypt(key: encryptionKey, data: fullFrame) {
                         processPcm(decrypted, format: format)
                     }
                 }
             }
         case .heartbeat:
-            // Respond to Ping with Pong
-            networkService.sendPong(to: endpoint, sequence: header.sequence)
-        default:
-            break
+            let payload = data.suffix(from: RemHeader.size)
+            if payload.count >= 9 && payload[0] == 0 { // Ping = 0
+                let timestamp = payload.suffix(from: 1).prefix(8)
+                networkService.sendPong(to: host, sequence: sequence, originalTimestamp: timestamp)
+                sequence += 1
+            }
+        default: break
         }
     }
 
     private func processOpus(_ data: Data, format: AudioFormatInfo) {
-        guard !isMuted else { return }
-        guard let decoder = opusDecoder else { return }
+        guard !isLocalMuted, let decoder = opusDecoder else { return }
         do {
             let pcmBuffer = try decoder.decode(data)
             let multiplier = self.volume / 100.0
             if multiplier != 1.0 {
-                let channelCount = Int(pcmBuffer.format.channelCount)
-                let frameLength = Int(pcmBuffer.frameLength)
-                for ch in 0..<channelCount {
+                for ch in 0..<Int(pcmBuffer.format.channelCount) {
                     let ptr = pcmBuffer.floatChannelData?[ch]
-                    for frame in 0..<frameLength {
+                    for frame in 0..<Int(pcmBuffer.frameLength) {
                         ptr?[frame] *= multiplier
                     }
                 }
             }
-            
-            var int16Samples = [Int16]()
-            let channels = Int(pcmBuffer.format.channelCount)
-            let frames = Int(pcmBuffer.frameLength)
-            int16Samples.reserveCapacity(frames * channels)
-            
-            for frame in 0..<frames {
-                for ch in 0..<channels {
-                    let floatSample = pcmBuffer.floatChannelData?[ch][frame] ?? 0
-                    let int16Sample = Int16(max(-32768, min(32767, floatSample * 32767)))
-                    int16Samples.append(int16Sample)
-                }
-            }
-            audioService.scheduleBuffer(pcmData: int16Samples, format: pcmBuffer.format)
-        } catch {
-            print("Opus decode error: \(error)")
-        }
+            audioService.scheduleBuffer(pcmBuffer) // DIRECT FLOAT PASS (FIXED)
+        } catch { print("Opus error: \(error)") }
     }
 
     private func processPcm(_ data: Data, format: AudioFormatInfo) {
-        guard !isMuted else { return }
-        let bytesPerSample = 3
-        let sampleCount = data.count / bytesPerSample
-        var samples = [Int16]()
-        samples.reserveCapacity(sampleCount)
-        
+        guard !isLocalMuted else { return }
+        let sampleCount = data.count / 3
         let multiplier = self.volume / 100.0
         
+        let audioFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(format.sampleRate), channels: AVAudioChannelCount(format.channels), interleaved: false)!
+        let pcmBuffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: AVAudioFrameCount(sampleCount))!
+        pcmBuffer.frameLength = pcmBuffer.frameCapacity
+        
         for i in 0..<sampleCount {
-            let offset = i * bytesPerSample
+            let offset = i * 3
             let b0 = Int32(data[offset])
             let b1 = Int32(data[offset + 1])
-            let b2 = Int32(Int8(bitPattern: data[offset + 2])) 
-            
+            let b2 = Int32(Int8(bitPattern: data[offset + 2]))
             let sample32 = (b2 << 16) | (b1 << 8) | b0
-            var sampleFloat = Float(sample32) * multiplier / 256.0
-            sampleFloat = max(-32768, min(32767, sampleFloat))
-            samples.append(Int16(sampleFloat))
+            let floatSample = (Float(sample32) / 8388608.0) * multiplier
+            
+            for ch in 0..<Int(format.channels) {
+                pcmBuffer.floatChannelData?[ch][i] = floatSample
+            }
         }
-        
-        if let audioFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
-                                          sampleRate: Double(format.sampleRate),
-                                          channels: AVAudioChannelCount(format.channels),
-                                          interleaved: true) {
-            audioService.scheduleBuffer(pcmData: samples, format: audioFormat)
-        }
+        audioService.scheduleBuffer(pcmBuffer)
     }
 }

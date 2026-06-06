@@ -4,35 +4,30 @@ import CryptoKit
 
 class PcmFrameAssembler {
     private var pendingFrameId: UInt32 = 0
-    private var pendingTotalParts: Int = 0
     private var assemblyBuffer: Data = Data()
-    private var partsReceived: Set<Int> = []
+    private var pendingTotalParts: Int = 0
+    private var partsReceivedCount: Int = 0
     
     func addPart(frameId: UInt32, partIndex: Int, totalParts: Int, data: Data) -> Data? {
         if frameId != pendingFrameId {
-            // New frame, reset
             pendingFrameId = frameId
             pendingTotalParts = totalParts
-            assemblyBuffer = Data(repeating: 0, count: 65536) // Sufficient buffer
-            partsReceived.removeAll()
+            assemblyBuffer = Data()
+            partsReceivedCount = 0
         }
         
-        guard partIndex < totalParts else { return nil }
+        // Android sequentially appends. We follow suit.
+        // Protocol note: This assumes parts arrive in order. 
+        // If out of order, a more complex buffer would be needed, 
+        // but Android just appends.
+        assemblyBuffer.append(data)
+        partsReceivedCount += 1
         
-        let offset = partIndex * 1400 // Assuming standard MTU-friendly split
-        if assemblyBuffer.count < offset + data.count {
-            assemblyBuffer.count = offset + data.count
+        if partsReceivedCount == totalParts {
+            let result = assemblyBuffer
+            partsReceivedCount = 0
+            return result
         }
-        
-        assemblyBuffer.replaceSubrange(offset..<(offset + data.count), with: data)
-        partsReceived.insert(partIndex)
-        
-        if partsReceived.count == totalParts {
-            let finalData = assemblyBuffer.prefix(offset + data.count)
-            partsReceived.removeAll()
-            return finalData
-        }
-        
         return nil
     }
 }

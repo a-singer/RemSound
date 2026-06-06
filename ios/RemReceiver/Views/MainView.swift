@@ -1,7 +1,29 @@
 import SwiftUI
 
+struct LogView: View {
+    @ObservedObject var logService = LogService.shared
+    
+    var body: some View {
+        List {
+            Section(header: Text("Most Recent 20 Entries")) {
+                ForEach(logService.logs, id: \.self) { log in
+                    Text(log)
+                        .font(.system(size: 10, design: .monospaced))
+                }
+            }
+            
+            Section {
+                Button("Clear All Logs", action: { logService.clear() })
+                    .foregroundColor(.red)
+            }
+        }
+        .navigationTitle("Debug Logs")
+    }
+}
+
 struct MainView: View {
     @StateObject private var viewModel = RemReceiverViewModel()
+    @State private var showingLogs = false
     
     var body: some View {
         NavigationView {
@@ -74,22 +96,16 @@ struct MainView: View {
                     }
                 }
                 
-                Section(header: Text("Debug Logs").accessibilityAddTraits(.isHeader)) {
-                    ScrollView {
-                        LazyVStack(alignment: .leading) {
-                            ForEach(viewModel.logs, id: \.self) { log in
-                                Text(log)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .padding(.bottom, 2)
-                            }
+                Section {
+                    NavigationLink(destination: LogView(), isActive: $showingLogs) {
+                        HStack {
+                            Text("View Debug Logs")
+                            Spacer()
+                            Image(systemName: "list.bullet.rectangle")
                         }
                     }
-                    .frame(height: 150)
-                    
-                    Button("Clear Logs") {
-                        LogService.shared.clear()
-                    }
-                    .foregroundColor(.red)
+                    .accessibilityLabel("View debug logs")
+                    .accessibilityHint("Shows the most recent 20 events and errors")
                 }
             }
             .navigationTitle("RemSound Receiver")

@@ -1,5 +1,6 @@
 import Foundation
 import CommonCrypto
+import CryptoKit
 
 class PcmFrameAssembler {
     private var pendingFrameId: UInt32 = 0
@@ -74,7 +75,6 @@ enum RemCrypto {
     }
     
     static func decrypt(key: Data, data: Data) -> Data? {
-        import CryptoKit
         guard data.count >= 28 else { return nil } // 12 nonce + 16 tag
         
         let nonce = data.prefix(12)

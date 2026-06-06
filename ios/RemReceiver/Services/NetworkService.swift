@@ -5,8 +5,8 @@ class NetworkService: ObservableObject {
     private var listener: NWListener?
     private var discoveryTimer: Timer?
     private var heartbeatTimer: Timer?
+    private var targetEndpoint: NWEndpoint?
     
-    // Persistent connections to reduce overhead
     private var activeConnections: [String: NWConnection] = [:]
     
     let audioPort: UInt16 = 47830
@@ -33,6 +33,7 @@ class NetworkService: ObservableObject {
             conn.cancel()
         }
         activeConnections.removeAll()
+        targetEndpoint = nil
     }
     
     private func getCachedConnection(to endpoint: NWEndpoint) -> NWConnection {
@@ -47,7 +48,8 @@ class NetworkService: ObservableObject {
     }
     
     private func sendDiscoveryBroadcast(instanceId: String, deviceName: String) {
-        let endpoint = NWEndpoint.hostPort(host: "255.255.255.255", port: NWEndpoint.Port(rawValue: discoveryPort)!)
+        let port = NWEndpoint.Port(rawValue: discoveryPort) ?? NWEndpoint.Port(integerLiteral: 47821)
+        let endpoint = NWEndpoint.hostPort(host: "255.255.255.255", port: port)
         let connection = NWConnection(to: endpoint, using: .udp)
         
         let json: [String: Any] = [
@@ -70,7 +72,8 @@ class NetworkService: ObservableObject {
         do {
             let parameters = NWParameters.udp
             parameters.allowLocalEndpointReuse = true
-            let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: audioPort)!)
+            let port = NWEndpoint.Port(rawValue: audioPort) ?? NWEndpoint.Port(integerLiteral: 47830)
+            let listener = try NWListener(using: parameters, on: port)
             self.listener = listener
             
             listener.newConnectionHandler = { [weak self] (connection: NWConnection) in
@@ -98,45 +101,51 @@ class NetworkService: ObservableObject {
     
     func startHeartbeat(to host: String, sequenceProvider: @escaping () -> UInt32) {
         heartbeatTimer?.invalidate()
-        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: audioPort)!)
+        let port = NWEndpoint.Port(rawValue: audioPort) ?? NWEndpoint.Port(integerLiteral: 47830)
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: port)
+        self.targetEndpoint = endpoint // FIXED: Assign to property
+        
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
-            self?.sendPing(to: endpoint, sequence: sequenceProvider())
+            guard let ep = self?.targetEndpoint else { return }
+            self?.sendPing(to: ep, sequence: sequenceProvider())
         }
     }
     
     private func sendPing(to endpoint: NWEndpoint, sequence: UInt32) {
         let connection = getCachedConnection(to: endpoint)
-        var data = Data([0x52, 0x4D, 0x4E, 0x44, 1, 4, 1, 0]) // Type 4 = Heartbeat
+        var data = Data([0x52, 0x4D, 0x4E, 0x44, 1, 4, 1, 0])
         var seq = sequence.littleEndian
-        data.append(Data(bytes: &seq, count: 4))
-        data.append(0) // Kind 0 = Ping (FIXED)
+        withUnsafeBytes(of: seq) { data.append(contentsOf: $0) }
+        data.append(0) // Kind 0 = Ping
         
         var timestamp = Int64(Date().timeIntervalSince1970 * 1000).littleEndian
-        data.append(Data(bytes: &timestamp, count: 8)) // Timestamp (FIXED)
+        withUnsafeBytes(of: timestamp) { data.append(contentsOf: $0) }
         
         connection.send(content: data, completion: .contentProcessed { _ in })
     }
     
     func sendPong(to host: String, sequence: UInt32, originalTimestamp: Data) {
-        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: audioPort)!)
+        let port = NWEndpoint.Port(rawValue: audioPort) ?? NWEndpoint.Port(integerLiteral: 47830)
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: port)
         let connection = getCachedConnection(to: endpoint)
         var data = Data([0x52, 0x4D, 0x4E, 0x44, 1, 4, 1, 0])
         var seq = sequence.littleEndian
-        data.append(Data(bytes: &seq, count: 4))
-        data.append(1) // Kind 1 = Pong (FIXED)
-        data.append(originalTimestamp) // Echo back timestamp (FIXED)
+        withUnsafeBytes(of: seq) { data.append(contentsOf: $0) }
+        data.append(1) // Kind 1 = Pong
+        data.append(originalTimestamp)
         
         connection.send(content: data, completion: .contentProcessed { _ in })
     }
     
     func sendControlPacket(to host: String, kind: UInt8, delta: UInt8 = 0, sequence: UInt32) {
-        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: audioPort)!)
+        let port = NWEndpoint.Port(rawValue: audioPort) ?? NWEndpoint.Port(integerLiteral: 47830)
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: port)
         let connection = getCachedConnection(to: endpoint)
-        var data = Data([0x52, 0x4D, 0x4E, 0x44, 1, 5, 1, 0]) // Type 5 = Control
+        var data = Data([0x52, 0x4D, 0x4E, 0x44, 1, 5, 1, 0])
         var seq = sequence.littleEndian
-        data.append(Data(bytes: &seq, count: 4))
+        withUnsafeBytes(of: seq) { data.append(contentsOf: $0) }
         data.append(kind)
-        data.append(delta) // Custom delta supported (FIXED)
+        data.append(delta)
         
         connection.send(content: data, completion: .contentProcessed { _ in })
     }

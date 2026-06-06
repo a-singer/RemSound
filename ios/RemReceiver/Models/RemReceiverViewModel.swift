@@ -47,15 +47,19 @@ class RemReceiverViewModel: ObservableObject {
             self?.handlePacket(data: data, from: host)
         }
         audioService.onInterruption = { [weak self] interrupted in
-            if !interrupted && self?.isRunning == true {
-                self?.audioService.start()
+            DispatchQueue.main.async {
+                if !interrupted && self?.isRunning == true {
+                    self?.audioService.start()
+                }
             }
         }
         audioService.onRemoteCommand = { [weak self] cmd in
-            switch cmd {
-            case "play": self?.start()
-            case "pause", "stop": self?.stop()
-            default: break
+            DispatchQueue.main.async {
+                switch cmd {
+                case "play": self?.start()
+                case "pause", "stop": self?.stop()
+                default: break
+                }
             }
         }
     }
@@ -70,7 +74,6 @@ class RemReceiverViewModel: ObservableObject {
         isRunning ? stop() : start()
     }
     
-    // Control methods with default delta (FIXED: Delta parameter passed)
     func sendVolumeUp(delta: UInt8 = 0) { networkService.sendControlPacket(to: targetSender, kind: 0, delta: delta, sequence: sequence); sequence += 1 }
     func sendVolumeDown(delta: UInt8 = 0) { networkService.sendControlPacket(to: targetSender, kind: 1, delta: delta, sequence: sequence); sequence += 1 }
     func sendMuteToggle() { networkService.sendControlPacket(to: targetSender, kind: 2, delta: 0, sequence: sequence); sequence += 1 }
@@ -84,27 +87,31 @@ class RemReceiverViewModel: ObservableObject {
     }
     
     private func start() {
-        isRunning = true
-        updateEncryptionKey()
-        UIApplication.shared.isIdleTimerDisabled = true
-        status = targetSender.isEmpty ? "Searching..." : "Connecting to \(targetSender)..."
-        if !targetSender.isEmpty {
-            networkService.startHeartbeat(to: targetSender) { [weak self] in 
-                let s = self?.sequence ?? 0
-                self?.sequence += 1
-                return s
+        DispatchQueue.main.async {
+            self.isRunning = true
+            self.updateEncryptionKey()
+            UIApplication.shared.isIdleTimerDisabled = true
+            self.status = self.targetSender.isEmpty ? "Searching..." : "Connecting to \(self.targetSender)..."
+            if !self.targetSender.isEmpty {
+                self.networkService.startHeartbeat(to: self.targetSender) { [weak self] in 
+                    let s = self?.sequence ?? 0
+                    self?.sequence += 1
+                    return s
+                }
             }
+            self.audioService.start()
+            self.networkService.startDiscovery(instanceId: self.instanceId, deviceName: UIDevice.current.name)
         }
-        audioService.start()
-        networkService.startDiscovery(instanceId: instanceId, deviceName: UIDevice.current.name)
     }
     
     private func stop() {
-        isRunning = false
-        UIApplication.shared.isIdleTimerDisabled = false
-        status = "Stopped"
-        audioService.stop()
-        networkService.stop()
+        DispatchQueue.main.async {
+            self.isRunning = false
+            UIApplication.shared.isIdleTimerDisabled = false
+            self.status = "Stopped"
+            self.audioService.stop()
+            self.networkService.stop()
+        }
     }
     
     private func handlePacket(data: Data, from host: String) {
@@ -123,8 +130,9 @@ class RemReceiverViewModel: ObservableObject {
                 self.currentFormat = format
                 if codecChanged || rateChanged || opusDecoder == nil {
                     if format.codec == 2 {
-                        let audioFormat = AVAudioFormat(standardFormatWithSampleRate: Double(format.sampleRate), channels: AVAudioChannelCount(format.channels))!
-                        opusDecoder = try? Opus.Decoder(format: audioFormat)
+                        if let audioFormat = AVAudioFormat(standardFormatWithSampleRate: Double(format.sampleRate), channels: AVAudioChannelCount(format.channels)) {
+                            opusDecoder = try? Opus.Decoder(format: audioFormat)
+                        }
                     }
                     self.audioService.reconfigure(for: format)
                 }
@@ -153,7 +161,7 @@ class RemReceiverViewModel: ObservableObject {
             }
         case .heartbeat:
             let payload = data.suffix(from: RemHeader.size)
-            if payload.count >= 9 && payload[0] == 0 { // Ping = 0
+            if payload.count >= 9 && payload[0] == 0 { 
                 let timestamp = payload.suffix(from: 1).prefix(8)
                 networkService.sendPong(to: host, sequence: sequence, originalTimestamp: timestamp)
                 sequence += 1
@@ -169,9 +177,10 @@ class RemReceiverViewModel: ObservableObject {
             let multiplier = self.volume / 100.0
             if multiplier != 1.0 {
                 for ch in 0..<Int(pcmBuffer.format.channelCount) {
-                    let ptr = pcmBuffer.floatChannelData?[ch]
-                    for frame in 0..<Int(pcmBuffer.frameLength) {
-                        ptr?[frame] *= multiplier
+                    if let ptr = pcmBuffer.floatChannelData?[ch] {
+                        for frame in 0..<Int(pcmBuffer.frameLength) {
+                            ptr[frame] *= multiplier
+                        }
                     }
                 }
             }
@@ -184,8 +193,9 @@ class RemReceiverViewModel: ObservableObject {
         let sampleCount = data.count / 3
         let multiplier = self.volume / 100.0
         
-        let audioFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(format.sampleRate), channels: AVAudioChannelCount(format.channels), interleaved: false)!
-        let pcmBuffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: AVAudioFrameCount(sampleCount))!
+        guard let audioFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(format.sampleRate), channels: AVAudioChannelCount(format.channels), interleaved: false),
+              let pcmBuffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: AVAudioFrameCount(sampleCount)) else { return }
+        
         pcmBuffer.frameLength = pcmBuffer.frameCapacity
         
         for i in 0..<sampleCount {

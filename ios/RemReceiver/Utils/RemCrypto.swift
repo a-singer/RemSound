@@ -4,40 +4,38 @@ import CryptoKit
 
 class PcmFrameAssembler {
     private var pendingFrameId: UInt32 = 0
-    private var pendingTotalParts: Int = 0
     private var assemblyBuffer: Data = Data()
+    private var pendingTotalParts: Int = 0
     private var partsReceived: Set<Int> = []
     
     func addPart(frameId: UInt32, partIndex: Int, totalParts: Int, data: Data) -> Data? {
         if frameId != pendingFrameId {
             pendingFrameId = frameId
             pendingTotalParts = totalParts
-            assemblyBuffer = Data(repeating: 0, count: 65536) // Sufficient buffer
+            assemblyBuffer = Data(repeating: 0, count: 65536) // Start with reasonable size
             partsReceived.removeAll()
         }
         
         guard totalParts > 0, partIndex < totalParts else { return nil }
         
-        // Calculate offset based on standard MTU - header sizes
-        // In the protocol, PCM parts are usually constant size except the last
-        // Android sequentially appends, but iOS needs to handle out-of-order.
-        // We use a fixed chunk size of 1400 which is the sender's default.
         let chunkSize = 1400 
         let offset = partIndex * chunkSize
         
+        // Safety: Ensure buffer is large enough
         if assemblyBuffer.count < offset + data.count {
-            assemblyBuffer.count = offset + data.count
+            assemblyBuffer.append(Data(repeating: 0, count: (offset + data.count) - assemblyBuffer.count))
         }
         
-        assemblyBuffer.replaceSubrange(offset..<(offset + data.count), with: data)
-        partsReceived.insert(partIndex)
+        if offset + data.count <= assemblyBuffer.count {
+            assemblyBuffer.replaceSubrange(offset..<(offset + data.count), with: data)
+            partsReceived.insert(partIndex)
+        }
         
         if partsReceived.count == totalParts {
-            // Find the actual end of the last part
             let finalSize = offset + data.count
             let finalData = assemblyBuffer.prefix(finalSize)
             partsReceived.removeAll()
-            return finalData
+            return Data(finalData)
         }
         
         return nil
@@ -67,11 +65,11 @@ enum RemCrypto {
         if password.isEmpty && salt == keySalt { return Data(emptyKey) }
         
         var derivedKey = Data(count: keyLength)
-        let passwordData = password.data(using: .utf8)!
+        guard let passwordData = password.data(using: .utf8) else { return nil }
         
-        let status = derivedKey.withUnsafeMutableBytes { derivedBytes in
-            passwordData.withUnsafeBytes { passwordBytes in
-                salt.withUnsafeBytes { saltBytes in
+        let status = derivedKey.withUnsafeMutableBytes { (derivedBytes: UnsafeMutableRawBufferPointer) in
+            passwordData.withUnsafeBytes { (passwordBytes: UnsafeRawBufferPointer) in
+                salt.withUnsafeBytes { (saltBytes: UnsafeRawBufferPointer) in
                     CCKeyDerivationPBKDF(
                         CCPBKDFAlgorithm(kCCPBKDF2),
                         passwordBytes.baseAddress?.assumingMemoryBound(to: Int8.self),
@@ -91,7 +89,7 @@ enum RemCrypto {
     }
     
     static func decrypt(key: Data, data: Data) -> Data? {
-        guard data.count >= 28 else { return nil } // 12 nonce + 16 tag
+        guard data.count >= 28 else { return nil }
         
         let nonce = data.prefix(12)
         let tag = data.subdata(in: 12..<28)

@@ -4,36 +4,49 @@ import CryptoKit
 
 class PcmFrameAssembler {
     private var pendingFrameId: UInt32 = 0
-    private var assemblyBuffer: Data = Data()
     private var pendingTotalParts: Int = 0
-    private var partsReceivedCount: Int = 0
+    private var assemblyBuffer: Data = Data()
+    private var partsReceived: Set<Int> = []
     
     func addPart(frameId: UInt32, partIndex: Int, totalParts: Int, data: Data) -> Data? {
         if frameId != pendingFrameId {
             pendingFrameId = frameId
             pendingTotalParts = totalParts
-            assemblyBuffer = Data()
-            partsReceivedCount = 0
+            assemblyBuffer = Data(repeating: 0, count: 65536) // Sufficient buffer
+            partsReceived.removeAll()
         }
         
-        // Android sequentially appends. We follow suit.
-        // Protocol note: This assumes parts arrive in order. 
-        // If out of order, a more complex buffer would be needed, 
-        // but Android just appends.
-        assemblyBuffer.append(data)
-        partsReceivedCount += 1
+        guard totalParts > 0, partIndex < totalParts else { return nil }
         
-        if partsReceivedCount == totalParts {
-            let result = assemblyBuffer
-            partsReceivedCount = 0
-            return result
+        // Calculate offset based on standard MTU - header sizes
+        // In the protocol, PCM parts are usually constant size except the last
+        // Android sequentially appends, but iOS needs to handle out-of-order.
+        // We use a fixed chunk size of 1400 which is the sender's default.
+        let chunkSize = 1400 
+        let offset = partIndex * chunkSize
+        
+        if assemblyBuffer.count < offset + data.count {
+            assemblyBuffer.count = offset + data.count
         }
+        
+        assemblyBuffer.replaceSubrange(offset..<(offset + data.count), with: data)
+        partsReceived.insert(partIndex)
+        
+        if partsReceived.count == totalParts {
+            // Find the actual end of the last part
+            let finalSize = offset + data.count
+            let finalData = assemblyBuffer.prefix(finalSize)
+            partsReceived.removeAll()
+            return finalData
+        }
+        
         return nil
     }
 }
 
 enum RemCrypto {
     static let keySalt = "RemSound.v1.audio-key".data(using: .utf8)!
+    static let fingerprintSalt = "RemSound.v1.fingerprint".data(using: .utf8)!
     static let iterations: UInt32 = 100_000
     static let keyLength = 32
     
@@ -43,20 +56,28 @@ enum RemCrypto {
     ]
     
     static func deriveKey(password: String) -> Data? {
-        if password.isEmpty { return Data(emptyKey) }
+        return pbkdf2(password: password, salt: keySalt)
+    }
+    
+    static func fingerprint(password: String) -> Data? {
+        return pbkdf2(password: password, salt: fingerprintSalt)
+    }
+    
+    private static func pbkdf2(password: String, salt: Data) -> Data? {
+        if password.isEmpty && salt == keySalt { return Data(emptyKey) }
         
         var derivedKey = Data(count: keyLength)
         let passwordData = password.data(using: .utf8)!
         
         let status = derivedKey.withUnsafeMutableBytes { derivedBytes in
             passwordData.withUnsafeBytes { passwordBytes in
-                keySalt.withUnsafeBytes { saltBytes in
+                salt.withUnsafeBytes { saltBytes in
                     CCKeyDerivationPBKDF(
                         CCPBKDFAlgorithm(kCCPBKDF2),
                         passwordBytes.baseAddress?.assumingMemoryBound(to: Int8.self),
                         passwordData.count,
                         saltBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                        keySalt.count,
+                        salt.count,
                         CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
                         iterations,
                         derivedBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),

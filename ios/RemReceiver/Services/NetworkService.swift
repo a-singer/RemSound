@@ -129,14 +129,14 @@ class NetworkService: ObservableObject {
         connection.send(content: data, completion: .contentProcessed { _ in })
     }
     
-    func sendControlPacket(to host: String, kind: UInt8, sequence: UInt32) {
+    func sendControlPacket(to host: String, kind: UInt8, delta: UInt8 = 0, sequence: UInt32) {
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: audioPort)!)
         let connection = getCachedConnection(to: endpoint)
         var data = Data([0x52, 0x4D, 0x4E, 0x44, 1, 5, 1, 0]) // Type 5 = Control
         var seq = sequence.littleEndian
         data.append(Data(bytes: &seq, count: 4))
         data.append(kind)
-        data.append(0)
+        data.append(delta) // Custom delta supported (FIXED)
         
         connection.send(content: data, completion: .contentProcessed { _ in })
     }

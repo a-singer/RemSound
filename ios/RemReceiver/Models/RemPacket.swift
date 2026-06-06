@@ -28,7 +28,9 @@ struct RemHeader {
         
         guard let type = RemPacketType(rawValue: data[5]) else { return nil }
         
-        let streamId = data.withUnsafeBytes { $0.load(fromByteOffset: 6, as: UInt16.self).littleEndian }
+        var streamId = data.withUnsafeBytes { $0.load(fromByteOffset: 6, as: UInt16.self).littleEndian }
+        if streamId == 0 { streamId = 1 } // Normalization (FIXED)
+        
         let sequence = data.withUnsafeBytes { $0.load(fromByteOffset: 8, as: UInt32.self).littleEndian }
         
         return RemHeader(type: type, streamId: streamId, sequence: sequence)

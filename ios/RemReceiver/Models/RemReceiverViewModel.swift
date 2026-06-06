@@ -51,6 +51,13 @@ class RemReceiverViewModel: ObservableObject {
                 self?.audioService.start()
             }
         }
+        audioService.onRemoteCommand = { [weak self] cmd in
+            switch cmd {
+            case "play": self?.start()
+            case "pause", "stop": self?.stop()
+            default: break
+            }
+        }
     }
     
     private func updateEncryptionKey() {
@@ -63,13 +70,14 @@ class RemReceiverViewModel: ObservableObject {
         isRunning ? stop() : start()
     }
     
-    func sendVolumeUp() { networkService.sendControlPacket(to: targetSender, kind: 0, sequence: sequence); sequence += 1 }
-    func sendVolumeDown() { networkService.sendControlPacket(to: targetSender, kind: 1, sequence: sequence); sequence += 1 }
-    func sendMuteToggle() { networkService.sendControlPacket(to: targetSender, kind: 2, sequence: sequence); sequence += 1 }
+    // Control methods with default delta (FIXED: Delta parameter passed)
+    func sendVolumeUp(delta: UInt8 = 0) { networkService.sendControlPacket(to: targetSender, kind: 0, delta: delta, sequence: sequence); sequence += 1 }
+    func sendVolumeDown(delta: UInt8 = 0) { networkService.sendControlPacket(to: targetSender, kind: 1, delta: delta, sequence: sequence); sequence += 1 }
+    func sendMuteToggle() { networkService.sendControlPacket(to: targetSender, kind: 2, delta: 0, sequence: sequence); sequence += 1 }
     
-    func sendSystemVolumeUp() { networkService.sendControlPacket(to: targetSender, kind: 3, sequence: sequence); sequence += 1 }
-    func sendSystemVolumeDown() { networkService.sendControlPacket(to: targetSender, kind: 4, sequence: sequence); sequence += 1 }
-    func sendSystemMuteToggle() { networkService.sendControlPacket(to: targetSender, kind: 5, sequence: sequence); sequence += 1 }
+    func sendSystemVolumeUp(delta: UInt8 = 0) { networkService.sendControlPacket(to: targetSender, kind: 3, delta: delta, sequence: sequence); sequence += 1 }
+    func sendSystemVolumeDown(delta: UInt8 = 0) { networkService.sendControlPacket(to: targetSender, kind: 4, delta: delta, sequence: sequence); sequence += 1 }
+    func sendSystemMuteToggle() { networkService.sendControlPacket(to: targetSender, kind: 5, delta: 0, sequence: sequence); sequence += 1 }
     
     func updateBufferDuration() {
         audioService.setBufferDuration(bufferMs / 1000.0)
@@ -167,7 +175,7 @@ class RemReceiverViewModel: ObservableObject {
                     }
                 }
             }
-            audioService.scheduleBuffer(pcmBuffer) // DIRECT FLOAT PASS (FIXED)
+            audioService.scheduleBuffer(pcmBuffer)
         } catch { print("Opus error: \(error)") }
     }
 

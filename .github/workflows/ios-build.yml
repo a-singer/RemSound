@@ -19,9 +19,9 @@ jobs:
 
       - name: Configure Git for SPM
         run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          # This helps bypass the credential prompt for public repositories
-          git config --global credential.helper ""
+          # Use GITHUB_TOKEN to avoid interactive prompts for public repos
+          git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          git config --global core.askpass /usr/bin/true
 
       - name: Generate Xcode Project
         run: |
@@ -31,6 +31,7 @@ jobs:
       - name: Resolve Package Dependencies
         run: |
           cd ios
+          export GIT_TERMINAL_PROMPT=0
           xcodebuild -resolvePackageDependencies \
             -project RemReceiver.xcodeproj \
             -scheme RemReceiver
@@ -38,6 +39,7 @@ jobs:
       - name: Build for Generic iOS Device
         run: |
           cd ios
+          export GIT_TERMINAL_PROMPT=0
           xcodebuild build \
             -project RemReceiver.xcodeproj \
             -scheme RemReceiver \

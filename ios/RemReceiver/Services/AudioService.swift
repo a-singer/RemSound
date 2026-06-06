@@ -7,7 +7,6 @@ class AudioService {
     private var playerNode: AVAudioPlayerNode
     private var currentFormat: AudioFormatInfo?
     
-    // Command center targets
     private var playTarget: Any?
     private var pauseTarget: Any?
     private var stopTarget: Any?
@@ -16,6 +15,7 @@ class AudioService {
     var onRemoteCommand: ((String) -> Void)?
     
     init() {
+        LogService.shared.log("Initializing Audio Engine...")
         self.audioEngine = AVAudioEngine()
         self.playerNode = AVAudioPlayerNode()
         audioEngine.attach(playerNode)
@@ -27,11 +27,11 @@ class AudioService {
     private func setupAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            // Ensure background playback is robust
             try session.setCategory(.playback, mode: .measurement, options: [.mixWithOthers, .duckOthers])
             try session.setActive(true)
+            LogService.shared.log("Audio Session active (.playback)")
         } catch {
-            print("Session error: \(error)")
+            LogService.shared.log("Session error: \(error.localizedDescription)")
         }
     }
     
@@ -40,6 +40,7 @@ class AudioService {
             guard let typeValue = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
             
+            LogService.shared.log("Audio Interruption: \(type == .began ? "Began" : "Ended")")
             if type == .began {
                 self?.onInterruption?(true)
             } else if type == .ended {
@@ -53,35 +54,33 @@ class AudioService {
     
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
-        
         playTarget = center.playCommand.addTarget { [weak self] _ in
             self?.onRemoteCommand?("play")
             return .success
         }
-        
         pauseTarget = center.pauseCommand.addTarget { [weak self] _ in
             self?.onRemoteCommand?("pause")
             return .success
         }
-        
         stopTarget = center.stopCommand.addTarget { [weak self] _ in
             self?.onRemoteCommand?("stop")
             return .success
         }
-        
-        // Android has "Mute PC" in notification. iOS doesn't have custom notification buttons easily 
-        // but we can use the "Next Track" command as a shortcut for Mute PC if desired.
-        // For now, sticking to standard transport controls.
     }
     
     func reconfigure(for format: AudioFormatInfo) {
+        LogService.shared.log("Reconfiguring audio for \(format.sampleRate)Hz, \(format.channels)ch, codec \(format.codec)")
         stop()
         let hwFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                     sampleRate: Double(format.sampleRate),
                                     channels: AVAudioChannelCount(format.channels),
-                                    interleaved: false)!
+                                    interleaved: false)
         
-        // Re-establishing connections (FIXED: Reconfigure now actually rebuilds the graph)
+        guard let hwFormat = hwFormat else {
+            LogService.shared.log("Failed to create audio format object")
+            return
+        }
+        
         audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: hwFormat)
         currentFormat = format
         start()
@@ -91,11 +90,12 @@ class AudioService {
         do {
             if !audioEngine.isRunning {
                 try audioEngine.start()
+                LogService.shared.log("Audio Engine started")
             }
             playerNode.play()
             updateNowPlaying(active: true)
         } catch {
-            print("Engine start error: \(error)")
+            LogService.shared.log("Engine start error: \(error.localizedDescription)")
         }
     }
     
@@ -103,10 +103,10 @@ class AudioService {
         playerNode.stop()
         audioEngine.stop()
         updateNowPlaying(active: false)
+        LogService.shared.log("Audio Engine stopped")
     }
     
     func setBufferDuration(_ duration: Double) {
-        // Preferred buffer is a hint to the OS.
         try? AVAudioSession.sharedInstance().setPreferredIOBufferDuration(duration)
     }
     

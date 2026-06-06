@@ -15,6 +15,7 @@ class NetworkService: ObservableObject {
     var onPacketReceived: ((Data, String) -> Void)?
     
     func startDiscovery(instanceId: String, deviceName: String) {
+        LogService.shared.log("Starting discovery broadcast...")
         stop()
         discoveryTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             self?.sendDiscoveryBroadcast(instanceId: instanceId, deviceName: deviceName)
@@ -23,6 +24,7 @@ class NetworkService: ObservableObject {
     }
     
     func stop() {
+        LogService.shared.log("Stopping network service...")
         discoveryTimer?.invalidate()
         discoveryTimer = nil
         heartbeatTimer?.invalidate()
@@ -77,12 +79,19 @@ class NetworkService: ObservableObject {
             self.listener = listener
             
             listener.newConnectionHandler = { [weak self] (connection: NWConnection) in
+                LogService.shared.log("New incoming connection from \(connection.endpoint)")
                 connection.start(queue: DispatchQueue.global())
                 self?.receivePackets(on: connection)
             }
+            
+            listener.stateUpdateHandler = { state in
+                LogService.shared.log("Listener state changed to: \(state)")
+            }
+            
             listener.start(queue: DispatchQueue.global())
+            LogService.shared.log("Listening on UDP port \(audioPort)")
         } catch {
-            print("Listener error: \(error)")
+            LogService.shared.log("Failed to start listener: \(error.localizedDescription)")
         }
     }
     
@@ -95,15 +104,22 @@ class NetworkService: ObservableObject {
                 }
                 self?.onPacketReceived?(data, hostStr)
             }
-            if error == nil { self?.receivePackets(on: connection) }
+            
+            if let error = error {
+                LogService.shared.log("Receive error: \(error.localizedDescription)")
+                return
+            }
+            
+            self?.receivePackets(on: connection)
         }
     }
     
     func startHeartbeat(to host: String, sequenceProvider: @escaping () -> UInt32) {
+        LogService.shared.log("Starting heartbeats to \(host)")
         heartbeatTimer?.invalidate()
         let port = NWEndpoint.Port(rawValue: audioPort) ?? NWEndpoint.Port(integerLiteral: 47830)
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: port)
-        self.targetEndpoint = endpoint // FIXED: Assign to property
+        self.targetEndpoint = endpoint
         
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
             guard let ep = self?.targetEndpoint else { return }
@@ -121,7 +137,11 @@ class NetworkService: ObservableObject {
         var timestamp = Int64(Date().timeIntervalSince1970 * 1000).littleEndian
         withUnsafeBytes(of: timestamp) { data.append(contentsOf: $0) }
         
-        connection.send(content: data, completion: .contentProcessed { _ in })
+        connection.send(content: data, completion: .contentProcessed { error in
+            if let error = error {
+                LogService.shared.log("Ping error: \(error.localizedDescription)")
+            }
+        })
     }
     
     func sendPong(to host: String, sequence: UInt32, originalTimestamp: Data) {
@@ -138,6 +158,7 @@ class NetworkService: ObservableObject {
     }
     
     func sendControlPacket(to host: String, kind: UInt8, delta: UInt8 = 0, sequence: UInt32) {
+        LogService.shared.log("Sending control packet kind \(kind) to \(host)")
         let port = NWEndpoint.Port(rawValue: audioPort) ?? NWEndpoint.Port(integerLiteral: 47830)
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: port)
         let connection = getCachedConnection(to: endpoint)

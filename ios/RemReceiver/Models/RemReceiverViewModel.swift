@@ -26,6 +26,7 @@ class RemReceiverViewModel: ObservableObject {
         }
     }
     @Published var isLocalMuted = false
+    @Published var logs: [String] = []
     
     private let networkService = NetworkService()
     private let audioService = AudioService()
@@ -43,6 +44,8 @@ class RemReceiverViewModel: ObservableObject {
     }
     
     init() {
+        LogService.shared.log("RemSound iOS Initialized (Instance: \(instanceId.prefix(8))...)")
+        
         networkService.onPacketReceived = { [weak self] data, host in
             self?.handlePacket(data: data, from: host)
         }
@@ -62,11 +65,15 @@ class RemReceiverViewModel: ObservableObject {
                 }
             }
         }
+        
+        // Link internal logs to the @Published property for UI
+        LogService.shared.$logs.assign(to: &$logs)
     }
     
     private func updateEncryptionKey() {
         if let key = RemCrypto.deriveKey(password: password) {
             encryptionKey = key
+            LogService.shared.log("Encryption key updated")
         }
     }
     
@@ -88,6 +95,7 @@ class RemReceiverViewModel: ObservableObject {
     
     private func start() {
         DispatchQueue.main.async {
+            LogService.shared.log("User clicked START")
             self.isRunning = true
             self.updateEncryptionKey()
             UIApplication.shared.isIdleTimerDisabled = true
@@ -106,6 +114,7 @@ class RemReceiverViewModel: ObservableObject {
     
     private func stop() {
         DispatchQueue.main.async {
+            LogService.shared.log("User clicked STOP")
             self.isRunning = false
             UIApplication.shared.isIdleTimerDisabled = false
             self.status = "Stopped"
@@ -116,6 +125,7 @@ class RemReceiverViewModel: ObservableObject {
     
     private func handlePacket(data: Data, from host: String) {
         if targetSender.isEmpty && !host.isEmpty {
+            LogService.shared.log("Auto-detected sender at \(host)")
             DispatchQueue.main.async { self.targetSender = host }
         }
         
@@ -130,6 +140,7 @@ class RemReceiverViewModel: ObservableObject {
                 self.currentFormat = format
                 if codecChanged || rateChanged || opusDecoder == nil {
                     if format.codec == 2 {
+                        LogService.shared.log("Initializing Opus Decoder")
                         if let audioFormat = AVAudioFormat(standardFormatWithSampleRate: Double(format.sampleRate), channels: AVAudioChannelCount(format.channels)) {
                             opusDecoder = try? Opus.Decoder(format: audioFormat)
                         }
@@ -185,7 +196,9 @@ class RemReceiverViewModel: ObservableObject {
                 }
             }
             audioService.scheduleBuffer(pcmBuffer)
-        } catch { print("Opus error: \(error)") }
+        } catch { 
+            LogService.shared.log("Opus error: \(error.localizedDescription)")
+        }
     }
 
     private func processPcm(_ data: Data, format: AudioFormatInfo) {

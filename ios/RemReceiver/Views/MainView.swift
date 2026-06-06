@@ -34,7 +34,7 @@ struct MainView: View {
                             }
                             .accessibilityLabel("Toggle local mute")
                         }
-                        Slider(value: $viewModel.volume, in: 0...200, step: 1) // Amplification up to 200% (FIXED)
+                        Slider(value: $viewModel.volume, in: 0...200, step: 1)
                             .accessibilityValue("\(Int(viewModel.volume)) percent")
                     }
                     
@@ -72,6 +72,24 @@ struct MainView: View {
                         Circle().fill(viewModel.isRunning ? Color.green : Color.red).frame(width: 10, height: 10)
                         Text(viewModel.status)
                     }
+                }
+                
+                Section(header: Text("Debug Logs").accessibilityAddTraits(.isHeader)) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading) {
+                            ForEach(viewModel.logs, id: \.self) { log in
+                                Text(log)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .padding(.bottom, 2)
+                            }
+                        }
+                    }
+                    .frame(height: 150)
+                    
+                    Button("Clear Logs") {
+                        LogService.shared.clear()
+                    }
+                    .foregroundColor(.red)
                 }
             }
             .navigationTitle("RemSound Receiver")

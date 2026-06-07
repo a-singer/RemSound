@@ -171,14 +171,24 @@ class RemReceiverViewModel: ObservableObject {
                 if codecChanged || rateChanged || opusDecoder == nil {
                     if format.codec == 2 {
                         LogService.shared.log("Initializing Opus Decoder")
+                        // swift-opus 0.0.2 requires interleaved format for multi-channel:
+                        // isValidOpusPCMFormat returns false for non-interleaved stereo, which
+                        // makes Decoder.init throw, try? returns nil, and opusDecoder stays nil
+                        // forever — causing every format packet to re-trigger reconfigure().
                         guard let audioFormat = AVAudioFormat(
-                            standardFormatWithSampleRate: Double(format.sampleRate),
-                            channels: AVAudioChannelCount(format.channels)
+                            commonFormat: .pcmFormatFloat32,
+                            sampleRate: Double(format.sampleRate),
+                            channels: AVAudioChannelCount(format.channels),
+                            interleaved: true
                         ) else {
                             LogService.shared.log("Invalid Opus format: \(format.sampleRate)Hz \(format.channels)ch")
                             return
                         }
                         opusDecoder = try? Opus.Decoder(format: audioFormat)
+                        if opusDecoder == nil {
+                            LogService.shared.log("Opus Decoder init failed — audio will be silent")
+                            return
+                        }
                     }
                     // reconfigure() is safe to call here because onPacketReceived is dispatched to main.
                     self.audioService.reconfigure(for: format)
@@ -224,10 +234,9 @@ class RemReceiverViewModel: ObservableObject {
             let frameCount = Int(decodedBuffer.frameLength)
             guard frameCount > 0 else { return }
 
-            // Re-wrap into a buffer built with our known standardFormatWithSampleRate format.
-            // swift-opus may construct its output buffer with a different AVAudioFormat initializer
-            // (no channel layout tag), which causes scheduleBuffer() to throw an uncatchable
-            // ObjC NSException when the connection format has kAudioChannelLayoutTag_Stereo.
+            // Output buffer uses standardFormatWithSampleRate (non-interleaved) as required by
+            // AVAudioEngine's scheduleBuffer. The decoded buffer is interleaved because the
+            // decoder was initialized with interleaved: true (swift-opus 0.0.2 requirement).
             guard let audioFormat = AVAudioFormat(
                 standardFormatWithSampleRate: Double(format.sampleRate),
                 channels: AVAudioChannelCount(channelCount)
@@ -239,11 +248,17 @@ class RemReceiverViewModel: ObservableObject {
             pcmBuffer.frameLength = AVAudioFrameCount(frameCount)
             let multiplier = self.volume / 100.0
 
-            for ch in 0..<channelCount {
-                guard let dst = pcmBuffer.floatChannelData?[ch],
-                      let src = decodedBuffer.floatChannelData?[ch] else { continue }
+            // floatChannelData?[0] of an interleaved buffer contains all channels inline:
+            // [L0, R0, L1, R1, ...] for stereo. Deinterleave into separate channel arrays.
+            guard let src = decodedBuffer.floatChannelData?[0] else { return }
+            if channelCount == 1 {
+                guard let dst = pcmBuffer.floatChannelData?[0] else { return }
+                for i in 0..<frameCount { dst[i] = src[i] * multiplier }
+            } else {
                 for frame in 0..<frameCount {
-                    dst[frame] = src[frame] * multiplier
+                    for ch in 0..<channelCount {
+                        pcmBuffer.floatChannelData?[ch][frame] = src[frame * channelCount + ch] * multiplier
+                    }
                 }
             }
             audioService.scheduleBuffer(pcmBuffer)

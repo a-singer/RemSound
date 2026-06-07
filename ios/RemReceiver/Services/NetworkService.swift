@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Darwin
 
 class NetworkService: ObservableObject {
     private var listener: NWListener?
@@ -90,22 +91,53 @@ class NetworkService: ObservableObject {
             let port = NWEndpoint.Port(rawValue: audioPort) ?? NWEndpoint.Port(integerLiteral: 47830)
             let listener = try NWListener(using: parameters, on: port)
             self.listener = listener
-            
+
             listener.newConnectionHandler = { [weak self] (connection: NWConnection) in
                 LogService.shared.log("New incoming connection from \(connection.endpoint)")
                 connection.start(queue: DispatchQueue.global())
                 self?.receivePackets(on: connection)
             }
-            
-            listener.stateUpdateHandler = { state in
-                LogService.shared.log("Listener state changed to: \(state)")
+
+            listener.stateUpdateHandler = { [weak self] state in
+                switch state {
+                case .ready:
+                    // Log the device's own WiFi IP so the user can verify it matches what
+                    // the Windows sender has configured. DHCP can change the IP between runs.
+                    let ip = self?.wifiIPAddress() ?? "?"
+                    LogService.shared.log("Listener ready on UDP \(self?.audioPort ?? 47830) — this device IP: \(ip)")
+                case .failed(let error):
+                    LogService.shared.log("Listener failed: \(error.localizedDescription)")
+                default:
+                    LogService.shared.log("Listener state: \(state)")
+                }
             }
-            
+
             listener.start(queue: DispatchQueue.global())
-            LogService.shared.log("Listening on UDP port \(audioPort)")
+            LogService.shared.log("Starting listener on UDP port \(audioPort)")
         } catch {
             LogService.shared.log("Failed to start listener: \(error.localizedDescription)")
         }
+    }
+
+    private func wifiIPAddress() -> String {
+        var addrs: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&addrs) == 0, let base = addrs else { return "?" }
+        defer { freeifaddrs(addrs) }
+        var ptr = base
+        while true {
+            let iface = ptr.pointee
+            if iface.ifa_addr.pointee.sa_family == UInt8(AF_INET),
+               let name = iface.ifa_name, String(cString: name) == "en0" {
+                var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(iface.ifa_addr, socklen_t(iface.ifa_addr.pointee.sa_len),
+                               &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
+                    return String(cString: buf)
+                }
+            }
+            guard let next = iface.ifa_next else { break }
+            ptr = next
+        }
+        return "?"
     }
     
     private func receivePackets(on connection: NWConnection) {

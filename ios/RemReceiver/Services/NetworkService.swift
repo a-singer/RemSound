@@ -14,11 +14,11 @@ class NetworkService: ObservableObject {
     
     var onPacketReceived: ((Data, String) -> Void)?
     
-    func startDiscovery(instanceId: String, deviceName: String) {
+    func startDiscovery(instanceId: String, deviceName: String, unicastTarget: String = "") {
         LogService.shared.log("Starting discovery broadcast...")
         stop()
         discoveryTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            self?.sendDiscoveryBroadcast(instanceId: instanceId, deviceName: deviceName)
+            self?.sendDiscoveryBroadcast(instanceId: instanceId, deviceName: deviceName, unicastTarget: unicastTarget)
         }
         startListening()
     }
@@ -49,11 +49,9 @@ class NetworkService: ObservableObject {
         return conn
     }
     
-    private func sendDiscoveryBroadcast(instanceId: String, deviceName: String) {
+    private func sendDiscoveryBroadcast(instanceId: String, deviceName: String, unicastTarget: String = "") {
         let port = NWEndpoint.Port(rawValue: discoveryPort) ?? NWEndpoint.Port(integerLiteral: 47821)
-        let endpoint = NWEndpoint.hostPort(host: "255.255.255.255", port: port)
-        let connection = NWConnection(to: endpoint, using: .udp)
-        
+
         let json: [String: Any] = [
             "InstanceId": instanceId,
             "Name": deviceName,
@@ -61,13 +59,28 @@ class NetworkService: ObservableObject {
             "CanSend": false,
             "CanReceive": true
         ]
-        
         guard let data = try? JSONSerialization.data(withJSONObject: json) else { return }
-        
-        connection.start(queue: .main)
-        connection.send(content: data, completion: .contentProcessed { _ in
-            connection.cancel()
-        })
+
+        func send(to host: NWEndpoint.Host, label: String) {
+            let endpoint = NWEndpoint.hostPort(host: host, port: port)
+            let conn = NWConnection(to: endpoint, using: .udp)
+            conn.start(queue: .global())
+            conn.send(content: data, completion: .contentProcessed { error in
+                if let error = error {
+                    LogService.shared.log("Discovery send error (\(label)): \(error.localizedDescription)")
+                }
+                conn.cancel()
+            })
+        }
+
+        // Broadcast so any Windows PC on the LAN can discover this device.
+        send(to: "255.255.255.255", label: "broadcast")
+
+        // Unicast directly to the known sender IP so discovery works even when the
+        // router or AP filters limited-broadcast packets (common on managed WiFi).
+        if !unicastTarget.isEmpty {
+            send(to: NWEndpoint.Host(unicastTarget), label: "unicast")
+        }
     }
     
     private func startListening() {

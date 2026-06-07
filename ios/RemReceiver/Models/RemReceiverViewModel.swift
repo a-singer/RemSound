@@ -129,8 +129,9 @@ class RemReceiverViewModel: ObservableObject {
         scheduleKeyDerivation()
 
         // Start discovery first — it internally calls stop() which would kill the heartbeat
-        // timer if startHeartbeat were called first.
-        networkService.startDiscovery(instanceId: instanceId, deviceName: UIDevice.current.name)
+        // timer if startHeartbeat were called first. Pass targetSender so discovery is also
+        // unicast to the known Windows PC IP, bypassing routers that filter broadcast packets.
+        networkService.startDiscovery(instanceId: instanceId, deviceName: UIDevice.current.name, unicastTarget: targetSender)
 
         if !targetSender.isEmpty {
             networkService.startHeartbeat(to: targetSender) { [weak self] in

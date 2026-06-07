@@ -163,9 +163,17 @@ class RemReceiverViewModel: ObservableObject {
 
         guard let header = RemHeader.decode(data: data) else { return }
 
+        // Re-base the payload into its own zero-indexed Data. `data.suffix(from:)` returns a
+        // slice that inherits the parent's indices (startIndex == RemHeader.size), so byte
+        // subscripts such as payload[0] / payload[4] address bytes *before* the slice and trap
+        // with "Index out of range" — the crash that dropped the app back to the home screen.
+        // Copying once here makes every downstream index (and RemCrypto.decrypt) zero-based;
+        // the payload is small and the decode pipeline copies again anyway, so latency is
+        // unaffected, and naturally-written indices can't reintroduce the slice bug.
+        let payload = Data(data.suffix(from: RemHeader.size))
+
         switch header.type {
         case .format:
-            let payload = data.suffix(from: RemHeader.size)
             if let format = AudioFormatInfo.decode(data: payload) {
                 let codecChanged = self.currentFormat?.codec != format.codec
                 let rateChanged = self.currentFormat?.sampleRate != format.sampleRate
@@ -202,7 +210,6 @@ class RemReceiverViewModel: ObservableObject {
             }
         case .audio:
             guard let format = currentFormat else { return }
-            let payload = data.suffix(from: RemHeader.size)
             if format.codec == 2 {
                 if let decrypted = RemCrypto.decrypt(key: encryptionKey, data: payload) {
                     processOpus(decrypted, format: format)
@@ -220,7 +227,6 @@ class RemReceiverViewModel: ObservableObject {
                 }
             }
         case .heartbeat:
-            let payload = data.suffix(from: RemHeader.size)
             if payload.count >= 9 && payload[0] == 0 {
                 let timestamp = payload.suffix(from: 1).prefix(8)
                 networkService.sendPong(to: host, sequence: sequence, originalTimestamp: timestamp)

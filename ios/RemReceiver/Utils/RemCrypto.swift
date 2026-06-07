@@ -92,13 +92,19 @@ enum RemCrypto {
     
     static func decrypt(key: Data, data: Data) -> Data? {
         guard data.count >= 28 else { return nil }
-        
-        let nonce = data.prefix(12)
-        let tag = data.subdata(in: 12..<28)
-        let ciphertext = data.suffix(from: 28)
-        
+
+        // Index relative to startIndex so this is correct whether `data` is a standalone Data
+        // or a slice that inherited a non-zero startIndex. (Absolute literals like 12..<28
+        // silently read the wrong bytes — or trap — when handed a slice.)
+        let base = data.startIndex
+        let nonce = data[base ..< base + 12]
+        let tag = data[base + 12 ..< base + 28]
+        let ciphertext = data[(base + 28)...]
+
         do {
             let aesKey = SymmetricKey(data: key)
+            // Windows lays packets out as nonce || tag || ciphertext; CryptoKit's
+            // SealedBox(combined:) expects nonce || ciphertext || tag.
             let sealedBox = try AES.GCM.SealedBox(combined: nonce + ciphertext + tag)
             return try AES.GCM.open(sealedBox, using: aesKey)
         } catch {

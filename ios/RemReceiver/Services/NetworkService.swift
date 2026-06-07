@@ -123,21 +123,25 @@ class NetworkService: ObservableObject {
         var addrs: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&addrs) == 0, let base = addrs else { return "?" }
         defer { freeifaddrs(addrs) }
+        var results: [String] = []
         var ptr = base
         while true {
             let iface = ptr.pointee
             if iface.ifa_addr.pointee.sa_family == UInt8(AF_INET),
-               let name = iface.ifa_name, String(cString: name) == "en0" {
-                var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                if getnameinfo(iface.ifa_addr, socklen_t(iface.ifa_addr.pointee.sa_len),
-                               &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
-                    return String(cString: buf)
+               let name = iface.ifa_name {
+                let ifName = String(cString: name)
+                if ifName != "lo0" {
+                    var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    if getnameinfo(iface.ifa_addr, socklen_t(iface.ifa_addr.pointee.sa_len),
+                                   &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
+                        results.append("\(ifName):\(String(cString: buf))")
+                    }
                 }
             }
             guard let next = iface.ifa_next else { break }
             ptr = next
         }
-        return "?"
+        return results.isEmpty ? "?" : results.joined(separator: ", ")
     }
     
     private func receivePackets(on connection: NWConnection) {

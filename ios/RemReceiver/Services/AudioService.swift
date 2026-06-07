@@ -89,7 +89,9 @@ class AudioService {
         audioEngine.disconnectNodeOutput(playerNode)
         audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: hwFormat)
         currentFormat = format
-        LogService.shared.log("Audio graph reconnected \(format.sampleRate)Hz \(format.channels)ch")
+        buffersScheduled = 0
+        let nodeFormat = playerNode.outputFormat(forBus: 0)
+        LogService.shared.log("Audio graph reconnected \(format.sampleRate)Hz \(format.channels)ch; playerNode output: \(nodeFormat.sampleRate)Hz \(nodeFormat.channelCount)ch interleaved=\(nodeFormat.isInterleaved)")
         start()
     }
 
@@ -117,7 +119,26 @@ class AudioService {
         try? AVAudioSession.sharedInstance().setPreferredIOBufferDuration(duration)
     }
 
+    private var buffersScheduled = 0
+    private var engineStopLogged = false
+
     func scheduleBuffer(_ buffer: AVAudioPCMBuffer) {
+        // AVAudioPlayerNode.scheduleBuffer raises an uncatchable ObjC NSException if the
+        // engine was stopped by a system route-change or interruption. Guard here so those
+        // events cause silence rather than a crash; the engine is restarted on the next
+        // interruption-ended callback.
+        guard audioEngine.isRunning else {
+            if !engineStopLogged {
+                LogService.shared.log("scheduleBuffer: engine not running — dropping audio (will resume on next start)")
+                engineStopLogged = true
+            }
+            return
+        }
+        engineStopLogged = false
+        buffersScheduled += 1
+        if buffersScheduled == 1 || buffersScheduled % 500 == 0 {
+            LogService.shared.log("Audio flowing: buffer #\(buffersScheduled), \(buffer.format.sampleRate)Hz \(buffer.format.channelCount)ch \(buffer.frameLength)f")
+        }
         playerNode.scheduleBuffer(buffer)
     }
 

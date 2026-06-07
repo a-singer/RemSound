@@ -37,6 +37,8 @@ class RemReceiverViewModel: ObservableObject {
     private let audioService = AudioService()
     private let frameAssembler = PcmFrameAssembler()
     private var opusDecoder: Opus.Decoder?
+    private var opusPacketCount = 0
+    private var pcmPacketCount = 0
     private var sequence: UInt32 = 0
     private var encryptionKey: Data = Data(RemCrypto.emptyKey)
     private var currentFormat: AudioFormatInfo?
@@ -169,6 +171,8 @@ class RemReceiverViewModel: ObservableObject {
                 let rateChanged = self.currentFormat?.sampleRate != format.sampleRate
                 self.currentFormat = format
                 if codecChanged || rateChanged {
+                    opusPacketCount = 0
+                    pcmPacketCount = 0
                     if format.codec == 2 {
                         LogService.shared.log("Initializing Opus Decoder")
                         // swift-opus 0.0.2 requires interleaved format for multi-channel:
@@ -228,10 +232,14 @@ class RemReceiverViewModel: ObservableObject {
 
     private func processOpus(_ data: Data, format: AudioFormatInfo) {
         guard !isLocalMuted, let decoder = opusDecoder else { return }
+        opusPacketCount += 1
+        let logThis = opusPacketCount == 1
+        if logThis { LogService.shared.log("First Opus packet: \(data.count) bytes encrypted") }
         do {
             let decodedBuffer = try decoder.decode(data)
             let channelCount = max(1, Int(format.channels))
             let frameCount = Int(decodedBuffer.frameLength)
+            if logThis { LogService.shared.log("Decoded: \(frameCount) frames \(channelCount)ch; decoded format: \(decodedBuffer.format.sampleRate)Hz interleaved=\(decodedBuffer.format.isInterleaved)") }
             guard frameCount > 0 else { return }
 
             // Output buffer uses standardFormatWithSampleRate (non-interleaved) as required by
@@ -246,6 +254,7 @@ class RemReceiverViewModel: ObservableObject {
             ) else { return }
 
             pcmBuffer.frameLength = AVAudioFrameCount(frameCount)
+            if logThis { LogService.shared.log("Output buffer: \(pcmBuffer.format.sampleRate)Hz \(pcmBuffer.format.channelCount)ch interleaved=\(pcmBuffer.format.isInterleaved)") }
             let multiplier = self.volume / 100.0
 
             // floatChannelData?[0] of an interleaved buffer contains all channels inline:
@@ -269,6 +278,9 @@ class RemReceiverViewModel: ObservableObject {
 
     private func processPcm(_ data: Data, format: AudioFormatInfo) {
         guard !isLocalMuted else { return }
+        pcmPacketCount += 1
+        let logThis = pcmPacketCount == 1
+        if logThis { LogService.shared.log("First PCM frame: \(data.count) bytes plaintext") }
         let channelCount = max(1, Int(format.channels))
         let totalSamples = data.count / 3
         // Wire format is interleaved: L0, R0, L1, R1, ... for stereo.

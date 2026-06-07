@@ -7,37 +7,39 @@ class PcmFrameAssembler {
     private var assemblyBuffer: Data = Data()
     private var pendingTotalParts: Int = 0
     private var partsReceived: Set<Int> = []
-    
+    private var maxWriteEnd: Int = 0
+
+    // Must match RemPacket.MaxAudioPayloadBytes on the Windows sender.
+    private let chunkSize = 1454
+
     func addPart(frameId: UInt32, partIndex: Int, totalParts: Int, data: Data) -> Data? {
         if frameId != pendingFrameId {
             pendingFrameId = frameId
             pendingTotalParts = totalParts
-            assemblyBuffer = Data(repeating: 0, count: 65536) // Start with reasonable size
+            assemblyBuffer = Data(repeating: 0, count: chunkSize * max(totalParts, 1))
             partsReceived.removeAll()
+            maxWriteEnd = 0
         }
-        
+
         guard totalParts > 0, partIndex < totalParts else { return nil }
-        
-        let chunkSize = 1400 
+
         let offset = partIndex * chunkSize
-        
-        // Safety: Ensure buffer is large enough
-        if assemblyBuffer.count < offset + data.count {
-            assemblyBuffer.append(Data(repeating: 0, count: (offset + data.count) - assemblyBuffer.count))
+        let writeEnd = offset + data.count
+
+        if assemblyBuffer.count < writeEnd {
+            assemblyBuffer.append(Data(repeating: 0, count: writeEnd - assemblyBuffer.count))
         }
-        
-        if offset + data.count <= assemblyBuffer.count {
-            assemblyBuffer.replaceSubrange(offset..<(offset + data.count), with: data)
-            partsReceived.insert(partIndex)
-        }
-        
+        assemblyBuffer.replaceSubrange(offset..<writeEnd, with: data)
+        partsReceived.insert(partIndex)
+        if writeEnd > maxWriteEnd { maxWriteEnd = writeEnd }
+
         if partsReceived.count == totalParts {
-            let finalSize = offset + data.count
-            let finalData = assemblyBuffer.prefix(finalSize)
+            let finalData = Data(assemblyBuffer.prefix(maxWriteEnd))
             partsReceived.removeAll()
-            return Data(finalData)
+            maxWriteEnd = 0
+            return finalData
         }
-        
+
         return nil
     }
 }

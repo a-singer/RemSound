@@ -168,7 +168,7 @@ class RemReceiverViewModel: ObservableObject {
                 let codecChanged = self.currentFormat?.codec != format.codec
                 let rateChanged = self.currentFormat?.sampleRate != format.sampleRate
                 self.currentFormat = format
-                if codecChanged || rateChanged || opusDecoder == nil {
+                if codecChanged || rateChanged {
                     if format.codec == 2 {
                         LogService.shared.log("Initializing Opus Decoder")
                         // swift-opus 0.0.2 requires interleaved format for multi-channel:
